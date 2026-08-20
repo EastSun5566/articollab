@@ -20,16 +20,35 @@ export type DocumentOperation<S extends SchemaShape> = {
   [K in Extract<keyof S, string>]: ValueSetOperation<K, ValueType<S[K]>>;
 }[Extract<keyof S, string>];
 
-export interface ClientBatch<TOperation extends Operation = Operation> {
+export interface ClientBatchRef {
   readonly clientId: string;
   readonly seq: number;
+}
+
+export interface ClientBatch<TOperation extends Operation = Operation>
+  extends ClientBatchRef {
   readonly operations: readonly TOperation[];
 }
 
-export interface ChangeEvent<TOperation extends Operation = Operation> {
+export interface ServerCommit<TOperation extends Operation = Operation> {
+  readonly serverSeq: number;
+  readonly source: ClientBatchRef;
+  readonly operations: readonly TOperation[];
+}
+
+export interface LocalChangeEvent<TOperation extends Operation = Operation> {
   readonly origin: "local";
   readonly batch: ClientBatch<TOperation>;
 }
+
+export interface ServerChangeEvent<TOperation extends Operation = Operation> {
+  readonly origin: "server";
+  readonly commit: ServerCommit<TOperation>;
+}
+
+export type ChangeEvent<TOperation extends Operation = Operation> =
+  | LocalChangeEvent<TOperation>
+  | ServerChangeEvent<TOperation>;
 
 export interface CreateClientOptions<S extends SchemaShape> {
   readonly clientId: string;
@@ -87,8 +106,8 @@ type ChangeListener<S extends SchemaShape> = (
 /**
  * A client-side optimistic document.
  *
- * This first slice emits local batches only. Receiving server commits and
- * replaying pending batches will be layered onto the same API later.
+ * Local batches are applied optimistically, then reconciled with authoritative
+ * server commits in server sequence order.
  */
 export class ClientDocument<S extends SchemaShape> {
   readonly state: DocumentState<S>;
@@ -97,8 +116,11 @@ export class ClientDocument<S extends SchemaShape> {
   private readonly onBatch: CreateClientOptions<S>["onBatch"];
   private readonly listeners = new Set<ChangeListener<S>>();
   private readonly values = new Map<string, RuntimeValue<JsonValue>>();
+  private authoritativeValues = new Map<string, JsonValue>();
+  private readonly pendingBatches: ClientBatch<DocumentOperation<S>>[] = [];
 
   private nextSeq = 1;
+  private lastServerSeq = 0;
   private transactionDepth = 0;
   private operations: Operation[] = [];
   private transactionSnapshot: Map<string, JsonValue> | undefined;
@@ -122,6 +144,7 @@ export class ClientDocument<S extends SchemaShape> {
         descriptor.initialValue
       );
       this.values.set(path, runtimeValue);
+      this.authoritativeValues.set(path, descriptor.initialValue);
       state[path] = runtimeValue;
     }
     this.state = Object.freeze(state) as DocumentState<S>;
@@ -191,6 +214,62 @@ export class ClientDocument<S extends SchemaShape> {
     };
   }
 
+  /** Applies the next authoritative server commit and replays local changes. */
+  receive(commit: ServerCommit<DocumentOperation<S>>): void {
+    if (this.transactionDepth !== 0) {
+      throw new Error("Cannot receive a server commit during a transaction");
+    }
+
+    const expectedServerSeq = this.lastServerSeq + 1;
+    if (commit.serverSeq !== expectedServerSeq) {
+      throw new Error(
+        `Expected server sequence ${expectedServerSeq}, received ${commit.serverSeq}`
+      );
+    }
+
+    const isOwnCommit = commit.source.clientId === this.clientId;
+    if (isOwnCommit) {
+      const pending = this.pendingBatches[0];
+      if (pending === undefined || pending.seq !== commit.source.seq) {
+        throw new Error(
+          `Server commit does not match the next pending batch: ${commit.source.seq}`
+        );
+      }
+    }
+
+    const nextAuthoritativeValues = new Map(this.authoritativeValues);
+    this.applyOperations(nextAuthoritativeValues, commit.operations);
+
+    const remainingBatches = isOwnCommit
+      ? this.pendingBatches.slice(1)
+      : this.pendingBatches;
+    const nextOptimisticValues = new Map(nextAuthoritativeValues);
+    for (const pending of remainingBatches) {
+      this.applyOperations(nextOptimisticValues, pending.operations);
+    }
+
+    let changed = false;
+    for (const [path, runtimeValue] of this.values) {
+      const nextValue = nextOptimisticValues.get(path);
+      if (nextValue === undefined && !nextOptimisticValues.has(path)) {
+        throw new Error(`Missing document path: ${path}`);
+      }
+      if (!Object.is(runtimeValue.value, nextValue)) changed = true;
+    }
+
+    this.authoritativeValues = nextAuthoritativeValues;
+    if (isOwnCommit) this.pendingBatches.shift();
+    this.lastServerSeq = commit.serverSeq;
+
+    for (const [path, runtimeValue] of this.values) {
+      runtimeValue.restore(nextOptimisticValues.get(path)!);
+    }
+
+    if (changed) {
+      this.emitChange(Object.freeze({ origin: "server", commit }));
+    }
+  }
+
   private commit(): void {
     if (this.operations.length === 0) return;
 
@@ -203,12 +282,24 @@ export class ClientDocument<S extends SchemaShape> {
       operations,
     });
 
+    this.pendingBatches.push(batch);
     this.onBatch(batch);
+    this.emitChange(Object.freeze({ origin: "local", batch }));
+  }
 
-    const event: ChangeEvent<DocumentOperation<S>> = Object.freeze({
-      origin: "local",
-      batch,
-    });
+  private applyOperations(
+    values: Map<string, JsonValue>,
+    operations: readonly DocumentOperation<S>[]
+  ): void {
+    for (const operation of operations) {
+      if (!values.has(operation.path)) {
+        throw new Error(`Unknown document path: ${operation.path}`);
+      }
+      values.set(operation.path, operation.value);
+    }
+  }
+
+  private emitChange(event: ChangeEvent<DocumentOperation<S>>): void {
     for (const listener of [...this.listeners]) listener(event);
   }
 

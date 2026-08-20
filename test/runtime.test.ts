@@ -5,8 +5,10 @@ import {
   createClient,
   defineDocument,
   value,
+  type ChangeEvent,
   type ClientBatch,
   type DocumentOperation,
+  type ServerCommit,
 } from "../src/index.ts";
 
 const Counter = defineDocument({
@@ -14,6 +16,7 @@ const Counter = defineDocument({
 });
 
 type CounterOperation = DocumentOperation<typeof Counter.definition>;
+type CounterCommit = ServerCommit<CounterOperation>;
 
 function setup() {
   const batches: ClientBatch<CounterOperation>[] = [];
@@ -96,6 +99,25 @@ describe("client runtime", () => {
     assert.equal(changes, 1);
   });
 
+  it("sends reentrant listener mutations in batch order", () => {
+    const { batches, doc } = setup();
+    let mutateAgain = true;
+    doc.on("change", (event) => {
+      if (event.origin === "local" && mutateAgain) {
+        mutateAgain = false;
+        doc.state.count.value = 2;
+      }
+    });
+
+    doc.state.count.value = 1;
+
+    assert.equal(doc.state.count.value, 2);
+    assert.deepEqual(
+      batches.map((batch) => batch.seq),
+      [1, 2]
+    );
+  });
+
   it("rolls back a failed transaction without emitting", () => {
     const { batches, doc } = setup();
     let changes = 0;
@@ -111,6 +133,165 @@ describe("client runtime", () => {
     assert.equal(doc.state.count.value, 0);
     assert.deepEqual(batches, []);
     assert.equal(changes, 0);
+  });
+
+  it("rejects server commits during a transaction", () => {
+    const { batches, doc } = setup();
+
+    assert.throws(() => {
+      doc.transact(() => {
+        doc.state.count.value = 1;
+        doc.receive({
+          serverSeq: 1,
+          source: { clientId: "client-2", seq: 1 },
+          operations: [{ type: "value/set", path: "count", value: 9 }],
+        });
+      });
+    }, /Cannot receive a server commit during a transaction/);
+
+    assert.equal(doc.state.count.value, 0);
+    assert.deepEqual(batches, []);
+
+    doc.receive({
+      serverSeq: 1,
+      source: { clientId: "client-2", seq: 1 },
+      operations: [{ type: "value/set", path: "count", value: 9 }],
+    });
+    assert.equal(doc.state.count.value, 9);
+  });
+
+  it("applies a remote server commit", () => {
+    const { doc } = setup();
+    const changes: ChangeEvent<CounterOperation>[] = [];
+    doc.on("change", (event) => changes.push(event));
+
+    const commit: CounterCommit = {
+      serverSeq: 1,
+      source: { clientId: "client-2", seq: 1 },
+      operations: [{ type: "value/set", path: "count", value: 4 }],
+    };
+    doc.receive(commit);
+
+    assert.equal(doc.state.count.value, 4);
+    assert.deepEqual(changes, [{ origin: "server", commit }]);
+  });
+
+  it("replays pending batches until their own commits arrive", () => {
+    const { doc } = setup();
+    const serverChanges: number[] = [];
+    doc.on("change", (event) => {
+      if (event.origin === "server") {
+        serverChanges.push(doc.state.count.value);
+      }
+    });
+
+    doc.state.count.value = 1;
+    doc.state.count.value = 2;
+
+    doc.receive({
+      serverSeq: 1,
+      source: { clientId: "client-2", seq: 1 },
+      operations: [{ type: "value/set", path: "count", value: 9 }],
+    });
+    assert.equal(doc.state.count.value, 2);
+
+    doc.receive({
+      serverSeq: 2,
+      source: { clientId: "client-1", seq: 1 },
+      operations: [{ type: "value/set", path: "count", value: 1 }],
+    });
+    doc.receive({
+      serverSeq: 3,
+      source: { clientId: "client-1", seq: 2 },
+      operations: [{ type: "value/set", path: "count", value: 2 }],
+    });
+
+    assert.equal(doc.state.count.value, 2);
+    assert.deepEqual(serverChanges, []);
+
+    doc.receive({
+      serverSeq: 4,
+      source: { clientId: "client-2", seq: 2 },
+      operations: [{ type: "value/set", path: "count", value: 3 }],
+    });
+
+    assert.equal(doc.state.count.value, 3);
+    assert.deepEqual(serverChanges, [3]);
+  });
+
+  it("rolls back a rejected optimistic batch", () => {
+    const { doc } = setup();
+    const serverChanges: number[] = [];
+    doc.on("change", (event) => {
+      if (event.origin === "server") {
+        serverChanges.push(doc.state.count.value);
+      }
+    });
+
+    doc.state.count.value = 1;
+    doc.receive({
+      serverSeq: 1,
+      source: { clientId: "client-1", seq: 1 },
+      operations: [],
+    });
+
+    assert.equal(doc.state.count.value, 0);
+    assert.deepEqual(serverChanges, [0]);
+  });
+
+  it("uses a transformed server result for an own batch", () => {
+    const { doc } = setup();
+
+    doc.state.count.value = 1;
+    doc.receive({
+      serverSeq: 1,
+      source: { clientId: "client-1", seq: 1 },
+      operations: [{ type: "value/set", path: "count", value: 5 }],
+    });
+
+    assert.equal(doc.state.count.value, 5);
+  });
+
+  it("rejects out-of-order commits without changing reconciliation state", () => {
+    const { doc } = setup();
+
+    assert.throws(
+      () =>
+        doc.receive({
+          serverSeq: 2,
+          source: { clientId: "client-2", seq: 1 },
+          operations: [{ type: "value/set", path: "count", value: 2 }],
+        }),
+      /Expected server sequence 1/
+    );
+    assert.equal(doc.state.count.value, 0);
+
+    doc.state.count.value = 1;
+    assert.throws(
+      () =>
+        doc.receive({
+          serverSeq: 1,
+          source: { clientId: "client-1", seq: 2 },
+          operations: [],
+        }),
+      /does not match the next pending batch/
+    );
+    assert.equal(doc.state.count.value, 1);
+
+    doc.receive({
+      serverSeq: 1,
+      source: { clientId: "client-1", seq: 1 },
+      operations: [{ type: "value/set", path: "count", value: 1 }],
+    });
+    assert.throws(
+      () =>
+        doc.receive({
+          serverSeq: 1,
+          source: { clientId: "client-2", seq: 1 },
+          operations: [],
+        }),
+      /Expected server sequence 2/
+    );
   });
 
   it("rejects an empty client id", () => {
