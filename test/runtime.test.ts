@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   createClient,
+  createServer,
   defineDocument,
   value,
   type ChangeEvent,
@@ -299,5 +300,207 @@ describe("client runtime", () => {
       () => createClient(Counter, { clientId: "", onBatch: () => {} }),
       /clientId must not be empty/
     );
+  });
+});
+
+describe("server runtime", () => {
+  it("orders batches and converges two clients", () => {
+    const server = createServer(Counter);
+    const commits: CounterCommit[] = [];
+    const receivers: Array<(commit: CounterCommit) => void> = [];
+    const commitQueue: CounterCommit[] = [];
+    let broadcasting = false;
+    const send = (batch: ClientBatch<CounterOperation>) => {
+      const commit = server.receive(batch);
+      commits.push(commit);
+      commitQueue.push(commit);
+      if (broadcasting) return;
+
+      broadcasting = true;
+      try {
+        while (commitQueue.length > 0) {
+          const nextCommit = commitQueue.shift()!;
+          for (const receive of receivers) receive(nextCommit);
+        }
+      } finally {
+        broadcasting = false;
+      }
+    };
+
+    const client1 = createClient(Counter, {
+      clientId: "client-1",
+      onBatch: send,
+    });
+    const client2 = createClient(Counter, {
+      clientId: "client-2",
+      onBatch: send,
+    });
+    receivers.push(
+      (commit) => client1.receive(commit),
+      (commit) => client2.receive(commit)
+    );
+
+    client1.state.count.value = 1;
+    client2.transact(() => {
+      client2.state.count.value = 2;
+      client2.state.count.value = 3;
+    });
+
+    assert.equal(client1.state.count.value, 3);
+    assert.equal(client2.state.count.value, 3);
+    assert.deepEqual(
+      commits.map(({ serverSeq, source }) => ({ serverSeq, source })),
+      [
+        { serverSeq: 1, source: { clientId: "client-1", seq: 1 } },
+        { serverSeq: 2, source: { clientId: "client-2", seq: 1 } },
+      ]
+    );
+  });
+
+  it("finishes broadcasting a commit before a listener creates the next one", () => {
+    const server = createServer(Counter);
+    const receivers: Array<(commit: CounterCommit) => void> = [];
+    const commitQueue: CounterCommit[] = [];
+    let broadcasting = false;
+    const send = (batch: ClientBatch<CounterOperation>) => {
+      commitQueue.push(server.receive(batch));
+      if (broadcasting) return;
+
+      broadcasting = true;
+      try {
+        while (commitQueue.length > 0) {
+          const commit = commitQueue.shift()!;
+          for (const receive of receivers) receive(commit);
+        }
+      } finally {
+        broadcasting = false;
+      }
+    };
+
+    const client1 = createClient(Counter, {
+      clientId: "client-1",
+      onBatch: send,
+    });
+    const client2 = createClient(Counter, {
+      clientId: "client-2",
+      onBatch: send,
+    });
+    receivers.push(
+      (commit) => client2.receive(commit),
+      (commit) => client1.receive(commit)
+    );
+
+    let mutateOnce = true;
+    client2.on("change", (event) => {
+      if (event.origin === "server" && mutateOnce) {
+        mutateOnce = false;
+        client2.state.count.value = 2;
+      }
+    });
+
+    client1.state.count.value = 1;
+
+    assert.equal(client1.state.count.value, 2);
+    assert.equal(client2.state.count.value, 2);
+  });
+
+  it("uses server receive order for concurrent optimistic writes", () => {
+    const server = createServer(Counter);
+    const client1Batches: ClientBatch<CounterOperation>[] = [];
+    const client2Batches: ClientBatch<CounterOperation>[] = [];
+    const client1 = createClient(Counter, {
+      clientId: "client-1",
+      onBatch: (batch) => client1Batches.push(batch),
+    });
+    const client2 = createClient(Counter, {
+      clientId: "client-2",
+      onBatch: (batch) => client2Batches.push(batch),
+    });
+
+    client1.state.count.value = 1;
+    client2.state.count.value = 2;
+
+    const client2Commit = server.receive(client2Batches[0]!);
+    client1.receive(client2Commit);
+    client2.receive(client2Commit);
+    assert.equal(client1.state.count.value, 1);
+    assert.equal(client2.state.count.value, 2);
+
+    const client1Commit = server.receive(client1Batches[0]!);
+    client1.receive(client1Commit);
+    client2.receive(client1Commit);
+
+    assert.equal(client1Commit.serverSeq, 2);
+    assert.equal(client1.state.count.value, 1);
+    assert.equal(client2.state.count.value, 1);
+  });
+
+  it("rejects invalid batches without consuming sequence numbers", () => {
+    const server = createServer(Counter);
+
+    assert.throws(
+      () =>
+        server.receive({
+          clientId: "client-1",
+          seq: 2,
+          operations: [{ type: "value/set", path: "count", value: 2 }],
+        }),
+      /Expected client sequence 1/
+    );
+
+    const firstCommit = server.receive({
+      clientId: "client-1",
+      seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 1 }],
+    });
+    assert.equal(firstCommit.serverSeq, 1);
+
+    assert.throws(
+      () =>
+        server.receive({
+          clientId: "client-1",
+          seq: 1,
+          operations: [{ type: "value/set", path: "count", value: 2 }],
+        }),
+      /Expected client sequence 2/
+    );
+
+    const unknownPathBatch = {
+      clientId: "client-2",
+      seq: 1,
+      operations: [{ type: "value/set", path: "missing", value: 2 }],
+    } as unknown as ClientBatch<CounterOperation>;
+    assert.throws(
+      () => server.receive(unknownPathBatch),
+      /Unknown document path: missing/
+    );
+
+    const secondCommit = server.receive({
+      clientId: "client-2",
+      seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 2 }],
+    });
+    assert.equal(secondCommit.serverSeq, 2);
+  });
+
+  it("owns an immutable snapshot of accepted operations", () => {
+    const server = createServer(Counter);
+    const operations = [
+      { type: "value/set" as const, path: "count" as const, value: 1 },
+    ];
+
+    const commit = server.receive({
+      clientId: "client-1",
+      seq: 1,
+      operations,
+    });
+    operations[0]!.value = 9;
+    operations.push({ type: "value/set", path: "count", value: 10 });
+
+    assert.deepEqual(commit.operations, [
+      { type: "value/set", path: "count", value: 1 },
+    ]);
+    assert.ok(Object.isFrozen(commit.operations));
+    assert.ok(Object.isFrozen(commit.operations[0]));
   });
 });

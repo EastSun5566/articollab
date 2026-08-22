@@ -12,6 +12,8 @@ export {
 export {
   ClientDocument,
   createClient,
+  createServer,
+  ServerDocument,
   type ChangeEvent,
   type ClientBatch,
   type ClientBatchRef,

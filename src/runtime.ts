@@ -95,6 +95,18 @@ class RuntimeValue<T extends JsonValue> implements Value<T> {
   }
 }
 
+function applyOperations(
+  values: Map<string, JsonValue>,
+  operations: readonly Operation[]
+): void {
+  for (const operation of operations) {
+    if (!values.has(operation.path)) {
+      throw new Error(`Unknown document path: ${operation.path}`);
+    }
+    values.set(operation.path, operation.value);
+  }
+}
+
 export type DocumentState<S extends SchemaShape> = Readonly<{
   [K in keyof S]: Value<ValueType<S[K]>>;
 }>;
@@ -238,14 +250,14 @@ export class ClientDocument<S extends SchemaShape> {
     }
 
     const nextAuthoritativeValues = new Map(this.authoritativeValues);
-    this.applyOperations(nextAuthoritativeValues, commit.operations);
+    applyOperations(nextAuthoritativeValues, commit.operations);
 
     const remainingBatches = isOwnCommit
       ? this.pendingBatches.slice(1)
       : this.pendingBatches;
     const nextOptimisticValues = new Map(nextAuthoritativeValues);
     for (const pending of remainingBatches) {
-      this.applyOperations(nextOptimisticValues, pending.operations);
+      applyOperations(nextOptimisticValues, pending.operations);
     }
 
     let changed = false;
@@ -287,18 +299,6 @@ export class ClientDocument<S extends SchemaShape> {
     this.emitChange(Object.freeze({ origin: "local", batch }));
   }
 
-  private applyOperations(
-    values: Map<string, JsonValue>,
-    operations: readonly DocumentOperation<S>[]
-  ): void {
-    for (const operation of operations) {
-      if (!values.has(operation.path)) {
-        throw new Error(`Unknown document path: ${operation.path}`);
-      }
-      values.set(operation.path, operation.value);
-    }
-  }
-
   private emitChange(event: ChangeEvent<DocumentOperation<S>>): void {
     for (const listener of [...this.listeners]) listener(event);
   }
@@ -315,9 +315,59 @@ export class ClientDocument<S extends SchemaShape> {
   }
 }
 
+/** A synchronous authoritative document that orders accepted client batches. */
+export class ServerDocument<S extends SchemaShape> {
+  private authoritativeValues = new Map<string, JsonValue>();
+  private readonly nextClientSeq = new Map<string, number>();
+  private nextServerSeq = 1;
+
+  constructor(schema: DocumentSchema<S>) {
+    for (const path of Object.keys(schema.definition) as Array<
+      Extract<keyof S, string>
+    >) {
+      this.authoritativeValues.set(path, schema.definition[path].initialValue);
+    }
+  }
+
+  /** Accepts the next batch from a client and returns its server commit. */
+  receive(
+    batch: ClientBatch<DocumentOperation<S>>
+  ): ServerCommit<DocumentOperation<S>> {
+    const expectedClientSeq = this.nextClientSeq.get(batch.clientId) ?? 1;
+    if (batch.seq !== expectedClientSeq) {
+      throw new Error(
+        `Expected client sequence ${expectedClientSeq} for ${batch.clientId}, received ${batch.seq}`
+      );
+    }
+
+    const operations = Object.freeze(
+      batch.operations.map((operation) => Object.freeze({ ...operation }))
+    ) as readonly DocumentOperation<S>[];
+    const nextAuthoritativeValues = new Map(this.authoritativeValues);
+    applyOperations(nextAuthoritativeValues, operations);
+
+    const commit: ServerCommit<DocumentOperation<S>> = Object.freeze({
+      serverSeq: this.nextServerSeq,
+      source: Object.freeze({ clientId: batch.clientId, seq: batch.seq }),
+      operations,
+    });
+
+    this.authoritativeValues = nextAuthoritativeValues;
+    this.nextClientSeq.set(batch.clientId, expectedClientSeq + 1);
+    this.nextServerSeq++;
+    return commit;
+  }
+}
+
 export function createClient<S extends SchemaShape>(
   schema: DocumentSchema<S>,
   options: CreateClientOptions<S>
 ): ClientDocument<S> {
   return new ClientDocument(schema, options);
+}
+
+export function createServer<S extends SchemaShape>(
+  schema: DocumentSchema<S>
+): ServerDocument<S> {
+  return new ServerDocument(schema);
 }
