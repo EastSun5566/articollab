@@ -2,6 +2,7 @@ import type {
   DocumentSchema,
   JsonValue,
   SchemaShape,
+  SnapshotType,
   ValueType,
 } from "./schema.ts";
 
@@ -50,9 +51,21 @@ export type ChangeEvent<TOperation extends Operation = Operation> =
   | LocalChangeEvent<TOperation>
   | ServerChangeEvent<TOperation>;
 
+export type DocumentSnapshotData<S extends SchemaShape> = Readonly<{
+  [K in keyof S]: SnapshotType<S[K]>;
+}>;
+
+export interface DocumentSnapshot<
+  S extends SchemaShape = SchemaShape,
+> {
+  readonly serverSeq: number;
+  readonly data: DocumentSnapshotData<S>;
+}
+
 export interface CreateClientOptions<S extends SchemaShape> {
   readonly clientId: string;
   readonly onBatch: (batch: ClientBatch<DocumentOperation<S>>) => void;
+  readonly snapshot?: DocumentSnapshot<S>;
 }
 
 /** An optimistic collaborative value. Values are treated as immutable. */
@@ -107,6 +120,50 @@ function applyOperations(
   }
 }
 
+function initialValues<S extends SchemaShape>(
+  schema: DocumentSchema<S>,
+  snapshot: DocumentSnapshot<S> | undefined
+): Map<string, JsonValue> {
+  if (snapshot === undefined) {
+    return new Map(
+      Object.entries(schema.definition).map(([path, descriptor]) => [
+        path,
+        descriptor.initialValue,
+      ])
+    );
+  }
+
+  if (!Number.isInteger(snapshot.serverSeq) || snapshot.serverSeq < 0) {
+    throw new Error(
+      `Snapshot server sequence must be a non-negative integer: ${snapshot.serverSeq}`
+    );
+  }
+  if (
+    typeof snapshot.data !== "object" ||
+    snapshot.data === null ||
+    Array.isArray(snapshot.data)
+  ) {
+    throw new Error("Snapshot data must be an object");
+  }
+
+  const schemaPaths = Object.keys(schema.definition);
+  const snapshotData = snapshot.data as Readonly<Record<string, JsonValue>>;
+  for (const path of schemaPaths) {
+    if (!Object.hasOwn(snapshotData, path)) {
+      throw new Error(`Missing snapshot path: ${path}`);
+    }
+  }
+
+  const schemaPathSet = new Set(schemaPaths);
+  for (const path of Object.keys(snapshotData)) {
+    if (!schemaPathSet.has(path)) {
+      throw new Error(`Unknown snapshot path: ${path}`);
+    }
+  }
+
+  return new Map(schemaPaths.map((path) => [path, snapshotData[path]!]));
+}
+
 export type DocumentState<S extends SchemaShape> = Readonly<{
   [K in keyof S]: Value<ValueType<S[K]>>;
 }>;
@@ -144,19 +201,24 @@ export class ClientDocument<S extends SchemaShape> {
 
     this.clientId = options.clientId;
     this.onBatch = options.onBatch;
+    const hydratedValues = initialValues(schema, options.snapshot);
+    this.lastServerSeq = options.snapshot?.serverSeq ?? 0;
 
     const state: Partial<Record<keyof S, Value<JsonValue>>> = {};
     for (const path of Object.keys(schema.definition) as Array<
       Extract<keyof S, string>
     >) {
-      const descriptor = schema.definition[path];
+      const initialValue = hydratedValues.get(path);
+      if (initialValue === undefined) {
+        throw new Error(`Missing document path: ${path}`);
+      }
       const runtimeValue = new RuntimeValue(
         (mutationPath, value) => this.setValue(mutationPath, value),
         path,
-        descriptor.initialValue
+        initialValue
       );
       this.values.set(path, runtimeValue);
-      this.authoritativeValues.set(path, descriptor.initialValue);
+      this.authoritativeValues.set(path, initialValue);
       state[path] = runtimeValue;
     }
     this.state = Object.freeze(state) as DocumentState<S>;
@@ -327,6 +389,17 @@ export class ServerDocument<S extends SchemaShape> {
     >) {
       this.authoritativeValues.set(path, schema.definition[path].initialValue);
     }
+  }
+
+  /** Returns the current authoritative state and its server sequence. */
+  snapshot(): DocumentSnapshot<S> {
+    const data = Object.freeze(
+      Object.fromEntries(this.authoritativeValues)
+    ) as DocumentSnapshotData<S>;
+    return Object.freeze({
+      serverSeq: this.nextServerSeq - 1,
+      data,
+    });
   }
 
   /** Accepts the next batch from a client and returns its server commit. */

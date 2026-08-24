@@ -44,3 +44,6 @@ export function defineDocument<const S extends SchemaShape>(
 }
 
 export type ValueType<D> = D extends ValueSchema<infer T> ? T : never;
+
+/** The JSON data saved for one collection descriptor. */
+export type SnapshotType<D> = D extends ValueSchema<infer T> ? T : never;

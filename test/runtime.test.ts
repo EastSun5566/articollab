@@ -9,6 +9,7 @@ import {
   type ChangeEvent,
   type ClientBatch,
   type DocumentOperation,
+  type DocumentSnapshot,
   type ServerCommit,
 } from "../src/index.ts";
 
@@ -502,5 +503,120 @@ describe("server runtime", () => {
     ]);
     assert.ok(Object.isFrozen(commit.operations));
     assert.ok(Object.isFrozen(commit.operations[0]));
+  });
+});
+
+describe("snapshot hydration", () => {
+  it("snapshots fresh server defaults", () => {
+    const server = createServer(Counter);
+
+    const snapshot = server.snapshot();
+
+    assert.deepEqual(snapshot, { serverSeq: 0, data: { count: 0 } });
+    assert.ok(Object.isFrozen(snapshot));
+    assert.ok(Object.isFrozen(snapshot.data));
+  });
+
+  it("hydrates a late client and continues from the snapshot watermark", () => {
+    const server = createServer(Counter);
+    const firstCommit = server.receive({
+      clientId: "client-1",
+      seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 1 }],
+    });
+    const lateBatches: ClientBatch<CounterOperation>[] = [];
+    const lateClient = createClient(Counter, {
+      clientId: "client-2",
+      snapshot: server.snapshot(),
+      onBatch: (batch) => lateBatches.push(batch),
+    });
+
+    assert.equal(lateClient.state.count.value, 1);
+    assert.deepEqual(lateBatches, []);
+    assert.throws(() => lateClient.receive(firstCommit), /Expected server sequence 2/);
+
+    const secondCommit = server.receive({
+      clientId: "client-1",
+      seq: 2,
+      operations: [{ type: "value/set", path: "count", value: 2 }],
+    });
+    lateClient.receive(secondCommit);
+
+    assert.equal(lateClient.state.count.value, 2);
+  });
+
+  it("starts a late client's sequence at one and converges all clients", () => {
+    const server = createServer(Counter);
+    let firstBatch: ClientBatch<CounterOperation> | undefined;
+    const firstClient = createClient(Counter, {
+      clientId: "client-1",
+      onBatch: (batch) => {
+        firstBatch = batch;
+      },
+    });
+    firstClient.state.count.value = 1;
+    const firstCommit = server.receive(firstBatch!);
+    firstClient.receive(firstCommit);
+
+    let lateBatch: ClientBatch<CounterOperation> | undefined;
+    const lateClient = createClient(Counter, {
+      clientId: "client-2",
+      snapshot: server.snapshot(),
+      onBatch: (batch) => {
+        lateBatch = batch;
+      },
+    });
+    lateClient.state.count.value = 2;
+
+    assert.equal(lateBatch?.seq, 1);
+    const secondCommit = server.receive(lateBatch!);
+    firstClient.receive(secondCommit);
+    lateClient.receive(secondCommit);
+
+    assert.equal(secondCommit.serverSeq, 2);
+    assert.equal(firstClient.state.count.value, 2);
+    assert.equal(lateClient.state.count.value, 2);
+  });
+
+  it("keeps snapshots point-in-time and rejects invalid hydration data", () => {
+    const server = createServer(Counter);
+    const snapshot = server.snapshot();
+    server.receive({
+      clientId: "client-1",
+      seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 1 }],
+    });
+
+    assert.deepEqual(snapshot, { serverSeq: 0, data: { count: 0 } });
+
+    const createFrom = (
+      invalidSnapshot: DocumentSnapshot<typeof Counter.definition>
+    ) =>
+      createClient(Counter, {
+        clientId: "client-2",
+        snapshot: invalidSnapshot,
+        onBatch: () => {},
+      });
+
+    assert.throws(
+      () => createFrom({ serverSeq: -1, data: { count: 0 } }),
+      /non-negative integer/
+    );
+    assert.throws(
+      () =>
+        createFrom({
+          serverSeq: 0,
+          data: {} as { readonly count: number },
+        }),
+      /Missing snapshot path: count/
+    );
+    assert.throws(
+      () =>
+        createFrom({
+          serverSeq: 0,
+          data: { count: 0, extra: true },
+        } as unknown as DocumentSnapshot<typeof Counter.definition>),
+      /Unknown snapshot path: extra/
+    );
   });
 });

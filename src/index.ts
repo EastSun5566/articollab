@@ -19,6 +19,8 @@ export {
   type ClientBatchRef,
   type CreateClientOptions,
   type DocumentOperation,
+  type DocumentSnapshot,
+  type DocumentSnapshotData,
   type DocumentState,
   type LocalChangeEvent,
   type Operation,
