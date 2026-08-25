@@ -1,3 +1,5 @@
+import type { ListSnapshotData } from "./list.ts";
+
 export type JsonPrimitive = null | boolean | number | string;
 
 export type JsonValue =
@@ -10,7 +12,16 @@ export interface ValueSchema<T extends JsonValue = JsonValue> {
   readonly initialValue: T;
 }
 
-export type SchemaShape = Record<string, ValueSchema>;
+declare const listValueType: unique symbol;
+
+export interface ListSchema<T extends JsonValue = JsonValue> {
+  readonly kind: "list";
+  readonly [listValueType]?: T;
+}
+
+export type CollectionSchema = ValueSchema | ListSchema;
+
+export type SchemaShape = Record<string, CollectionSchema>;
 
 export class DocumentSchema<S extends SchemaShape> {
   readonly definition: Readonly<S>;
@@ -30,6 +41,11 @@ export function value<T extends JsonValue>(initialValue: T): ValueSchema<T> {
   return Object.freeze({ kind: "value", initialValue });
 }
 
+/** Defines an initially empty list of immutable JSON-compatible values. */
+export function list<T extends JsonValue>(): ListSchema<T> {
+  return Object.freeze({ kind: "list" }) as ListSchema<T>;
+}
+
 /** Defines the fixed schema shared by every copy of a document. */
 export function defineDocument<const S extends SchemaShape>(
   definition: S
@@ -45,5 +61,11 @@ export function defineDocument<const S extends SchemaShape>(
 
 export type ValueType<D> = D extends ValueSchema<infer T> ? T : never;
 
+export type ListType<D> = D extends ListSchema<infer T> ? T : never;
+
 /** The JSON data saved for one collection descriptor. */
-export type SnapshotType<D> = D extends ValueSchema<infer T> ? T : never;
+export type SnapshotType<D> = D extends ValueSchema<infer T>
+  ? T
+  : D extends ListSchema<infer T>
+    ? ListSnapshotData<T>
+    : never;

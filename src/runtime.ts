@@ -1,9 +1,20 @@
+import {
+  freezeListOperation,
+  ListState,
+  RuntimeList,
+  type List,
+  type ListDeleteOperation,
+  type ListInsertOperation,
+  type ListOperation,
+  type ListSnapshotData,
+} from "./list.ts";
 import type {
   DocumentSchema,
   JsonValue,
+  ListSchema,
   SchemaShape,
   SnapshotType,
-  ValueType,
+  ValueSchema,
 } from "./schema.ts";
 
 export interface ValueSetOperation<
@@ -15,10 +26,20 @@ export interface ValueSetOperation<
   readonly value: T;
 }
 
-export type Operation = ValueSetOperation;
+export type Operation =
+  | ValueSetOperation
+  | ListInsertOperation
+  | ListDeleteOperation;
+
+type OperationFor<D, Path extends string> =
+  D extends ValueSchema<infer T extends JsonValue>
+    ? ValueSetOperation<Path, T>
+    : D extends ListSchema<infer T extends JsonValue>
+      ? ListOperation<Path, T>
+      : never;
 
 export type DocumentOperation<S extends SchemaShape> = {
-  [K in Extract<keyof S, string>]: ValueSetOperation<K, ValueType<S[K]>>;
+  [K in Extract<keyof S, string>]: OperationFor<S[K], K>;
 }[Extract<keyof S, string>];
 
 export interface ClientBatchRef {
@@ -78,16 +99,20 @@ export interface Value<T extends JsonValue> {
 class RuntimeValue<T extends JsonValue> implements Value<T> {
   private current: T;
   private readonly path: string;
-  private readonly mutate: (path: string, value: JsonValue) => void;
+  private readonly mutate: (operation: ValueSetOperation<string, T>) => void;
 
   constructor(
-    mutate: (path: string, value: JsonValue) => void,
+    mutate: (operation: ValueSetOperation<string, T>) => void,
     path: string,
     initialValue: T
   ) {
     this.mutate = mutate;
     this.path = path;
     this.current = initialValue;
+  }
+
+  get state(): T {
+    return this.current;
   }
 
   get value(): T {
@@ -100,39 +125,68 @@ class RuntimeValue<T extends JsonValue> implements Value<T> {
 
   set(nextValue: T): void {
     this.current = nextValue;
-    this.mutate(this.path, nextValue);
+    this.mutate(
+      Object.freeze({
+        type: "value/set",
+        path: this.path,
+        value: nextValue,
+      })
+    );
   }
 
   restore(value: T): void {
     this.current = value;
   }
+
+  visibleEquals(value: T): boolean {
+    return Object.is(this.current, value);
+  }
+}
+
+type CollectionState = JsonValue | ListState<JsonValue>;
+type RuntimeCollection = RuntimeValue<JsonValue> | RuntimeList<JsonValue>;
+
+function wrongCollectionKind(path: string): Error {
+  return new Error(`Operation type does not match document path: ${path}`);
 }
 
 function applyOperations(
-  values: Map<string, JsonValue>,
+  states: Map<string, CollectionState>,
   operations: readonly Operation[]
 ): void {
   for (const operation of operations) {
-    if (!values.has(operation.path)) {
+    if (!states.has(operation.path)) {
       throw new Error(`Unknown document path: ${operation.path}`);
     }
-    values.set(operation.path, operation.value);
+    const current = states.get(operation.path)!;
+
+    switch (operation.type) {
+      case "value/set":
+        if (current instanceof ListState) {
+          throw wrongCollectionKind(operation.path);
+        }
+        states.set(operation.path, operation.value);
+        break;
+      case "list/insert":
+        if (!(current instanceof ListState)) {
+          throw wrongCollectionKind(operation.path);
+        }
+        states.set(operation.path, current.insert(operation));
+        break;
+      case "list/delete":
+        if (!(current instanceof ListState)) {
+          throw wrongCollectionKind(operation.path);
+        }
+        states.set(operation.path, current.delete(operation));
+        break;
+    }
   }
 }
 
-function initialValues<S extends SchemaShape>(
+function validateSnapshot<S extends SchemaShape>(
   schema: DocumentSchema<S>,
-  snapshot: DocumentSnapshot<S> | undefined
-): Map<string, JsonValue> {
-  if (snapshot === undefined) {
-    return new Map(
-      Object.entries(schema.definition).map(([path, descriptor]) => [
-        path,
-        descriptor.initialValue,
-      ])
-    );
-  }
-
+  snapshot: DocumentSnapshot<S>
+): Readonly<Record<string, unknown>> {
   if (!Number.isInteger(snapshot.serverSeq) || snapshot.serverSeq < 0) {
     throw new Error(
       `Snapshot server sequence must be a non-negative integer: ${snapshot.serverSeq}`
@@ -147,7 +201,7 @@ function initialValues<S extends SchemaShape>(
   }
 
   const schemaPaths = Object.keys(schema.definition);
-  const snapshotData = snapshot.data as Readonly<Record<string, JsonValue>>;
+  const snapshotData = snapshot.data as Readonly<Record<string, unknown>>;
   for (const path of schemaPaths) {
     if (!Object.hasOwn(snapshotData, path)) {
       throw new Error(`Missing snapshot path: ${path}`);
@@ -160,39 +214,111 @@ function initialValues<S extends SchemaShape>(
       throw new Error(`Unknown snapshot path: ${path}`);
     }
   }
-
-  return new Map(schemaPaths.map((path) => [path, snapshotData[path]!]));
+  return snapshotData;
 }
 
+function initialStates<S extends SchemaShape>(
+  schema: DocumentSchema<S>,
+  snapshot: DocumentSnapshot<S> | undefined
+): Map<string, CollectionState> {
+  const snapshotData =
+    snapshot === undefined ? undefined : validateSnapshot(schema, snapshot);
+  const states = new Map<string, CollectionState>();
+
+  for (const path of Object.keys(schema.definition) as Array<
+    Extract<keyof S, string>
+  >) {
+    const descriptor = schema.definition[path];
+    if (descriptor.kind === "value") {
+      const value =
+        snapshotData === undefined
+          ? descriptor.initialValue
+          : snapshotData[path];
+      if (value === undefined) {
+        throw new Error(`Missing document path: ${path}`);
+      }
+      states.set(path, value as JsonValue);
+    } else {
+      states.set(
+        path,
+        snapshotData === undefined
+          ? ListState.empty()
+          : ListState.load(snapshotData[path] as ListSnapshotData<JsonValue>)
+      );
+    }
+  }
+  return states;
+}
+
+function runtimeState(runtime: RuntimeCollection): CollectionState {
+  return runtime.state;
+}
+
+function runtimeVisibleEquals(
+  runtime: RuntimeCollection,
+  state: CollectionState,
+  path: string
+): boolean {
+  if (runtime instanceof RuntimeList) {
+    if (!(state instanceof ListState)) throw wrongCollectionKind(path);
+    return runtime.visibleEquals(state);
+  }
+  if (state instanceof ListState) throw wrongCollectionKind(path);
+  return runtime.visibleEquals(state);
+}
+
+function restoreRuntime(
+  runtime: RuntimeCollection,
+  state: CollectionState,
+  path: string
+): void {
+  if (runtime instanceof RuntimeList) {
+    if (!(state instanceof ListState)) throw wrongCollectionKind(path);
+    runtime.restore(state);
+  } else {
+    if (state instanceof ListState) throw wrongCollectionKind(path);
+    runtime.restore(state);
+  }
+}
+
+function freezeOperation(operation: Operation): Operation {
+  if (operation.type === "value/set") {
+    return Object.freeze({ ...operation });
+  }
+  return freezeListOperation(operation);
+}
+
+type DocumentCollection<D> =
+  D extends ValueSchema<infer T extends JsonValue>
+    ? Value<T>
+    : D extends ListSchema<infer T extends JsonValue>
+      ? List<T>
+      : never;
+
 export type DocumentState<S extends SchemaShape> = Readonly<{
-  [K in keyof S]: Value<ValueType<S[K]>>;
+  [K in keyof S]: DocumentCollection<S[K]>;
 }>;
 
 type ChangeListener<S extends SchemaShape> = (
   event: ChangeEvent<DocumentOperation<S>>
 ) => void;
 
-/**
- * A client-side optimistic document.
- *
- * Local batches are applied optimistically, then reconciled with authoritative
- * server commits in server sequence order.
- */
+/** A client-side optimistic document with server reconciliation. */
 export class ClientDocument<S extends SchemaShape> {
   readonly state: DocumentState<S>;
 
   private readonly clientId: string;
   private readonly onBatch: CreateClientOptions<S>["onBatch"];
   private readonly listeners = new Set<ChangeListener<S>>();
-  private readonly values = new Map<string, RuntimeValue<JsonValue>>();
-  private authoritativeValues = new Map<string, JsonValue>();
+  private readonly collections = new Map<string, RuntimeCollection>();
+  private authoritativeStates = new Map<string, CollectionState>();
   private readonly pendingBatches: ClientBatch<DocumentOperation<S>>[] = [];
 
   private nextSeq = 1;
   private lastServerSeq = 0;
   private transactionDepth = 0;
   private operations: Operation[] = [];
-  private transactionSnapshot: Map<string, JsonValue> | undefined;
+  private transactionSnapshot: Map<string, CollectionState> | undefined;
 
   constructor(schema: DocumentSchema<S>, options: CreateClientOptions<S>) {
     if (options.clientId.length === 0) {
@@ -201,40 +327,50 @@ export class ClientDocument<S extends SchemaShape> {
 
     this.clientId = options.clientId;
     this.onBatch = options.onBatch;
-    const hydratedValues = initialValues(schema, options.snapshot);
+    const states = initialStates(schema, options.snapshot);
     this.lastServerSeq = options.snapshot?.serverSeq ?? 0;
 
-    const state: Partial<Record<keyof S, Value<JsonValue>>> = {};
+    const publicState: Partial<
+      Record<keyof S, Value<JsonValue> | List<JsonValue>>
+    > = {};
     for (const path of Object.keys(schema.definition) as Array<
       Extract<keyof S, string>
     >) {
-      const initialValue = hydratedValues.get(path);
-      if (initialValue === undefined) {
+      const descriptor = schema.definition[path];
+      const collectionState = states.get(path);
+      if (collectionState === undefined) {
         throw new Error(`Missing document path: ${path}`);
       }
-      const runtimeValue = new RuntimeValue(
-        (mutationPath, value) => this.setValue(mutationPath, value),
-        path,
-        initialValue
-      );
-      this.values.set(path, runtimeValue);
-      this.authoritativeValues.set(path, initialValue);
-      state[path] = runtimeValue;
+
+      let runtime: RuntimeCollection;
+      if (descriptor.kind === "value") {
+        if (collectionState instanceof ListState) throw wrongCollectionKind(path);
+        runtime = new RuntimeValue(
+          (operation) => this.mutate(operation),
+          path,
+          collectionState
+        );
+      } else {
+        if (!(collectionState instanceof ListState)) {
+          throw wrongCollectionKind(path);
+        }
+        runtime = new RuntimeList(
+          (operation) => this.mutate(operation),
+          this.clientId,
+          path,
+          collectionState
+        );
+      }
+      this.collections.set(path, runtime);
+      this.authoritativeStates.set(path, collectionState);
+      publicState[path] = runtime;
     }
-    this.state = Object.freeze(state) as DocumentState<S>;
+    this.state = Object.freeze(publicState) as DocumentState<S>;
   }
 
-  private setValue(path: string, value: JsonValue): void {
-    const operation: Operation = Object.freeze({
-      type: "value/set",
-      path,
-      value,
-    });
+  private mutate(operation: Operation): void {
     this.operations.push(operation);
-
-    if (this.transactionDepth === 0) {
-      this.commit();
-    }
+    if (this.transactionDepth === 0) this.commit();
   }
 
   /** Groups all synchronous mutations in callback into one client batch. */
@@ -250,9 +386,9 @@ export class ClientDocument<S extends SchemaShape> {
     const isOuterTransaction = this.transactionDepth === 0;
     if (isOuterTransaction) {
       this.transactionSnapshot = new Map(
-        [...this.values].map(([path, runtimeValue]) => [
+        [...this.collections].map(([path, runtime]) => [
           path,
-          runtimeValue.value,
+          runtimeState(runtime),
         ])
       );
     }
@@ -263,9 +399,7 @@ export class ClientDocument<S extends SchemaShape> {
       result = callback();
     } catch (error) {
       this.transactionDepth--;
-      if (isOuterTransaction) {
-        this.rollbackTransaction();
-      }
+      if (isOuterTransaction) this.rollbackTransaction();
       throw error;
     }
 
@@ -311,32 +445,32 @@ export class ClientDocument<S extends SchemaShape> {
       }
     }
 
-    const nextAuthoritativeValues = new Map(this.authoritativeValues);
-    applyOperations(nextAuthoritativeValues, commit.operations);
+    const nextAuthoritativeStates = new Map(this.authoritativeStates);
+    applyOperations(nextAuthoritativeStates, commit.operations);
 
     const remainingBatches = isOwnCommit
       ? this.pendingBatches.slice(1)
       : this.pendingBatches;
-    const nextOptimisticValues = new Map(nextAuthoritativeValues);
+    const nextOptimisticStates = new Map(nextAuthoritativeStates);
     for (const pending of remainingBatches) {
-      applyOperations(nextOptimisticValues, pending.operations);
+      applyOperations(nextOptimisticStates, pending.operations);
     }
 
     let changed = false;
-    for (const [path, runtimeValue] of this.values) {
-      const nextValue = nextOptimisticValues.get(path);
-      if (nextValue === undefined && !nextOptimisticValues.has(path)) {
+    for (const [path, runtime] of this.collections) {
+      const nextState = nextOptimisticStates.get(path);
+      if (nextState === undefined) {
         throw new Error(`Missing document path: ${path}`);
       }
-      if (!Object.is(runtimeValue.value, nextValue)) changed = true;
+      if (!runtimeVisibleEquals(runtime, nextState, path)) changed = true;
     }
 
-    this.authoritativeValues = nextAuthoritativeValues;
+    this.authoritativeStates = nextAuthoritativeStates;
     if (isOwnCommit) this.pendingBatches.shift();
     this.lastServerSeq = commit.serverSeq;
 
-    for (const [path, runtimeValue] of this.values) {
-      runtimeValue.restore(nextOptimisticValues.get(path)!);
+    for (const [path, runtime] of this.collections) {
+      restoreRuntime(runtime, nextOptimisticStates.get(path)!, path);
     }
 
     if (changed) {
@@ -371,30 +505,32 @@ export class ClientDocument<S extends SchemaShape> {
     this.operations = [];
 
     if (snapshot === undefined) return;
-    for (const [path, value] of snapshot) {
-      this.values.get(path)?.restore(value);
+    for (const [path, state] of snapshot) {
+      const runtime = this.collections.get(path);
+      if (runtime !== undefined) restoreRuntime(runtime, state, path);
     }
   }
 }
 
 /** A synchronous authoritative document that orders accepted client batches. */
 export class ServerDocument<S extends SchemaShape> {
-  private authoritativeValues = new Map<string, JsonValue>();
+  private authoritativeStates: Map<string, CollectionState>;
   private readonly nextClientSeq = new Map<string, number>();
   private nextServerSeq = 1;
 
   constructor(schema: DocumentSchema<S>) {
-    for (const path of Object.keys(schema.definition) as Array<
-      Extract<keyof S, string>
-    >) {
-      this.authoritativeValues.set(path, schema.definition[path].initialValue);
-    }
+    this.authoritativeStates = initialStates(schema, undefined);
   }
 
   /** Returns the current authoritative state and its server sequence. */
   snapshot(): DocumentSnapshot<S> {
     const data = Object.freeze(
-      Object.fromEntries(this.authoritativeValues)
+      Object.fromEntries(
+        [...this.authoritativeStates].map(([path, state]) => [
+          path,
+          state instanceof ListState ? state.save() : state,
+        ])
+      )
     ) as DocumentSnapshotData<S>;
     return Object.freeze({
       serverSeq: this.nextServerSeq - 1,
@@ -414,10 +550,10 @@ export class ServerDocument<S extends SchemaShape> {
     }
 
     const operations = Object.freeze(
-      batch.operations.map((operation) => Object.freeze({ ...operation }))
+      batch.operations.map(freezeOperation)
     ) as readonly DocumentOperation<S>[];
-    const nextAuthoritativeValues = new Map(this.authoritativeValues);
-    applyOperations(nextAuthoritativeValues, operations);
+    const nextAuthoritativeStates = new Map(this.authoritativeStates);
+    applyOperations(nextAuthoritativeStates, operations);
 
     const commit: ServerCommit<DocumentOperation<S>> = Object.freeze({
       serverSeq: this.nextServerSeq,
@@ -425,7 +561,7 @@ export class ServerDocument<S extends SchemaShape> {
       operations,
     });
 
-    this.authoritativeValues = nextAuthoritativeValues;
+    this.authoritativeStates = nextAuthoritativeStates;
     this.nextClientSeq.set(batch.clientId, expectedClientSeq + 1);
     this.nextServerSeq++;
     return commit;

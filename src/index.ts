@@ -1,13 +1,26 @@
 export {
   defineDocument,
   DocumentSchema,
+  list,
   value,
+  type CollectionSchema,
   type JsonPrimitive,
   type JsonValue,
+  type ListSchema,
+  type ListType,
   type SchemaShape,
   type ValueSchema,
   type ValueType,
 } from "./schema.ts";
+
+export {
+  type List,
+  type ListDeleteOperation,
+  type ListInsertOperation,
+  type ListOperation,
+  type ListSnapshotData,
+  type SavedIdRange,
+} from "./list.ts";
 
 export {
   ClientDocument,

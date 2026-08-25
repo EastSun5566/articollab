@@ -2,18 +2,19 @@
 
 Articula is a small TypeScript library for building server-authoritative collaborative collections on top of [articulated](https://github.com/mweidner037/articulated).
 
-The project is intentionally early and minimal. It provides a typed document schema, optimistic values, explicit transactions, client-side reconciliation, snapshot hydration, and a synchronous authoritative server runtime. Lists, text, and production transports are planned next.
+The project is intentionally early and minimal. It provides a typed document schema, optimistic values and lists, explicit transactions, client-side reconciliation, snapshot hydration, and a synchronous authoritative server runtime. Text and production transports are planned next.
 
 ## Example
 
 ```ts
-import { createClient, createServer, defineDocument, value } from "articula";
+import { createClient, createServer, defineDocument, list, value } from "articula";
 
-const Counter = defineDocument({
+const Board = defineDocument({
   count: value(0),
+  items: list<string>(),
 });
 
-const server = createServer(Counter);
+const server = createServer(Board);
 const clients = new Set();
 const commitQueue = [];
 let broadcasting = false;
@@ -34,7 +35,7 @@ function send(batch) {
 }
 
 function connect(clientId) {
-  const doc = createClient(Counter, {
+  const doc = createClient(Board, {
     clientId,
     snapshot: server.snapshot(),
     onBatch: send,
@@ -46,10 +47,12 @@ function connect(clientId) {
 const doc = connect(crypto.randomUUID());
 
 doc.state.count.value = 1;
+doc.state.items.push("Write tests");
 
 doc.transact(() => {
   doc.state.count.value = 2;
   doc.state.count.value = 3;
+  doc.state.items.insert(0, "Design API");
 });
 
 const unsubscribe = doc.on("change", (event) => {
@@ -58,9 +61,10 @@ const unsubscribe = doc.on("change", (event) => {
 
 const lateDoc = connect(crypto.randomUUID());
 console.log(lateDoc.state.count.value); // 3
+console.log(lateDoc.state.items.toArray()); // ["Design API", "Write tests"]
 ```
 
-Values must be JSON-compatible and are treated as immutable. Each mutation outside a transaction creates one client batch. A transaction groups all of its synchronous mutations into one batch and emits one change event.
+Values and list elements must be JSON-compatible and are treated as immutable. Lists support single-element `insert`, `push`, and `delete`, plus array-like reads and iteration. Their wire operations use articulated stable IDs instead of mutable indexes, so pending insertions can still reference an element after it becomes a tombstone. Each mutation outside a transaction creates one client batch. A transaction groups all of its synchronous mutations into one batch and emits one change event.
 
 The client keeps local batches pending until their matching server commits arrive. On each commit, it updates its authoritative state, removes the acknowledged local batch when applicable, then replays the remaining pending batches. A commit with no operations rolls back the matching optimistic batch. Commits must arrive exactly once, starting at `serverSeq: 1`, and `receive()` must not be called inside `transact()`.
 
@@ -87,6 +91,7 @@ Implemented:
 
 - Typed fixed document schemas
 - JSON-compatible `Value<T>` collections
+- Articulated-backed `List<T>` collections
 - Optimistic local mutations
 - Explicit transaction batching
 - Document-level change subscriptions
@@ -100,5 +105,5 @@ Implemented:
 Not implemented yet:
 
 - Server policies, transports, reconnects, or server restore
-- `List<T>` and `Text` backed by articulated stable IDs
+- Bulk list operations, move, public stable positions, cursors, or `Text`
 - Persistence, presence, or undo history
