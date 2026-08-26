@@ -31,6 +31,7 @@ export {
   type ClientBatch,
   type ClientBatchRef,
   type CreateClientOptions,
+  type CreateServerOptions,
   type DocumentOperation,
   type DocumentSnapshot,
   type DocumentSnapshotData,
@@ -39,6 +40,8 @@ export {
   type Operation,
   type ServerChangeEvent,
   type ServerCommit,
+  type ServerResolveContext,
+  type ServerResolver,
   type Value,
   type ValueSetOperation,
 } from "./runtime.ts";

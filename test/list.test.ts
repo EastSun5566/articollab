@@ -311,4 +311,90 @@ describe("list runtime", () => {
     assert.equal(deleteCommit.serverSeq, 3);
     assert.equal(repeatedDelete.serverSeq, 4);
   });
+
+  it("resolves list rejection and mixed transaction transformation end to end", () => {
+    type Decision = "accept" | "reject" | "title-only";
+    let decision: Decision = "accept";
+    const server = createServer(Board, {
+      resolve: ({ batch, snapshot }) => {
+        const itemCount: number = snapshot.data.items.values.length;
+        assert.ok(itemCount >= 0);
+        if (decision === "reject") return [];
+        if (decision === "title-only") {
+          return batch.operations.filter(
+            (operation) => operation.type === "value/set"
+          );
+        }
+        return batch.operations;
+      },
+    });
+    const { batches, doc } = setup();
+
+    doc.state.items.push("base");
+    doc.receive(server.receive(batches[0]!));
+    assert.deepEqual(doc.state.items.toArray(), ["base"]);
+
+    decision = "reject";
+    doc.state.items.push("rejected");
+    const rejectedInsert = server.receive(batches[1]!);
+    doc.receive(rejectedInsert);
+    assert.deepEqual(rejectedInsert.operations, []);
+    assert.deepEqual(doc.state.items.toArray(), ["base"]);
+
+    doc.state.items.delete(0);
+    const rejectedDelete = server.receive(batches[2]!);
+    doc.receive(rejectedDelete);
+    assert.deepEqual(rejectedDelete.operations, []);
+    assert.deepEqual(doc.state.items.toArray(), ["base"]);
+
+    decision = "title-only";
+    doc.transact(() => {
+      doc.state.title.value = "Ready";
+      doc.state.items.push("omitted");
+    });
+    const transformed = server.receive(batches[3]!);
+    doc.receive(transformed);
+
+    assert.deepEqual(
+      transformed.operations.map((operation) => operation.type),
+      ["value/set"]
+    );
+    assert.equal(doc.state.title.value, "Ready");
+    assert.deepEqual(doc.state.items.toArray(), ["base"]);
+    assert.equal(server.snapshot().serverSeq, 4);
+  });
+
+  it("validates transformed list operations before consuming sequences", () => {
+    let returnWrongKind = true;
+    const server = createServer(Board, {
+      resolve: ({ batch }) => {
+        if (!returnWrongKind) return batch.operations;
+        return [
+          {
+            type: "list/insert",
+            path: "title",
+            before: null,
+            id: { bunchId: "policy", counter: 0 },
+            value: "invalid",
+          },
+        ] as unknown as readonly BoardOperation[];
+      },
+    });
+    const batch: BoardBatch = {
+      clientId: "client-1",
+      seq: 1,
+      operations: [{ type: "value/set", path: "title", value: "Ready" }],
+    };
+
+    assert.throws(
+      () => server.receive(batch),
+      /does not match document path/
+    );
+    assert.equal(server.snapshot().serverSeq, 0);
+
+    returnWrongKind = false;
+    const commit = server.receive(batch);
+    assert.equal(commit.serverSeq, 1);
+    assert.equal(server.snapshot().data.title, "Ready");
+  });
 });

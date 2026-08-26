@@ -89,6 +89,19 @@ export interface CreateClientOptions<S extends SchemaShape> {
   readonly snapshot?: DocumentSnapshot<S>;
 }
 
+export interface ServerResolveContext<S extends SchemaShape> {
+  readonly batch: ClientBatch<DocumentOperation<S>>;
+  readonly snapshot: DocumentSnapshot<S>;
+}
+
+export type ServerResolver<S extends SchemaShape> = (
+  context: ServerResolveContext<S>
+) => readonly DocumentOperation<S>[];
+
+export interface CreateServerOptions<S extends SchemaShape> {
+  readonly resolve?: ServerResolver<S>;
+}
+
 /** An optimistic collaborative value. Values are treated as immutable. */
 export interface Value<T extends JsonValue> {
   get value(): T;
@@ -150,6 +163,11 @@ function wrongCollectionKind(path: string): Error {
   return new Error(`Operation type does not match document path: ${path}`);
 }
 
+function unknownOperationType(operation: unknown): Error {
+  const type = (operation as { readonly type?: unknown }).type;
+  return new Error(`Unknown operation type: ${String(type)}`);
+}
+
 function applyOperations(
   states: Map<string, CollectionState>,
   operations: readonly Operation[]
@@ -179,6 +197,8 @@ function applyOperations(
         }
         states.set(operation.path, current.delete(operation));
         break;
+      default:
+        throw unknownOperationType(operation);
     }
   }
 }
@@ -282,10 +302,23 @@ function restoreRuntime(
 }
 
 function freezeOperation(operation: Operation): Operation {
-  if (operation.type === "value/set") {
-    return Object.freeze({ ...operation });
+  switch (operation.type) {
+    case "value/set":
+      return Object.freeze({ ...operation });
+    case "list/insert":
+    case "list/delete":
+      return freezeListOperation(operation);
+    default:
+      throw unknownOperationType(operation);
   }
-  return freezeListOperation(operation);
+}
+
+function freezeOperations<TOperation extends Operation>(
+  operations: readonly TOperation[]
+): readonly TOperation[] {
+  return Object.freeze(
+    operations.map((operation) => freezeOperation(operation) as TOperation)
+  );
 }
 
 type DocumentCollection<D> =
@@ -512,14 +545,20 @@ export class ClientDocument<S extends SchemaShape> {
   }
 }
 
-/** A synchronous authoritative document that orders accepted client batches. */
+/** A synchronous authoritative document that resolves and orders client batches. */
 export class ServerDocument<S extends SchemaShape> {
   private authoritativeStates: Map<string, CollectionState>;
   private readonly nextClientSeq = new Map<string, number>();
+  private readonly resolve: ServerResolver<S> | undefined;
   private nextServerSeq = 1;
+  private receiving = false;
 
-  constructor(schema: DocumentSchema<S>) {
+  constructor(
+    schema: DocumentSchema<S>,
+    options: CreateServerOptions<S> = {}
+  ) {
     this.authoritativeStates = initialStates(schema, undefined);
+    this.resolve = options.resolve;
   }
 
   /** Returns the current authoritative state and its server sequence. */
@@ -538,33 +577,59 @@ export class ServerDocument<S extends SchemaShape> {
     });
   }
 
-  /** Accepts the next batch from a client and returns its server commit. */
+  /** Resolves the next batch from a client and returns its server commit. */
   receive(
     batch: ClientBatch<DocumentOperation<S>>
   ): ServerCommit<DocumentOperation<S>> {
-    const expectedClientSeq = this.nextClientSeq.get(batch.clientId) ?? 1;
-    if (batch.seq !== expectedClientSeq) {
-      throw new Error(
-        `Expected client sequence ${expectedClientSeq} for ${batch.clientId}, received ${batch.seq}`
-      );
+    if (this.receiving) {
+      throw new Error("Cannot call server.receive() reentrantly");
     }
 
-    const operations = Object.freeze(
-      batch.operations.map(freezeOperation)
-    ) as readonly DocumentOperation<S>[];
-    const nextAuthoritativeStates = new Map(this.authoritativeStates);
-    applyOperations(nextAuthoritativeStates, operations);
+    this.receiving = true;
+    try {
+      const expectedClientSeq = this.nextClientSeq.get(batch.clientId) ?? 1;
+      if (batch.seq !== expectedClientSeq) {
+        throw new Error(
+          `Expected client sequence ${expectedClientSeq} for ${batch.clientId}, received ${batch.seq}`
+        );
+      }
 
-    const commit: ServerCommit<DocumentOperation<S>> = Object.freeze({
-      serverSeq: this.nextServerSeq,
-      source: Object.freeze({ clientId: batch.clientId, seq: batch.seq }),
-      operations,
-    });
+      const incomingOperations = freezeOperations(batch.operations);
+      const ownedBatch: ClientBatch<DocumentOperation<S>> = Object.freeze({
+        clientId: batch.clientId,
+        seq: batch.seq,
+        operations: incomingOperations,
+      });
+      const resolvedOperations =
+        this.resolve === undefined
+          ? incomingOperations
+          : this.resolve(
+              Object.freeze({
+                batch: ownedBatch,
+                snapshot: this.snapshot(),
+              })
+            );
+      if (!Array.isArray(resolvedOperations)) {
+        throw new Error("Server resolver must return an array of operations");
+      }
 
-    this.authoritativeStates = nextAuthoritativeStates;
-    this.nextClientSeq.set(batch.clientId, expectedClientSeq + 1);
-    this.nextServerSeq++;
-    return commit;
+      const operations = freezeOperations(resolvedOperations);
+      const nextAuthoritativeStates = new Map(this.authoritativeStates);
+      applyOperations(nextAuthoritativeStates, operations);
+
+      const commit: ServerCommit<DocumentOperation<S>> = Object.freeze({
+        serverSeq: this.nextServerSeq,
+        source: Object.freeze({ clientId: batch.clientId, seq: batch.seq }),
+        operations,
+      });
+
+      this.authoritativeStates = nextAuthoritativeStates;
+      this.nextClientSeq.set(batch.clientId, expectedClientSeq + 1);
+      this.nextServerSeq++;
+      return commit;
+    } finally {
+      this.receiving = false;
+    }
   }
 }
 
@@ -576,7 +641,8 @@ export function createClient<S extends SchemaShape>(
 }
 
 export function createServer<S extends SchemaShape>(
-  schema: DocumentSchema<S>
+  schema: DocumentSchema<S>,
+  options: CreateServerOptions<S> = {}
 ): ServerDocument<S> {
-  return new ServerDocument(schema);
+  return new ServerDocument(schema, options);
 }

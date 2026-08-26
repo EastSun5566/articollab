@@ -10,6 +10,7 @@ import {
   type ClientBatch,
   type DocumentOperation,
   type DocumentSnapshot,
+  type ServerDocument,
   type ServerCommit,
 } from "../src/index.ts";
 
@@ -33,6 +34,11 @@ if (false) {
   const { doc } = setup();
   // @ts-expect-error Transactions must not continue after an await.
   doc.transact(async () => {});
+
+  createServer(Counter, {
+    // @ts-expect-error Server resolvers must return operations synchronously.
+    resolve: async ({ batch }) => batch.operations,
+  });
 }
 
 describe("client runtime", () => {
@@ -296,6 +302,31 @@ describe("client runtime", () => {
     );
   });
 
+  it("rejects unknown operation types without advancing server sequence", () => {
+    const { doc } = setup();
+    const invalidCommit = {
+      serverSeq: 1,
+      source: { clientId: "client-2", seq: 1 },
+      operations: [
+        {
+          type: "bogus",
+          path: "count",
+          id: { bunchId: "invalid", counter: 0 },
+        },
+      ],
+    } as unknown as CounterCommit;
+
+    assert.throws(() => doc.receive(invalidCommit), /Unknown operation type: bogus/);
+    assert.equal(doc.state.count.value, 0);
+
+    doc.receive({
+      serverSeq: 1,
+      source: { clientId: "client-2", seq: 1 },
+      operations: [{ type: "value/set", path: "count", value: 1 }],
+    });
+    assert.equal(doc.state.count.value, 1);
+  });
+
   it("rejects an empty client id", () => {
     assert.throws(
       () => createClient(Counter, { clientId: "", onBatch: () => {} }),
@@ -503,6 +534,169 @@ describe("server runtime", () => {
     ]);
     assert.ok(Object.isFrozen(commit.operations));
     assert.ok(Object.isFrozen(commit.operations[0]));
+  });
+});
+
+describe("server policy", () => {
+  it("resolves from a frozen pre-commit snapshot and owns transformed operations", () => {
+    let transformedOperations: Array<{
+      type: "value/set";
+      path: "count";
+      value: number;
+    }> = [];
+    const server = createServer(Counter, {
+      resolve: (context) => {
+        assert.ok(Object.isFrozen(context));
+        assert.ok(Object.isFrozen(context.batch));
+        assert.ok(Object.isFrozen(context.batch.operations));
+        assert.ok(Object.isFrozen(context.batch.operations[0]));
+        assert.ok(Object.isFrozen(context.snapshot));
+        assert.ok(Object.isFrozen(context.snapshot.data));
+        assert.deepEqual(context.snapshot, {
+          serverSeq: 0,
+          data: { count: 0 },
+        });
+
+        const currentCount: number = context.snapshot.data.count;
+        assert.equal(currentCount, 0);
+        transformedOperations = context.batch.operations.map((operation) => ({
+          ...operation,
+          value: Math.min(operation.value, 5),
+        }));
+        return transformedOperations;
+      },
+    });
+    const batches: ClientBatch<CounterOperation>[] = [];
+    const client1 = createClient(Counter, {
+      clientId: "client-1",
+      onBatch: (batch) => batches.push(batch),
+    });
+    const client2 = createClient(Counter, {
+      clientId: "client-2",
+      onBatch: () => {},
+    });
+
+    client1.state.count.value = 9;
+    const commit = server.receive(batches[0]!);
+    client1.receive(commit);
+    client2.receive(commit);
+
+    transformedOperations[0]!.value = 99;
+    transformedOperations.push({ type: "value/set", path: "count", value: 10 });
+
+    assert.deepEqual(commit.operations, [
+      { type: "value/set", path: "count", value: 5 },
+    ]);
+    assert.ok(Object.isFrozen(commit.operations));
+    assert.ok(Object.isFrozen(commit.operations[0]));
+    assert.equal(client1.state.count.value, 5);
+    assert.equal(client2.state.count.value, 5);
+    assert.deepEqual(server.snapshot(), {
+      serverSeq: 1,
+      data: { count: 5 },
+    });
+  });
+
+  it("uses an empty authoritative operation list to reject a batch", () => {
+    const server = createServer(Counter, { resolve: () => [] });
+    const batches: ClientBatch<CounterOperation>[] = [];
+    const client = createClient(Counter, {
+      clientId: "client-1",
+      onBatch: (batch) => batches.push(batch),
+    });
+
+    client.state.count.value = 1;
+    const commit = server.receive(batches[0]!);
+    client.receive(commit);
+
+    assert.deepEqual(commit, {
+      serverSeq: 1,
+      source: { clientId: "client-1", seq: 1 },
+      operations: [],
+    });
+    assert.equal(client.state.count.value, 0);
+    assert.deepEqual(server.snapshot(), {
+      serverSeq: 1,
+      data: { count: 0 },
+    });
+  });
+
+  it("keeps resolver failures and reentrant receives atomic", () => {
+    type Mode =
+      | "throw"
+      | "non-array"
+      | "invalid-path"
+      | "unknown-type"
+      | "reentrant"
+      | "accept";
+    let mode: Mode = "throw";
+    let server: ServerDocument<typeof Counter.definition>;
+    server = createServer(Counter, {
+      resolve: ({ batch }) => {
+        switch (mode) {
+          case "throw":
+            throw new Error("policy failed");
+          case "non-array":
+            return undefined as unknown as readonly CounterOperation[];
+          case "invalid-path":
+            return [
+              { type: "value/set", path: "missing", value: 9 },
+            ] as unknown as readonly CounterOperation[];
+          case "unknown-type":
+            return [
+              {
+                type: "bogus",
+                path: "count",
+                id: { bunchId: "invalid", counter: 0 },
+              },
+            ] as unknown as readonly CounterOperation[];
+          case "reentrant":
+            server.receive({
+              clientId: "nested",
+              seq: 1,
+              operations: [{ type: "value/set", path: "count", value: 9 }],
+            });
+            return batch.operations;
+          case "accept":
+            return batch.operations;
+        }
+      },
+    });
+    const batch: ClientBatch<CounterOperation> = {
+      clientId: "client-1",
+      seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 1 }],
+    };
+
+    assert.throws(() => server.receive(batch), /policy failed/);
+    assert.deepEqual(server.snapshot(), { serverSeq: 0, data: { count: 0 } });
+
+    mode = "non-array";
+    assert.throws(() => server.receive(batch), /must return an array/);
+    assert.deepEqual(server.snapshot(), { serverSeq: 0, data: { count: 0 } });
+
+    mode = "invalid-path";
+    assert.throws(() => server.receive(batch), /Unknown document path: missing/);
+    assert.deepEqual(server.snapshot(), { serverSeq: 0, data: { count: 0 } });
+
+    mode = "unknown-type";
+    assert.throws(() => server.receive(batch), /Unknown operation type: bogus/);
+    assert.deepEqual(server.snapshot(), { serverSeq: 0, data: { count: 0 } });
+
+    mode = "reentrant";
+    assert.throws(() => server.receive(batch), /reentrantly/);
+    assert.deepEqual(server.snapshot(), { serverSeq: 0, data: { count: 0 } });
+
+    mode = "accept";
+    const firstCommit = server.receive(batch);
+    const secondCommit = server.receive({
+      clientId: "nested",
+      seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 2 }],
+    });
+    assert.equal(firstCommit.serverSeq, 1);
+    assert.equal(secondCommit.serverSeq, 2);
+    assert.deepEqual(server.snapshot(), { serverSeq: 2, data: { count: 2 } });
   });
 });
 

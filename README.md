@@ -2,7 +2,7 @@
 
 Articula is a small TypeScript library for building server-authoritative collaborative collections on top of [articulated](https://github.com/mweidner037/articulated).
 
-The project is intentionally early and minimal. It provides a typed document schema, optimistic values and lists, explicit transactions, client-side reconciliation, snapshot hydration, and a synchronous authoritative server runtime. Text and production transports are planned next.
+The project is intentionally early and minimal. It provides a typed document schema, optimistic values and lists, explicit transactions, client-side reconciliation, snapshot hydration, and a synchronous authoritative server runtime with batch policies. Text and production transports are planned next.
 
 ## Example
 
@@ -14,7 +14,17 @@ const Board = defineDocument({
   items: list<string>(),
 });
 
-const server = createServer(Board);
+const server = createServer(Board, {
+  resolve({ batch, snapshot }) {
+    const insertsItem = batch.operations.some(
+      (operation) => operation.type === "list/insert"
+    );
+    if (insertsItem && snapshot.data.items.values.length >= 100) {
+      return []; // Reject the whole optimistic batch.
+    }
+    return batch.operations;
+  },
+});
 const clients = new Set();
 const commitQueue = [];
 let broadcasting = false;
@@ -68,7 +78,9 @@ Values and list elements must be JSON-compatible and are treated as immutable. L
 
 The client keeps local batches pending until their matching server commits arrive. On each commit, it updates its authoritative state, removes the acknowledged local batch when applicable, then replays the remaining pending batches. A commit with no operations rolls back the matching optimistic batch. Commits must arrive exactly once, starting at `serverSeq: 1`, and `receive()` must not be called inside `transact()`.
 
-The server accepts batches unchanged and assigns their total order synchronously. That order is exactly the order of `server.receive(batch)` calls. Each client's batches must arrive exactly once, starting at `seq: 1`. The caller is responsible for broadcasting each returned commit to every client, including its sender. The example queues commits so a change listener cannot interrupt one broadcast with the next commit.
+The server assigns batches a total order synchronously. That order is exactly the order of `server.receive(batch)` calls. An optional batch-level `resolve` callback receives a frozen owned batch and the authoritative snapshot from immediately before that batch. Returning the original operations accepts it, returning different operations transforms it, and returning an empty array rejects its authoritative effect while still acknowledging the batch. A resolver should be a pure synchronous decision: throwing, returning a non-array, producing an invalid operation, or calling the same server's `receive()` reentrantly aborts without consuming sequence numbers.
+
+Each client's batches must arrive exactly once, starting at `seq: 1`. The caller is responsible for broadcasting each returned commit to every client, including its sender. The example queues commits so a change listener cannot interrupt one broadcast with the next commit.
 
 `server.snapshot()` returns the current authoritative values together with the latest `serverSeq`. A new client using the same `DocumentSchema` can hydrate from that snapshot and then expects the following commit. Snapshots do not include a schema ID or version, and Articula does not provide schema migration. A real transport must obtain the snapshot and subscribe to later commits without leaving a gap; Articula does not retain commit history or manage connected clients. Snapshot containers are frozen, while nested JSON values follow the same immutable-value contract as `Value<T>`.
 
@@ -98,12 +110,12 @@ Implemented:
 - Ordered authoritative server commits
 - Local acknowledgement and pending-operation replay
 - Rejected or server-transformed operations
-- Synchronous accept-only server runtime
+- Synchronous server runtime with batch-level accept, reject, and transform policies
 - Snapshot hydration for new clients
 - Late join from the current authoritative state
 
 Not implemented yet:
 
-- Server policies, transports, reconnects, or server restore
+- Transports, reconnects, or server restore
 - Bulk list operations, move, public stable positions, cursors, or `Text`
 - Persistence, presence, or undo history
