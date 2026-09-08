@@ -2,6 +2,7 @@ export {
   defineDocument,
   DocumentSchema,
   list,
+  text,
   value,
   type CollectionSchema,
   type JsonPrimitive,
@@ -9,6 +10,7 @@ export {
   type ListSchema,
   type ListType,
   type SchemaShape,
+  type TextSchema,
   type ValueSchema,
   type ValueType,
 } from "./schema.ts";
@@ -21,6 +23,15 @@ export {
   type ListSnapshotData,
   type SavedIdRange,
 } from "./list.ts";
+
+export {
+  type Text,
+  type TextDeleteOperation,
+  type TextIdRange,
+  type TextInsertOperation,
+  type TextOperation,
+  type TextSnapshotData,
+} from "./text.ts";
 
 export {
   ClientDocument,

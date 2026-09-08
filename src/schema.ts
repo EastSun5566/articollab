@@ -1,4 +1,5 @@
 import type { ListSnapshotData } from "./list.ts";
+import type { TextSnapshotData } from "./text.ts";
 
 export type JsonPrimitive = null | boolean | number | string;
 
@@ -19,7 +20,11 @@ export interface ListSchema<T extends JsonValue = JsonValue> {
   readonly [listValueType]?: T;
 }
 
-export type CollectionSchema = ValueSchema | ListSchema;
+export interface TextSchema {
+  readonly kind: "text";
+}
+
+export type CollectionSchema = ValueSchema | ListSchema | TextSchema;
 
 export type SchemaShape = Record<string, CollectionSchema>;
 
@@ -46,6 +51,11 @@ export function list<T extends JsonValue>(): ListSchema<T> {
   return Object.freeze({ kind: "list" }) as ListSchema<T>;
 }
 
+/** Defines an initially empty collaborative plain-text string. */
+export function text(): TextSchema {
+  return Object.freeze({ kind: "text" });
+}
+
 /** Defines the fixed schema shared by every copy of a document. */
 export function defineDocument<const S extends SchemaShape>(
   definition: S
@@ -68,4 +78,6 @@ export type SnapshotType<D> = D extends ValueSchema<infer T>
   ? T
   : D extends ListSchema<infer T>
     ? ListSnapshotData<T>
-    : never;
+    : D extends TextSchema
+      ? TextSnapshotData
+      : never;

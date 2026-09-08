@@ -2,16 +2,24 @@
 
 Articula is a small TypeScript library for building server-authoritative collaborative collections on top of [articulated](https://github.com/mweidner037/articulated).
 
-The project is intentionally early and minimal. It provides a typed document schema, optimistic values and lists, explicit transactions, client-side reconciliation, snapshot hydration, and a synchronous authoritative server runtime with batch policies. Text and production transports are planned next.
+The project is intentionally early and minimal. It provides a typed document schema, optimistic values, lists, and plain text, explicit transactions, client-side reconciliation, snapshot hydration, and a synchronous authoritative server runtime with batch policies. Production transports are planned next.
 
 ## Example
 
 ```ts
-import { createClient, createServer, defineDocument, list, value } from "articula";
+import {
+  createClient,
+  createServer,
+  defineDocument,
+  list,
+  text,
+  value,
+} from "articula";
 
 const Board = defineDocument({
   count: value(0),
   items: list<string>(),
+  body: text(),
 });
 
 const server = createServer(Board, {
@@ -58,11 +66,13 @@ const doc = connect(crypto.randomUUID());
 
 doc.state.count.value = 1;
 doc.state.items.push("Write tests");
+doc.state.body.insert(0, "Hello 😀");
 
 doc.transact(() => {
   doc.state.count.value = 2;
   doc.state.count.value = 3;
   doc.state.items.insert(0, "Design API");
+  doc.state.body.delete(5, 1);
 });
 
 const unsubscribe = doc.on("change", (event) => {
@@ -72,13 +82,14 @@ const unsubscribe = doc.on("change", (event) => {
 const lateDoc = connect(crypto.randomUUID());
 console.log(lateDoc.state.count.value); // 3
 console.log(lateDoc.state.items.toArray()); // ["Design API", "Write tests"]
+console.log(lateDoc.state.body.toString()); // "Hello😀"
 ```
 
-Values and list elements must be JSON-compatible and are treated as immutable. Lists support single-element `insert`, `push`, and `delete`, plus array-like reads and iteration. Their wire operations use articulated stable IDs instead of mutable indexes, so pending insertions can still reference an element after it becomes a tombstone. Each mutation outside a transaction creates one client batch. A transaction groups all of its synchronous mutations into one batch and emits one change event.
+Values and list elements must be JSON-compatible and are treated as immutable. Lists support single-element `insert`, `push`, and `delete`, plus array-like reads and iteration. Text supports range `insert` and `delete`, string conversion, and iteration by Unicode code point; indexes therefore do not always match JavaScript's UTF-16 `string.length`. List and text wire operations use articulated stable IDs instead of mutable indexes, so pending insertions can still reference an element after it becomes a tombstone. Text inserts allocate consecutive ID ranges, while deletes compress their targets into consecutive ranges. Each mutation outside a transaction creates one client batch. A transaction groups all of its synchronous mutations into one batch and emits one change event.
 
 The client keeps local batches pending until their matching server commits arrive. On each commit, it updates its authoritative state, removes the acknowledged local batch when applicable, then replays the remaining pending batches. A commit with no operations rolls back the matching optimistic batch. Commits must arrive exactly once, starting at `serverSeq: 1`, and `receive()` must not be called inside `transact()`.
 
-The server assigns batches a total order synchronously. That order is exactly the order of `server.receive(batch)` calls. An optional batch-level `resolve` callback receives a frozen owned batch and the authoritative snapshot from immediately before that batch. Returning the original operations accepts it, returning different operations transforms it, and returning an empty array rejects its authoritative effect while still acknowledging the batch. A resolver should be a pure synchronous decision: throwing, returning a non-array, producing an invalid operation, or calling the same server's `receive()` reentrantly aborts without consuming sequence numbers.
+The server assigns batches a total order synchronously. That order is exactly the order of `server.receive(batch)` calls. An optional batch-level `resolve` callback receives a frozen owned batch and the authoritative snapshot from immediately before that batch. Returning the original operations accepts it, returning different operations transforms it, and returning an empty array rejects its authoritative effect while still acknowledging the batch. A resolver should be a pure synchronous decision: throwing, returning a non-array, producing an invalid operation, or calling the same server's `receive()` reentrantly aborts without consuming sequence numbers. When reusing an incoming text insertion ID, a resolver should preserve its code-point length; a different-length or server-created insertion requires an application-supplied globally unique ID range that cannot collide with client pending IDs.
 
 Each client's batches must arrive exactly once, starting at `seq: 1`. The caller is responsible for broadcasting each returned commit to every client, including its sender. The example queues commits so a change listener cannot interrupt one broadcast with the next commit.
 
@@ -104,6 +115,7 @@ Implemented:
 - Typed fixed document schemas
 - JSON-compatible `Value<T>` collections
 - Articulated-backed `List<T>` collections
+- Articulated-backed Unicode code-point `Text` collections
 - Optimistic local mutations
 - Explicit transaction batching
 - Document-level change subscriptions
@@ -116,6 +128,6 @@ Implemented:
 
 Not implemented yet:
 
-- Transports, reconnects, or server restore
-- Bulk list operations, move, public stable positions, cursors, or `Text`
+- Full runtime wire decoding, transports, reconnects, or server restore
+- Bulk list operations, move, public stable positions, cursors, or rich text
 - Persistence, presence, or undo history

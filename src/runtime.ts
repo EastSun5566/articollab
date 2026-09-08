@@ -8,12 +8,23 @@ import {
   type ListOperation,
   type ListSnapshotData,
 } from "./list.ts";
+import {
+  freezeTextOperation,
+  RuntimeText,
+  TextState,
+  type Text,
+  type TextDeleteOperation,
+  type TextInsertOperation,
+  type TextOperation,
+  type TextSnapshotData,
+} from "./text.ts";
 import type {
   DocumentSchema,
   JsonValue,
   ListSchema,
   SchemaShape,
   SnapshotType,
+  TextSchema,
   ValueSchema,
 } from "./schema.ts";
 
@@ -29,14 +40,18 @@ export interface ValueSetOperation<
 export type Operation =
   | ValueSetOperation
   | ListInsertOperation
-  | ListDeleteOperation;
+  | ListDeleteOperation
+  | TextInsertOperation
+  | TextDeleteOperation;
 
 type OperationFor<D, Path extends string> =
   D extends ValueSchema<infer T extends JsonValue>
     ? ValueSetOperation<Path, T>
     : D extends ListSchema<infer T extends JsonValue>
       ? ListOperation<Path, T>
-      : never;
+      : D extends TextSchema
+        ? TextOperation<Path>
+        : never;
 
 export type DocumentOperation<S extends SchemaShape> = {
   [K in Extract<keyof S, string>]: OperationFor<S[K], K>;
@@ -156,8 +171,11 @@ class RuntimeValue<T extends JsonValue> implements Value<T> {
   }
 }
 
-type CollectionState = JsonValue | ListState<JsonValue>;
-type RuntimeCollection = RuntimeValue<JsonValue> | RuntimeList<JsonValue>;
+type CollectionState = JsonValue | ListState<JsonValue> | TextState;
+type RuntimeCollection =
+  | RuntimeValue<JsonValue>
+  | RuntimeList<JsonValue>
+  | RuntimeText;
 
 function wrongCollectionKind(path: string): Error {
   return new Error(`Operation type does not match document path: ${path}`);
@@ -180,7 +198,7 @@ function applyOperations(
 
     switch (operation.type) {
       case "value/set":
-        if (current instanceof ListState) {
+        if (current instanceof ListState || current instanceof TextState) {
           throw wrongCollectionKind(operation.path);
         }
         states.set(operation.path, operation.value);
@@ -193,6 +211,18 @@ function applyOperations(
         break;
       case "list/delete":
         if (!(current instanceof ListState)) {
+          throw wrongCollectionKind(operation.path);
+        }
+        states.set(operation.path, current.delete(operation));
+        break;
+      case "text/insert":
+        if (!(current instanceof TextState)) {
+          throw wrongCollectionKind(operation.path);
+        }
+        states.set(operation.path, current.insert(operation));
+        break;
+      case "text/delete":
+        if (!(current instanceof TextState)) {
           throw wrongCollectionKind(operation.path);
         }
         states.set(operation.path, current.delete(operation));
@@ -258,12 +288,19 @@ function initialStates<S extends SchemaShape>(
         throw new Error(`Missing document path: ${path}`);
       }
       states.set(path, value as JsonValue);
-    } else {
+    } else if (descriptor.kind === "list") {
       states.set(
         path,
         snapshotData === undefined
           ? ListState.empty()
           : ListState.load(snapshotData[path] as ListSnapshotData<JsonValue>)
+      );
+    } else {
+      states.set(
+        path,
+        snapshotData === undefined
+          ? TextState.empty()
+          : TextState.load(snapshotData[path] as TextSnapshotData)
       );
     }
   }
@@ -283,7 +320,13 @@ function runtimeVisibleEquals(
     if (!(state instanceof ListState)) throw wrongCollectionKind(path);
     return runtime.visibleEquals(state);
   }
-  if (state instanceof ListState) throw wrongCollectionKind(path);
+  if (runtime instanceof RuntimeText) {
+    if (!(state instanceof TextState)) throw wrongCollectionKind(path);
+    return runtime.visibleEquals(state);
+  }
+  if (state instanceof ListState || state instanceof TextState) {
+    throw wrongCollectionKind(path);
+  }
   return runtime.visibleEquals(state);
 }
 
@@ -295,8 +338,13 @@ function restoreRuntime(
   if (runtime instanceof RuntimeList) {
     if (!(state instanceof ListState)) throw wrongCollectionKind(path);
     runtime.restore(state);
+  } else if (runtime instanceof RuntimeText) {
+    if (!(state instanceof TextState)) throw wrongCollectionKind(path);
+    runtime.restore(state);
   } else {
-    if (state instanceof ListState) throw wrongCollectionKind(path);
+    if (state instanceof ListState || state instanceof TextState) {
+      throw wrongCollectionKind(path);
+    }
     runtime.restore(state);
   }
 }
@@ -308,6 +356,9 @@ function freezeOperation(operation: Operation): Operation {
     case "list/insert":
     case "list/delete":
       return freezeListOperation(operation);
+    case "text/insert":
+    case "text/delete":
+      return freezeTextOperation(operation);
     default:
       throw unknownOperationType(operation);
   }
@@ -326,7 +377,9 @@ type DocumentCollection<D> =
     ? Value<T>
     : D extends ListSchema<infer T extends JsonValue>
       ? List<T>
-      : never;
+      : D extends TextSchema
+        ? Text
+        : never;
 
 export type DocumentState<S extends SchemaShape> = Readonly<{
   [K in keyof S]: DocumentCollection<S[K]>;
@@ -364,7 +417,7 @@ export class ClientDocument<S extends SchemaShape> {
     this.lastServerSeq = options.snapshot?.serverSeq ?? 0;
 
     const publicState: Partial<
-      Record<keyof S, Value<JsonValue> | List<JsonValue>>
+      Record<keyof S, Value<JsonValue> | List<JsonValue> | Text>
     > = {};
     for (const path of Object.keys(schema.definition) as Array<
       Extract<keyof S, string>
@@ -377,17 +430,32 @@ export class ClientDocument<S extends SchemaShape> {
 
       let runtime: RuntimeCollection;
       if (descriptor.kind === "value") {
-        if (collectionState instanceof ListState) throw wrongCollectionKind(path);
+        if (
+          collectionState instanceof ListState ||
+          collectionState instanceof TextState
+        ) {
+          throw wrongCollectionKind(path);
+        }
         runtime = new RuntimeValue(
           (operation) => this.mutate(operation),
           path,
           collectionState
         );
-      } else {
+      } else if (descriptor.kind === "list") {
         if (!(collectionState instanceof ListState)) {
           throw wrongCollectionKind(path);
         }
         runtime = new RuntimeList(
+          (operation) => this.mutate(operation),
+          this.clientId,
+          path,
+          collectionState
+        );
+      } else {
+        if (!(collectionState instanceof TextState)) {
+          throw wrongCollectionKind(path);
+        }
+        runtime = new RuntimeText(
           (operation) => this.mutate(operation),
           this.clientId,
           path,
@@ -567,7 +635,9 @@ export class ServerDocument<S extends SchemaShape> {
       Object.fromEntries(
         [...this.authoritativeStates].map(([path, state]) => [
           path,
-          state instanceof ListState ? state.save() : state,
+          state instanceof ListState || state instanceof TextState
+            ? state.save()
+            : state,
         ])
       )
     ) as DocumentSnapshotData<S>;
