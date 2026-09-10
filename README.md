@@ -10,6 +10,9 @@ The project is intentionally early and minimal. It provides a typed document sch
 import {
   createClient,
   createServer,
+  decodeClientBatch,
+  decodeServerCommit,
+  decodeSnapshot,
   defineDocument,
   list,
   text,
@@ -93,6 +96,19 @@ The server assigns batches a total order synchronously. That order is exactly th
 
 Each client's batches must arrive exactly once, starting at `seq: 1`. The caller is responsible for broadcasting each returned commit to every client, including its sender. The example queues commits so a change listener cannot interrupt one broadcast with the next commit.
 
+At a transport boundary, decode parsed JSON before passing it to the typed runtime:
+
+```ts
+const batch = decodeClientBatch(Board, JSON.parse(batchMessage));
+const commit = server.receive(batch);
+
+doc.receive(decodeServerCommit(Board, JSON.parse(commitMessage)));
+
+const snapshot = decodeSnapshot(Board, JSON.parse(snapshotMessage));
+```
+
+The decoders strictly validate wire containers, schema paths, collection kinds, IDs, ranges, and JSON-compatible values. Their outputs are library-owned and deeply frozen. Generic `Value<T>` and `List<T>` payload shapes are only checked as JSON because TypeScript's `T` is unavailable at runtime; application-specific payload validation remains the caller's responsibility and typically belongs in the server resolver for incoming batches. The transport remains responsible for parsing JSON and enforcing message-size or rate limits.
+
 `server.snapshot()` returns the current authoritative values together with the latest `serverSeq`. A new client using the same `DocumentSchema` can hydrate from that snapshot and then expects the following commit. Snapshots do not include a schema ID or version, and Articula does not provide schema migration. A real transport must obtain the snapshot and subscribe to later commits without leaving a gap; Articula does not retain commit history or manage connected clients. Snapshot containers are frozen, while nested JSON values follow the same immutable-value contract as `Value<T>`.
 
 ## Development
@@ -123,11 +139,12 @@ Implemented:
 - Local acknowledgement and pending-operation replay
 - Rejected or server-transformed operations
 - Synchronous server runtime with batch-level accept, reject, and transform policies
+- Strict wire decoding for batches, commits, and snapshots
 - Snapshot hydration for new clients
 - Late join from the current authoritative state
 
 Not implemented yet:
 
-- Full runtime wire decoding, transports, reconnects, or server restore
+- Transports, reconnects, or server restore
 - Bulk list operations, move, public stable positions, cursors, or rich text
 - Persistence, presence, or undo history

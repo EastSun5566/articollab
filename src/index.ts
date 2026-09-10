@@ -56,3 +56,10 @@ export {
   type Value,
   type ValueSetOperation,
 } from "./runtime.ts";
+
+export {
+  decodeClientBatch,
+  decodeServerCommit,
+  decodeSnapshot,
+  WireDecodeError,
+} from "./wire.ts";

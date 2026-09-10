@@ -60,7 +60,10 @@ function requireObject(value: unknown, name: string): object {
   return value;
 }
 
-function idsInRange(start: Readonly<ElementId>, count: number): ElementId[] {
+function* idsInRange(
+  start: Readonly<ElementId>,
+  count: number
+): IterableIterator<ElementId> {
   if (!Number.isSafeInteger(count) || count < 1) {
     throw new Error(
       `Text id range count must be a positive safe integer: ${count}`
@@ -74,10 +77,12 @@ function idsInRange(start: Readonly<ElementId>, count: number): ElementId[] {
     throw new Error(`Invalid text id range start: ${idKey(start)}`);
   }
 
-  return Array.from({ length: count }, (_, offset) => ({
-    bunchId: start.bunchId,
-    counter: start.counter + offset,
-  }));
+  for (let offset = 0; offset < count; offset++) {
+    yield {
+      bunchId: start.bunchId,
+      counter: start.counter + offset,
+    };
+  }
 }
 
 /** Internal persistent state for one Text collection. */
@@ -159,7 +164,7 @@ export class TextState {
     }
 
     const values = [...operation.value];
-    const ids = idsInRange(operation.id, values.length);
+    const ids = [...idsInRange(operation.id, values.length)];
     for (const id of ids) {
       if (this.idList.isKnown(id)) {
         throw new Error(`Duplicate text element id: ${idKey(id)}`);
@@ -183,12 +188,8 @@ export class TextState {
       throw new Error("Text delete ranges must not be empty");
     }
 
-    const ranges = operation.ranges.map((range) => ({
-      range,
-      ids: idsInRange(range.start, range.count),
-    }));
-    for (const { ids } of ranges) {
-      for (const id of ids) {
+    for (const range of operation.ranges) {
+      for (const id of idsInRange(range.start, range.count)) {
         if (!this.idList.isKnown(id)) {
           throw new Error(`Unknown text element id: ${idKey(id)}`);
         }
@@ -197,9 +198,11 @@ export class TextState {
 
     let nextIdList = this.idList;
     const nextValues = new Map(this.valuesById);
-    for (const { range, ids } of ranges) {
+    for (const range of operation.ranges) {
       nextIdList = nextIdList.delete(range.start, range.count);
-      for (const id of ids) nextValues.delete(idKey(id));
+      for (const id of idsInRange(range.start, range.count)) {
+        nextValues.delete(idKey(id));
+      }
     }
     return new TextState(nextIdList, nextValues);
   }
