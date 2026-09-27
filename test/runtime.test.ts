@@ -5,17 +5,23 @@ import {
   createClient,
   createServer,
   defineDocument,
+  list,
   value,
   type ChangeEvent,
   type ClientBatch,
   type DocumentOperation,
   type DocumentSnapshot,
+  type ServerCheckpoint,
   type ServerDocument,
   type ServerCommit,
 } from "../src/index.ts";
 
 const Counter = defineDocument({
   count: value(0),
+});
+
+const Items = defineDocument({
+  items: list<string>(),
 });
 
 type CounterOperation = DocumentOperation<typeof Counter.definition>;
@@ -794,7 +800,7 @@ describe("snapshot hydration", () => {
 
     assert.throws(
       () => createFrom({ serverSeq: -1, data: { count: 0 } }),
-      /non-negative integer/
+      /non-negative safe integer/
     );
     assert.throws(
       () =>
@@ -811,6 +817,180 @@ describe("snapshot hydration", () => {
           data: { count: 0, extra: true },
         } as unknown as DocumentSnapshot<typeof Counter.definition>),
       /Unknown snapshot path: extra/
+    );
+  });
+});
+
+describe("server checkpoint", () => {
+  it("checkpoints fresh state and keeps the result point-in-time", () => {
+    const server = createServer(Counter);
+    const checkpoint = server.checkpoint();
+
+    assert.deepEqual(checkpoint, {
+      snapshot: { serverSeq: 0, data: { count: 0 } },
+      lastClientBatches: [],
+    });
+    assert.ok(Object.isFrozen(checkpoint));
+    assert.ok(Object.isFrozen(checkpoint.snapshot));
+    assert.ok(Object.isFrozen(checkpoint.lastClientBatches));
+
+    server.receive({
+      clientId: "client-1",
+      seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 1 }],
+    });
+    assert.deepEqual(checkpoint, {
+      snapshot: { serverSeq: 0, data: { count: 0 } },
+      lastClientBatches: [],
+    });
+  });
+
+  it("restores global and per-client sequences with a new resolver", () => {
+    const server = createServer(Counter, {
+      resolve: ({ batch }) =>
+        batch.clientId === "client-2" ? [] : batch.operations,
+    });
+    server.receive({
+      clientId: "client-1",
+      seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 1 }],
+    });
+    server.receive({
+      clientId: "client-2",
+      seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 2 }],
+    });
+
+    const checkpoint = server.checkpoint();
+    assert.deepEqual(checkpoint, {
+      snapshot: { serverSeq: 2, data: { count: 1 } },
+      lastClientBatches: [
+        { clientId: "client-1", seq: 1 },
+        { clientId: "client-2", seq: 1 },
+      ],
+    });
+    assert.ok(Object.isFrozen(checkpoint.lastClientBatches[0]));
+
+    const restored = createServer(Counter, {
+      checkpoint,
+      resolve: ({ batch }) =>
+        batch.operations.map((operation) => ({
+          ...operation,
+          value: Math.min(operation.value, 5),
+        })),
+    });
+    assert.deepEqual(restored.snapshot(), checkpoint.snapshot);
+
+    assert.throws(
+      () =>
+        restored.receive({
+          clientId: "client-1",
+          seq: 1,
+          operations: [{ type: "value/set", path: "count", value: 9 }],
+        }),
+      /Expected client sequence 2/
+    );
+    assert.throws(
+      () =>
+        restored.receive({
+          clientId: "client-1",
+          seq: 3,
+          operations: [{ type: "value/set", path: "count", value: 9 }],
+        }),
+      /Expected client sequence 2/
+    );
+
+    const client1Commit = restored.receive({
+      clientId: "client-1",
+      seq: 2,
+      operations: [{ type: "value/set", path: "count", value: 9 }],
+    });
+    const client2Commit = restored.receive({
+      clientId: "client-2",
+      seq: 2,
+      operations: [{ type: "value/set", path: "count", value: 4 }],
+    });
+    const newClientCommit = restored.receive({
+      clientId: "client-3",
+      seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 3 }],
+    });
+
+    assert.equal(client1Commit.serverSeq, 3);
+    assert.deepEqual(client1Commit.operations, [
+      { type: "value/set", path: "count", value: 5 },
+    ]);
+    assert.equal(client2Commit.serverSeq, 4);
+    assert.equal(newClientCommit.serverSeq, 5);
+    assert.deepEqual(restored.snapshot(), {
+      serverSeq: 5,
+      data: { count: 3 },
+    });
+  });
+
+  it("rejects inconsistent restore metadata", () => {
+    const restore = (
+      checkpoint: ServerCheckpoint<typeof Counter.definition>
+    ) => createServer(Counter, { checkpoint });
+
+    assert.throws(
+      () =>
+        restore({
+          snapshot: { serverSeq: 1, data: { count: 0 } },
+          lastClientBatches: [],
+        }),
+      /must sum to serverSeq/
+    );
+    assert.throws(
+      () =>
+        restore({
+          snapshot: { serverSeq: 2, data: { count: 0 } },
+          lastClientBatches: [
+            { clientId: "client-1", seq: 1 },
+            { clientId: "client-1", seq: 1 },
+          ],
+        }),
+      /duplicate clientId/
+    );
+    assert.throws(
+      () =>
+        restore({
+          snapshot: { serverSeq: 0, data: { count: 0 } },
+          lastClientBatches: [{ clientId: "client-1", seq: 0 }],
+        }),
+      /positive safe integer/
+    );
+
+    assert.throws(
+      () =>
+        createServer(Items, {
+          checkpoint: {
+            snapshot: {
+              serverSeq: 1,
+              data: {
+                items: {
+                  idList: [
+                    {
+                      bunchId: "one",
+                      startCounter: 0,
+                      count: 2,
+                      isDeleted: false,
+                    },
+                    {
+                      bunchId: "one",
+                      startCounter: 1,
+                      count: 1,
+                      isDeleted: true,
+                    },
+                  ],
+                  values: ["a", "b"],
+                },
+              },
+            },
+            lastClientBatches: [{ clientId: "client-1", seq: 1 }],
+          },
+        }),
+      /ranges must not overlap/
     );
   });
 });

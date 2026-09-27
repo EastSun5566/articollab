@@ -11,6 +11,7 @@ import {
   createClient,
   createServer,
   decodeClientBatch,
+  decodeServerCheckpoint,
   decodeServerCommit,
   decodeSnapshot,
   defineDocument,
@@ -105,11 +106,19 @@ const commit = server.receive(batch);
 doc.receive(decodeServerCommit(Board, JSON.parse(commitMessage)));
 
 const snapshot = decodeSnapshot(Board, JSON.parse(snapshotMessage));
+
+const checkpoint = decodeServerCheckpoint(
+  Board,
+  JSON.parse(savedCheckpoint)
+);
+const restoredServer = createServer(Board, { checkpoint });
 ```
 
-The decoders strictly validate wire containers, schema paths, collection kinds, IDs, ranges, and JSON-compatible values. Their outputs are library-owned and deeply frozen. Generic `Value<T>` and `List<T>` payload shapes are only checked as JSON because TypeScript's `T` is unavailable at runtime; application-specific payload validation remains the caller's responsibility and typically belongs in the server resolver for incoming batches. The transport remains responsible for parsing JSON and enforcing message-size or rate limits.
+The decoders strictly validate batches, commits, snapshots, server checkpoints, schema paths, collection kinds, IDs, ranges, and JSON-compatible values. Their outputs are library-owned and deeply frozen. Generic `Value<T>` and `List<T>` payload shapes are only checked as JSON because TypeScript's `T` is unavailable at runtime; application-specific payload validation remains the caller's responsibility and typically belongs in the server resolver for incoming batches. The transport remains responsible for parsing JSON and enforcing message-size or rate limits.
 
 `server.snapshot()` returns the current authoritative values together with the latest `serverSeq`. A new client using the same `DocumentSchema` can hydrate from that snapshot and then expects the following commit. Snapshots do not include a schema ID or version, and Articula does not provide schema migration. A real transport must obtain the snapshot and subscribe to later commits without leaving a gap; Articula does not retain commit history or manage connected clients. Snapshot containers are frozen, while nested JSON values follow the same immutable-value contract as `Value<T>`.
+
+`server.checkpoint()` additionally saves the last accepted batch sequence for every known client. Passing that checkpoint to `createServer()` restores the authoritative state and both global and per-client sequence counters. Resolver callbacks are application code and must be supplied again. If checkpoints are persisted, save one before broadcasting its corresponding commit; a failed save must not continue using the advanced in-memory server. Checkpoints do not yet make retries idempotent: a crash after saving but before broadcasting still requires the later retry/deduplication layer.
 
 ## Development
 
@@ -142,9 +151,10 @@ Implemented:
 - Strict wire decoding for batches, commits, and snapshots
 - Snapshot hydration for new clients
 - Late join from the current authoritative state
+- Server checkpoint and restore
 
 Not implemented yet:
 
-- Transports, reconnects, or server restore
+- Transports, retries, deduplication, or reconnects
 - Bulk list operations, move, public stable positions, cursors, or rich text
 - Persistence, presence, or undo history

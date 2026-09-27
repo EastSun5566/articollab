@@ -5,6 +5,7 @@ import {
   createClient,
   createServer,
   decodeClientBatch,
+  decodeServerCheckpoint,
   decodeServerCommit,
   decodeSnapshot,
   defineDocument,
@@ -184,6 +185,63 @@ describe("wire decoding", () => {
     assert.equal(client1.doc.state.body.toString(), "B");
     assert.equal(client2.doc.state.body.toString(), "B");
     assert.equal(lateClient.state.body.toString(), "B");
+  });
+
+  it("round-trips server checkpoints and restores tombstone anchors", () => {
+    const server = createServer(Board);
+    const client1 = setupClient("client-1");
+    const client2 = setupClient("client-2");
+
+    client1.doc.transact(() => {
+      client1.doc.state.items.push({ label: "gone" });
+      client1.doc.state.body.insert(0, "A");
+    });
+    const baseCommit = server.receive(client1.batches[0]!);
+    client1.doc.receive(baseCommit);
+    client2.doc.receive(baseCommit);
+
+    client1.doc.state.body.insert(1, "B");
+    client2.doc.transact(() => {
+      client2.doc.state.items.delete(0);
+      client2.doc.state.body.delete(0);
+    });
+    const deleteCommit = server.receive(client2.batches[0]!);
+    client1.doc.receive(deleteCommit);
+    client2.doc.receive(deleteCommit);
+
+    const input = jsonRoundTrip(server.checkpoint()) as {
+      snapshot: {
+        data: {
+          meta: { nested: { enabled: boolean } };
+        };
+      };
+      lastClientBatches: Array<{ clientId: string }>;
+    };
+    const checkpoint = decodeServerCheckpoint(Board, input);
+    assert.ok(Object.isFrozen(checkpoint));
+    assert.ok(Object.isFrozen(checkpoint.snapshot));
+    assert.ok(Object.isFrozen(checkpoint.lastClientBatches));
+    assert.ok(Object.isFrozen(checkpoint.lastClientBatches[0]));
+    assert.ok(Object.isFrozen(checkpoint.snapshot.data.meta.nested));
+    assert.ok(
+      checkpoint.snapshot.data.items.idList.some((range) => range.isDeleted)
+    );
+    assert.ok(
+      checkpoint.snapshot.data.body.idList.some((range) => range.isDeleted)
+    );
+
+    input.snapshot.data.meta.nested.enabled = true;
+    input.lastClientBatches[0]!.clientId = "changed";
+    assert.equal(checkpoint.snapshot.data.meta.nested.enabled, false);
+    assert.equal(checkpoint.lastClientBatches[0]?.clientId, "client-1");
+
+    const restored = createServer(Board, { checkpoint });
+    const insertCommit = restored.receive(
+      decodeClientBatch(Board, jsonRoundTrip(client1.batches[1]!))
+    );
+    assert.equal(insertCommit.serverSeq, 3);
+    assert.equal(restored.snapshot().data.body.value, "B");
+    assert.deepEqual(restored.snapshot().data.items.values, []);
   });
 
   it("rejects missing, extra, sparse, unknown, and wrong-kind fields", () => {
@@ -624,6 +682,82 @@ describe("wire decoding", () => {
           },
         }),
       "/data/items/idList/1/startCounter"
+    );
+  });
+
+  it("rejects invalid server checkpoint structure and metadata", () => {
+    const snapshot = {
+      serverSeq: 2,
+      data: {
+        meta: { status: "draft", nested: { enabled: false }, tags: [] },
+        items: { idList: [], values: [] },
+        body: { idList: [], value: "" },
+      },
+    };
+
+    assertWireError(
+      () => decodeServerCheckpoint(Board, { lastClientBatches: [] }),
+      "/snapshot"
+    );
+    assertWireError(
+      () =>
+        decodeServerCheckpoint(Board, {
+          snapshot,
+          lastClientBatches: [],
+          extra: true,
+        }),
+      "/extra"
+    );
+    assertWireError(
+      () =>
+        decodeServerCheckpoint(Board, {
+          snapshot,
+          lastClientBatches: [
+            { clientId: "client-1", seq: 1 },
+            { clientId: "client-1", seq: 1 },
+          ],
+        }),
+      "/lastClientBatches/1/clientId"
+    );
+    assertWireError(
+      () =>
+        decodeServerCheckpoint(Board, {
+          snapshot,
+          lastClientBatches: [{ clientId: "client-1", seq: 1 }],
+        }),
+      "/lastClientBatches"
+    );
+    assertWireError(
+      () =>
+        decodeServerCheckpoint(Board, {
+          snapshot: { ...snapshot, serverSeq: 0 },
+          lastClientBatches: [{ clientId: "client-1", seq: 0 }],
+        }),
+      "/lastClientBatches/0/seq"
+    );
+    assertWireError(
+      () =>
+        decodeServerCheckpoint(Board, {
+          snapshot: {
+            ...snapshot,
+            data: { ...snapshot.data, body: undefined },
+          },
+          lastClientBatches: [
+            { clientId: "client-1", seq: 1 },
+            { clientId: "client-2", seq: 1 },
+          ],
+        }),
+      "/snapshot/data/body"
+    );
+
+    const sparseBatches = new Array<unknown>(1);
+    assertWireError(
+      () =>
+        decodeServerCheckpoint(Board, {
+          snapshot: { ...snapshot, serverSeq: 0 },
+          lastClientBatches: sparseBatches,
+        }),
+      "/lastClientBatches"
     );
   });
 });

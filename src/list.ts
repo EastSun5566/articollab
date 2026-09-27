@@ -68,6 +68,56 @@ function requireObject(value: unknown, name: string): object {
   return value;
 }
 
+export function loadIdList(
+  ranges: readonly SavedIdRange[],
+  name: string
+): IdList {
+  const intervalsByBunch = new Map<
+    string,
+    Array<{ readonly start: number; readonly end: number }>
+  >();
+  const saved = ranges.map((range, index) => {
+    const object = requireObject(
+      range,
+      `${name} entry ${index}`
+    ) as SavedIdRange;
+    if (typeof object.bunchId !== "string" || object.bunchId.length === 0) {
+      throw new Error(`${name} entry ${index} bunchId must not be empty`);
+    }
+    if (
+      !Number.isSafeInteger(object.startCounter) ||
+      object.startCounter < 0 ||
+      !Number.isSafeInteger(object.count) ||
+      object.count < 1 ||
+      object.startCounter > Number.MAX_SAFE_INTEGER - object.count + 1
+    ) {
+      throw new Error(`${name} entry ${index} has an invalid range`);
+    }
+    if (typeof object.isDeleted !== "boolean") {
+      throw new Error(`${name} entry ${index} isDeleted must be a boolean`);
+    }
+
+    const intervals = intervalsByBunch.get(object.bunchId) ?? [];
+    intervals.push({
+      start: object.startCounter,
+      end: object.startCounter + object.count - 1,
+    });
+    intervalsByBunch.set(object.bunchId, intervals);
+    return { ...object };
+  }) as SavedIdList;
+
+  for (const intervals of intervalsByBunch.values()) {
+    intervals.sort((left, right) => left.start - right.start);
+    for (let index = 1; index < intervals.length; index++) {
+      if (intervals[index]!.start <= intervals[index - 1]!.end) {
+        throw new Error(`${name} ranges must not overlap`);
+      }
+    }
+  }
+
+  return IdList.load(saved);
+}
+
 /** Internal persistent state for one List collection. */
 export class ListState<T extends JsonValue> {
   private readonly idList: IdList;
@@ -96,14 +146,7 @@ export class ListState<T extends JsonValue> {
       throw new Error("List snapshot values must be an array");
     }
 
-    const saved = data.idList.map((range, index) => {
-      const object = requireObject(
-        range,
-        `List snapshot idList entry ${index}`
-      ) as SavedIdRange;
-      return { ...object };
-    }) as SavedIdList;
-    const idList = IdList.load(saved);
+    const idList = loadIdList(data.idList, "List snapshot idList");
     if (idList.length !== data.values.length) {
       throw new Error(
         `List snapshot has ${idList.length} present ids but ${data.values.length} values`

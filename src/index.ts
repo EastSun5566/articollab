@@ -50,6 +50,7 @@ export {
   type LocalChangeEvent,
   type Operation,
   type ServerChangeEvent,
+  type ServerCheckpoint,
   type ServerCommit,
   type ServerResolveContext,
   type ServerResolver,
@@ -59,6 +60,7 @@ export {
 
 export {
   decodeClientBatch,
+  decodeServerCheckpoint,
   decodeServerCommit,
   decodeSnapshot,
   WireDecodeError,

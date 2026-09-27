@@ -3,10 +3,9 @@ import {
   equalsId,
   IdList,
   type ElementId,
-  type SavedIdList,
 } from "articulated";
 
-import type { SavedIdRange } from "./list.ts";
+import { loadIdList, type SavedIdRange } from "./list.ts";
 
 export interface TextSnapshotData {
   readonly idList: readonly SavedIdRange[];
@@ -113,14 +112,7 @@ export class TextState {
       throw new Error("Text snapshot value must be a string");
     }
 
-    const saved = data.idList.map((range, index) => {
-      const object = requireObject(
-        range,
-        `Text snapshot idList entry ${index}`
-      ) as SavedIdRange;
-      return { ...object };
-    }) as SavedIdList;
-    const idList = IdList.load(saved);
+    const idList = loadIdList(data.idList, "Text snapshot idList");
     const values = [...data.value];
     if (idList.length !== values.length) {
       throw new Error(

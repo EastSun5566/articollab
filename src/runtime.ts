@@ -98,6 +98,13 @@ export interface DocumentSnapshot<
   readonly data: DocumentSnapshotData<S>;
 }
 
+export interface ServerCheckpoint<
+  S extends SchemaShape = SchemaShape,
+> {
+  readonly snapshot: DocumentSnapshot<S>;
+  readonly lastClientBatches: readonly ClientBatchRef[];
+}
+
 export interface CreateClientOptions<S extends SchemaShape> {
   readonly clientId: string;
   readonly onBatch: (batch: ClientBatch<DocumentOperation<S>>) => void;
@@ -115,6 +122,7 @@ export type ServerResolver<S extends SchemaShape> = (
 
 export interface CreateServerOptions<S extends SchemaShape> {
   readonly resolve?: ServerResolver<S>;
+  readonly checkpoint?: ServerCheckpoint<S>;
 }
 
 /** An optimistic collaborative value. Values are treated as immutable. */
@@ -237,9 +245,12 @@ function validateSnapshot<S extends SchemaShape>(
   schema: DocumentSchema<S>,
   snapshot: DocumentSnapshot<S>
 ): Readonly<Record<string, unknown>> {
-  if (!Number.isInteger(snapshot.serverSeq) || snapshot.serverSeq < 0) {
+  if (typeof snapshot !== "object" || snapshot === null) {
+    throw new Error("Snapshot must be an object");
+  }
+  if (!Number.isSafeInteger(snapshot.serverSeq) || snapshot.serverSeq < 0) {
     throw new Error(
-      `Snapshot server sequence must be a non-negative integer: ${snapshot.serverSeq}`
+      `Snapshot server sequence must be a non-negative safe integer: ${snapshot.serverSeq}`
     );
   }
   if (
@@ -305,6 +316,66 @@ function initialStates<S extends SchemaShape>(
     }
   }
   return states;
+}
+
+function restoreServerCheckpoint<S extends SchemaShape>(
+  schema: DocumentSchema<S>,
+  checkpoint: ServerCheckpoint<S>
+): {
+  readonly states: Map<string, CollectionState>;
+  readonly nextClientSeq: Map<string, number>;
+  readonly nextServerSeq: number;
+} {
+  if (typeof checkpoint !== "object" || checkpoint === null) {
+    throw new Error("Server checkpoint must be an object");
+  }
+  if (!Array.isArray(checkpoint.lastClientBatches)) {
+    throw new Error("Server checkpoint lastClientBatches must be an array");
+  }
+  if (checkpoint.snapshot === undefined) {
+    throw new Error("Server checkpoint snapshot is required");
+  }
+
+  const states = initialStates(schema, checkpoint.snapshot);
+  const nextClientSeq = new Map<string, number>();
+  let totalClientSeq = 0;
+  for (const batch of checkpoint.lastClientBatches) {
+    if (typeof batch !== "object" || batch === null) {
+      throw new Error("Server checkpoint client batch must be an object");
+    }
+    if (typeof batch.clientId !== "string" || batch.clientId.length === 0) {
+      throw new Error("Server checkpoint clientId must not be empty");
+    }
+    if (!Number.isSafeInteger(batch.seq) || batch.seq < 1) {
+      throw new Error(
+        `Server checkpoint client sequence must be a positive safe integer: ${batch.seq}`
+      );
+    }
+    if (nextClientSeq.has(batch.clientId)) {
+      throw new Error(
+        `Server checkpoint contains duplicate clientId: ${batch.clientId}`
+      );
+    }
+    if (totalClientSeq > checkpoint.snapshot.serverSeq - batch.seq) {
+      throw new Error(
+        "Server checkpoint client sequences must sum to serverSeq"
+      );
+    }
+
+    totalClientSeq += batch.seq;
+    nextClientSeq.set(batch.clientId, batch.seq + 1);
+  }
+  if (totalClientSeq !== checkpoint.snapshot.serverSeq) {
+    throw new Error(
+      "Server checkpoint client sequences must sum to serverSeq"
+    );
+  }
+
+  return {
+    states,
+    nextClientSeq,
+    nextServerSeq: checkpoint.snapshot.serverSeq + 1,
+  };
 }
 
 function runtimeState(runtime: RuntimeCollection): CollectionState {
@@ -616,7 +687,7 @@ export class ClientDocument<S extends SchemaShape> {
 /** A synchronous authoritative document that resolves and orders client batches. */
 export class ServerDocument<S extends SchemaShape> {
   private authoritativeStates: Map<string, CollectionState>;
-  private readonly nextClientSeq = new Map<string, number>();
+  private readonly nextClientSeq: Map<string, number>;
   private readonly resolve: ServerResolver<S> | undefined;
   private nextServerSeq = 1;
   private receiving = false;
@@ -625,7 +696,14 @@ export class ServerDocument<S extends SchemaShape> {
     schema: DocumentSchema<S>,
     options: CreateServerOptions<S> = {}
   ) {
-    this.authoritativeStates = initialStates(schema, undefined);
+    const restored =
+      options.checkpoint === undefined
+        ? undefined
+        : restoreServerCheckpoint(schema, options.checkpoint);
+    this.authoritativeStates =
+      restored?.states ?? initialStates(schema, undefined);
+    this.nextClientSeq = restored?.nextClientSeq ?? new Map();
+    this.nextServerSeq = restored?.nextServerSeq ?? 1;
     this.resolve = options.resolve;
   }
 
@@ -644,6 +722,19 @@ export class ServerDocument<S extends SchemaShape> {
     return Object.freeze({
       serverSeq: this.nextServerSeq - 1,
       data,
+    });
+  }
+
+  /** Returns the state needed to restore this authoritative server. */
+  checkpoint(): ServerCheckpoint<S> {
+    const lastClientBatches = Object.freeze(
+      [...this.nextClientSeq].map(([clientId, nextSeq]) =>
+        Object.freeze({ clientId, seq: nextSeq - 1 })
+      )
+    );
+    return Object.freeze({
+      snapshot: this.snapshot(),
+      lastClientBatches,
     });
   }
 

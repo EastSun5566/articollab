@@ -21,6 +21,7 @@ import type {
   DocumentOperation,
   DocumentSnapshot,
   DocumentSnapshotData,
+  ServerCheckpoint,
   ServerCommit,
 } from "./runtime.ts";
 
@@ -620,23 +621,23 @@ export function decodeServerCommit<S extends SchemaShape>(
   });
 }
 
-/** Decodes a parsed document snapshot before hydrating a client. */
-export function decodeSnapshot<S extends SchemaShape>(
+function decodeSnapshotAt<S extends SchemaShape>(
   schema: DocumentSchema<S>,
-  input: unknown
+  input: unknown,
+  path: readonly PathSegment[]
 ): DocumentSnapshot<S> {
-  const path: readonly PathSegment[] = [];
   const record = decodeRecord(input, path, "Document snapshot");
   requireExactFields(record, path, ["serverSeq", "data"]);
   const serverSeq = decodeSafeInteger(
     record.serverSeq,
-    ["serverSeq"],
+    [...path, "serverSeq"],
     "Snapshot server sequence",
     0
   );
-  const dataRecord = decodeRecord(record.data, ["data"], "Snapshot data");
+  const dataPath = [...path, "data"];
+  const dataRecord = decodeRecord(record.data, dataPath, "Snapshot data");
   const schemaPaths = Object.keys(schema.definition);
-  requireExactFields(dataRecord, ["data"], schemaPaths);
+  requireExactFields(dataRecord, dataPath, schemaPaths);
 
   const data = Object.freeze(
     Object.fromEntries(
@@ -645,7 +646,7 @@ export function decodeSnapshot<S extends SchemaShape>(
         decodeSnapshotCollection(
           schema.definition[documentPath]!.kind,
           dataRecord[documentPath],
-          ["data", documentPath]
+          [...dataPath, documentPath]
         ),
       ])
     )
@@ -655,4 +656,56 @@ export function decodeSnapshot<S extends SchemaShape>(
     serverSeq,
     data,
   });
+}
+
+/** Decodes a parsed document snapshot before hydrating a client. */
+export function decodeSnapshot<S extends SchemaShape>(
+  schema: DocumentSchema<S>,
+  input: unknown
+): DocumentSnapshot<S> {
+  return decodeSnapshotAt(schema, input, []);
+}
+
+/** Decodes parsed state used to restore an authoritative server. */
+export function decodeServerCheckpoint<S extends SchemaShape>(
+  schema: DocumentSchema<S>,
+  input: unknown
+): ServerCheckpoint<S> {
+  const path: readonly PathSegment[] = [];
+  const record = decodeRecord(input, path, "Server checkpoint");
+  requireExactFields(record, path, ["snapshot", "lastClientBatches"]);
+  const snapshot = decodeSnapshotAt(schema, record.snapshot, ["snapshot"]);
+  const inputBatches = decodeDenseArray(
+    record.lastClientBatches,
+    ["lastClientBatches"],
+    "Last client batches"
+  );
+  const clientIds = new Set<string>();
+  let totalClientSeq = 0;
+  const lastClientBatches = Object.freeze(
+    inputBatches.map((inputBatch, index) => {
+      const batchPath = ["lastClientBatches", index] as const;
+      const batch = decodeBatchRef(inputBatch, batchPath, "Last client batch");
+      if (clientIds.has(batch.clientId)) {
+        fail([...batchPath, "clientId"], "clientId must not be duplicated");
+      }
+      clientIds.add(batch.clientId);
+      if (totalClientSeq > snapshot.serverSeq - batch.seq) {
+        fail(
+          ["lastClientBatches"],
+          "client sequences must sum to snapshot serverSeq"
+        );
+      }
+      totalClientSeq += batch.seq;
+      return batch;
+    })
+  );
+  if (totalClientSeq !== snapshot.serverSeq) {
+    fail(
+      ["lastClientBatches"],
+      "client sequences must sum to snapshot serverSeq"
+    );
+  }
+
+  return Object.freeze({ snapshot, lastClientBatches });
 }
