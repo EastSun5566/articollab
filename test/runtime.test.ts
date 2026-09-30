@@ -349,7 +349,7 @@ describe("server runtime", () => {
     const commitQueue: CounterCommit[] = [];
     let broadcasting = false;
     const send = (batch: ClientBatch<CounterOperation>) => {
-      const commit = server.receive(batch);
+      const commit = server.receive(batch).commit;
       commits.push(commit);
       commitQueue.push(commit);
       if (broadcasting) return;
@@ -401,7 +401,7 @@ describe("server runtime", () => {
     const commitQueue: CounterCommit[] = [];
     let broadcasting = false;
     const send = (batch: ClientBatch<CounterOperation>) => {
-      commitQueue.push(server.receive(batch));
+      commitQueue.push(server.receive(batch).commit);
       if (broadcasting) return;
 
       broadcasting = true;
@@ -458,13 +458,13 @@ describe("server runtime", () => {
     client1.state.count.value = 1;
     client2.state.count.value = 2;
 
-    const client2Commit = server.receive(client2Batches[0]!);
+    const client2Commit = server.receive(client2Batches[0]!).commit;
     client1.receive(client2Commit);
     client2.receive(client2Commit);
     assert.equal(client1.state.count.value, 1);
     assert.equal(client2.state.count.value, 2);
 
-    const client1Commit = server.receive(client1Batches[0]!);
+    const client1Commit = server.receive(client1Batches[0]!).commit;
     client1.receive(client1Commit);
     client2.receive(client1Commit);
 
@@ -490,7 +490,7 @@ describe("server runtime", () => {
       clientId: "client-1",
       seq: 1,
       operations: [{ type: "value/set", path: "count", value: 1 }],
-    });
+    }).commit;
     assert.equal(firstCommit.serverSeq, 1);
 
     assert.throws(
@@ -500,7 +500,7 @@ describe("server runtime", () => {
           seq: 1,
           operations: [{ type: "value/set", path: "count", value: 2 }],
         }),
-      /Expected client sequence 2/
+      /Retry batch differs/
     );
 
     const unknownPathBatch = {
@@ -517,7 +517,7 @@ describe("server runtime", () => {
       clientId: "client-2",
       seq: 1,
       operations: [{ type: "value/set", path: "count", value: 2 }],
-    });
+    }).commit;
     assert.equal(secondCommit.serverSeq, 2);
   });
 
@@ -531,7 +531,7 @@ describe("server runtime", () => {
       clientId: "client-1",
       seq: 1,
       operations,
-    });
+    }).commit;
     operations[0]!.value = 9;
     operations.push({ type: "value/set", path: "count", value: 10 });
 
@@ -583,7 +583,7 @@ describe("server policy", () => {
     });
 
     client1.state.count.value = 9;
-    const commit = server.receive(batches[0]!);
+    const commit = server.receive(batches[0]!).commit;
     client1.receive(commit);
     client2.receive(commit);
 
@@ -612,7 +612,7 @@ describe("server policy", () => {
     });
 
     client.state.count.value = 1;
-    const commit = server.receive(batches[0]!);
+    const commit = server.receive(batches[0]!).commit;
     client.receive(commit);
 
     assert.deepEqual(commit, {
@@ -694,12 +694,12 @@ describe("server policy", () => {
     assert.deepEqual(server.snapshot(), { serverSeq: 0, data: { count: 0 } });
 
     mode = "accept";
-    const firstCommit = server.receive(batch);
+    const firstCommit = server.receive(batch).commit;
     const secondCommit = server.receive({
       clientId: "nested",
       seq: 1,
       operations: [{ type: "value/set", path: "count", value: 2 }],
-    });
+    }).commit;
     assert.equal(firstCommit.serverSeq, 1);
     assert.equal(secondCommit.serverSeq, 2);
     assert.deepEqual(server.snapshot(), { serverSeq: 2, data: { count: 2 } });
@@ -723,7 +723,7 @@ describe("snapshot hydration", () => {
       clientId: "client-1",
       seq: 1,
       operations: [{ type: "value/set", path: "count", value: 1 }],
-    });
+    }).commit;
     const lateBatches: ClientBatch<CounterOperation>[] = [];
     const lateClient = createClient(Counter, {
       clientId: "client-2",
@@ -739,7 +739,7 @@ describe("snapshot hydration", () => {
       clientId: "client-1",
       seq: 2,
       operations: [{ type: "value/set", path: "count", value: 2 }],
-    });
+    }).commit;
     lateClient.receive(secondCommit);
 
     assert.equal(lateClient.state.count.value, 2);
@@ -755,7 +755,7 @@ describe("snapshot hydration", () => {
       },
     });
     firstClient.state.count.value = 1;
-    const firstCommit = server.receive(firstBatch!);
+    const firstCommit = server.receive(firstBatch!).commit;
     firstClient.receive(firstCommit);
 
     let lateBatch: ClientBatch<CounterOperation> | undefined;
@@ -769,7 +769,7 @@ describe("snapshot hydration", () => {
     lateClient.state.count.value = 2;
 
     assert.equal(lateBatch?.seq, 1);
-    const secondCommit = server.receive(lateBatch!);
+    const secondCommit = server.receive(lateBatch!).commit;
     firstClient.receive(secondCommit);
     lateClient.receive(secondCommit);
 
@@ -822,17 +822,29 @@ describe("snapshot hydration", () => {
 });
 
 describe("server checkpoint", () => {
+  const replay = (clientId: string, seq: number, serverSeq: number, value = 0) => {
+    const batch: ClientBatch<CounterOperation> = {
+      clientId,
+      seq,
+      operations: [{ type: "value/set", path: "count", value }],
+    };
+    return {
+      batch,
+      commit: { serverSeq, source: { clientId, seq }, operations: batch.operations },
+    };
+  };
+
   it("checkpoints fresh state and keeps the result point-in-time", () => {
     const server = createServer(Counter);
     const checkpoint = server.checkpoint();
 
     assert.deepEqual(checkpoint, {
       snapshot: { serverSeq: 0, data: { count: 0 } },
-      lastClientBatches: [],
+      replays: [],
     });
     assert.ok(Object.isFrozen(checkpoint));
     assert.ok(Object.isFrozen(checkpoint.snapshot));
-    assert.ok(Object.isFrozen(checkpoint.lastClientBatches));
+    assert.ok(Object.isFrozen(checkpoint.replays));
 
     server.receive({
       clientId: "client-1",
@@ -841,7 +853,7 @@ describe("server checkpoint", () => {
     });
     assert.deepEqual(checkpoint, {
       snapshot: { serverSeq: 0, data: { count: 0 } },
-      lastClientBatches: [],
+      replays: [],
     });
   });
 
@@ -864,12 +876,19 @@ describe("server checkpoint", () => {
     const checkpoint = server.checkpoint();
     assert.deepEqual(checkpoint, {
       snapshot: { serverSeq: 2, data: { count: 1 } },
-      lastClientBatches: [
-        { clientId: "client-1", seq: 1 },
-        { clientId: "client-2", seq: 1 },
+      replays: [
+        replay("client-1", 1, 1, 1),
+        {
+          ...replay("client-2", 1, 2, 2),
+          commit: {
+            serverSeq: 2,
+            source: { clientId: "client-2", seq: 1 },
+            operations: [],
+          },
+        },
       ],
     });
-    assert.ok(Object.isFrozen(checkpoint.lastClientBatches[0]));
+    assert.ok(Object.isFrozen(checkpoint.replays[0]));
 
     const restored = createServer(Counter, {
       checkpoint,
@@ -888,7 +907,7 @@ describe("server checkpoint", () => {
           seq: 1,
           operations: [{ type: "value/set", path: "count", value: 9 }],
         }),
-      /Expected client sequence 2/
+      /Retry batch differs/
     );
     assert.throws(
       () =>
@@ -904,17 +923,17 @@ describe("server checkpoint", () => {
       clientId: "client-1",
       seq: 2,
       operations: [{ type: "value/set", path: "count", value: 9 }],
-    });
+    }).commit;
     const client2Commit = restored.receive({
       clientId: "client-2",
       seq: 2,
       operations: [{ type: "value/set", path: "count", value: 4 }],
-    });
+    }).commit;
     const newClientCommit = restored.receive({
       clientId: "client-3",
       seq: 1,
       operations: [{ type: "value/set", path: "count", value: 3 }],
-    });
+    }).commit;
 
     assert.equal(client1Commit.serverSeq, 3);
     assert.deepEqual(client1Commit.operations, [
@@ -937,28 +956,28 @@ describe("server checkpoint", () => {
       () =>
         restore({
           snapshot: { serverSeq: 1, data: { count: 0 } },
-          lastClientBatches: [],
+          replays: [],
         }),
-      /must sum to serverSeq/
+      /must sum to snapshot serverSeq/
     );
     assert.throws(
       () =>
         restore({
           snapshot: { serverSeq: 2, data: { count: 0 } },
-          lastClientBatches: [
-            { clientId: "client-1", seq: 1 },
-            { clientId: "client-1", seq: 1 },
+          replays: [
+            replay("client-1", 1, 1),
+            replay("client-1", 1, 2),
           ],
         }),
-      /duplicate clientId/
+      /clientId must not be duplicated/
     );
     assert.throws(
       () =>
         restore({
           snapshot: { serverSeq: 0, data: { count: 0 } },
-          lastClientBatches: [{ clientId: "client-1", seq: 0 }],
+          replays: [replay("client-1", 0, 1)],
         }),
-      /positive safe integer/
+      /safe integer greater than or equal to 1/
     );
 
     assert.throws(
@@ -987,7 +1006,7 @@ describe("server checkpoint", () => {
                 },
               },
             },
-            lastClientBatches: [{ clientId: "client-1", seq: 1 }],
+            replays: [],
           },
         }),
       /ranges must not overlap/

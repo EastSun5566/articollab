@@ -591,13 +591,24 @@ export function decodeClientBatch<S extends SchemaShape>(
   schema: DocumentSchema<S>,
   input: unknown
 ): ClientBatch<DocumentOperation<S>> {
-  const path: readonly PathSegment[] = [];
+  return decodeClientBatchAt(schema, input, []);
+}
+
+function decodeClientBatchAt<S extends SchemaShape>(
+  schema: DocumentSchema<S>,
+  input: unknown,
+  path: readonly PathSegment[]
+): ClientBatch<DocumentOperation<S>> {
   const record = decodeRecord(input, path, "Client batch");
   requireExactFields(record, path, ["clientId", "seq", "operations"]);
   return Object.freeze({
-    clientId: decodeString(record.clientId, ["clientId"], "Client id", true),
-    seq: decodeSafeInteger(record.seq, ["seq"], "Client sequence", 1),
-    operations: decodeOperations(schema, record.operations, ["operations"], false),
+    clientId: decodeString(
+      record.clientId, [...path, "clientId"], "Client id", true
+    ),
+    seq: decodeSafeInteger(record.seq, [...path, "seq"], "Client sequence", 1),
+    operations: decodeOperations(
+      schema, record.operations, [...path, "operations"], false
+    ),
   });
 }
 
@@ -606,18 +617,27 @@ export function decodeServerCommit<S extends SchemaShape>(
   schema: DocumentSchema<S>,
   input: unknown
 ): ServerCommit<DocumentOperation<S>> {
-  const path: readonly PathSegment[] = [];
+  return decodeServerCommitAt(schema, input, []);
+}
+
+function decodeServerCommitAt<S extends SchemaShape>(
+  schema: DocumentSchema<S>,
+  input: unknown,
+  path: readonly PathSegment[]
+): ServerCommit<DocumentOperation<S>> {
   const record = decodeRecord(input, path, "Server commit");
   requireExactFields(record, path, ["serverSeq", "source", "operations"]);
   return Object.freeze({
     serverSeq: decodeSafeInteger(
       record.serverSeq,
-      ["serverSeq"],
+      [...path, "serverSeq"],
       "Server sequence",
       1
     ),
-    source: decodeBatchRef(record.source, ["source"], "Commit source"),
-    operations: decodeOperations(schema, record.operations, ["operations"], true),
+    source: decodeBatchRef(record.source, [...path, "source"], "Commit source"),
+    operations: decodeOperations(
+      schema, record.operations, [...path, "operations"], true
+    ),
   });
 }
 
@@ -673,39 +693,88 @@ export function decodeServerCheckpoint<S extends SchemaShape>(
 ): ServerCheckpoint<S> {
   const path: readonly PathSegment[] = [];
   const record = decodeRecord(input, path, "Server checkpoint");
-  requireExactFields(record, path, ["snapshot", "lastClientBatches"]);
+  requireExactFields(record, path, ["snapshot", "replays"]);
   const snapshot = decodeSnapshotAt(schema, record.snapshot, ["snapshot"]);
-  const inputBatches = decodeDenseArray(
-    record.lastClientBatches,
-    ["lastClientBatches"],
-    "Last client batches"
+  const inputReplays = decodeDenseArray(
+    record.replays,
+    ["replays"],
+    "Replay entries"
   );
   const clientIds = new Set<string>();
+  const serverSeqs = new Set<number>();
   let totalClientSeq = 0;
-  const lastClientBatches = Object.freeze(
-    inputBatches.map((inputBatch, index) => {
-      const batchPath = ["lastClientBatches", index] as const;
-      const batch = decodeBatchRef(inputBatch, batchPath, "Last client batch");
+  let maxServerSeq = 0;
+  const replays = Object.freeze(
+    inputReplays.map((inputReplay, index) => {
+      const entryPath = ["replays", index] as const;
+      const entry = decodeRecord(inputReplay, entryPath, "Replay entry");
+      requireExactFields(entry, entryPath, ["batch", "commit"]);
+      const batchPath = [...entryPath, "batch"];
+      const commitPath = [...entryPath, "commit"];
+      const batch = decodeClientBatchAt(schema, entry.batch, batchPath);
+      const commit = decodeServerCommitAt(schema, entry.commit, commitPath);
       if (clientIds.has(batch.clientId)) {
         fail([...batchPath, "clientId"], "clientId must not be duplicated");
       }
       clientIds.add(batch.clientId);
+      if (commit.source.clientId !== batch.clientId) {
+        fail(
+          [...commitPath, "source", "clientId"],
+          "source must match replay batch"
+        );
+      }
+      if (commit.source.seq !== batch.seq) {
+        fail([...commitPath, "source", "seq"], "source must match replay batch");
+      }
+      if (commit.serverSeq > snapshot.serverSeq) {
+        fail(
+          [...commitPath, "serverSeq"],
+          "commit must not exceed snapshot serverSeq"
+        );
+      }
+      if (serverSeqs.has(commit.serverSeq)) {
+        fail(
+          [...commitPath, "serverSeq"],
+          "commit serverSeq must not be duplicated"
+        );
+      }
+      serverSeqs.add(commit.serverSeq);
+      maxServerSeq = Math.max(maxServerSeq, commit.serverSeq);
       if (totalClientSeq > snapshot.serverSeq - batch.seq) {
         fail(
-          ["lastClientBatches"],
+          ["replays"],
           "client sequences must sum to snapshot serverSeq"
         );
       }
       totalClientSeq += batch.seq;
-      return batch;
+      return Object.freeze({ batch, commit });
     })
   );
   if (totalClientSeq !== snapshot.serverSeq) {
     fail(
-      ["lastClientBatches"],
+      ["replays"],
       "client sequences must sum to snapshot serverSeq"
     );
   }
+  if (maxServerSeq !== snapshot.serverSeq) {
+    fail(["replays"], "latest replay commit must match snapshot serverSeq");
+  }
 
-  return Object.freeze({ snapshot, lastClientBatches });
+  // By each client's last commit, all of that client's earlier batches exist.
+  // Their cumulative count cannot exceed the global sequence at that point.
+  const ordered = replays
+    .map((entry, index) => ({ entry, index }))
+    .sort((left, right) => left.entry.commit.serverSeq - right.entry.commit.serverSeq);
+  let completedBatches = 0;
+  for (const { entry, index } of ordered) {
+    if (completedBatches > entry.commit.serverSeq - entry.batch.seq) {
+      fail(
+        ["replays", index, "commit", "serverSeq"],
+        "commit sequence precedes the required client batches"
+      );
+    }
+    completedBatches += entry.batch.seq;
+  }
+
+  return Object.freeze({ snapshot, replays });
 }

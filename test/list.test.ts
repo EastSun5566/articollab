@@ -150,14 +150,14 @@ describe("list runtime", () => {
     });
 
     client1.state.items.push("base");
-    const baseCommit = server.receive(client1Batches[0]!);
+    const baseCommit = server.receive(client1Batches[0]!).commit;
     client1.receive(baseCommit);
     client2.receive(baseCommit);
 
     client1.state.items.push("after");
     client2.state.items.delete(0);
 
-    const deleteCommit = server.receive(client2Batches[0]!);
+    const deleteCommit = server.receive(client2Batches[0]!).commit;
     client1.receive(deleteCommit);
     client2.receive(deleteCommit);
     assert.deepEqual(client1.state.items.toArray(), ["after"]);
@@ -172,7 +172,7 @@ describe("list runtime", () => {
     assert.deepEqual(lateClient.state.items.toArray(), []);
     assert.equal(snapshot.data.items.idList[0]?.isDeleted, true);
 
-    const insertCommit = server.receive(client1Batches[1]!);
+    const insertCommit = server.receive(client1Batches[1]!).commit;
     client1.receive(insertCommit);
     client2.receive(insertCommit);
     lateClient.receive(insertCommit);
@@ -187,7 +187,7 @@ describe("list runtime", () => {
     const server = createServer(Board);
     const { batches, doc } = setup();
     doc.state.items.push("a");
-    const commit = server.receive(batches[0]!);
+    const commit = server.receive(batches[0]!).commit;
     doc.receive(commit);
 
     const snapshot = server.snapshot();
@@ -224,7 +224,7 @@ describe("list runtime", () => {
       clientId: string,
       seq: number,
       operations: readonly BoardOperation[]
-    ) => server.receive({ clientId, seq, operations });
+    ) => server.receive({ clientId, seq, operations }).commit;
 
     const wrongKind = {
       type: "list/insert",
@@ -331,18 +331,18 @@ describe("list runtime", () => {
     const { batches, doc } = setup();
 
     doc.state.items.push("base");
-    doc.receive(server.receive(batches[0]!));
+    doc.receive(server.receive(batches[0]!).commit);
     assert.deepEqual(doc.state.items.toArray(), ["base"]);
 
     decision = "reject";
     doc.state.items.push("rejected");
-    const rejectedInsert = server.receive(batches[1]!);
+    const rejectedInsert = server.receive(batches[1]!).commit;
     doc.receive(rejectedInsert);
     assert.deepEqual(rejectedInsert.operations, []);
     assert.deepEqual(doc.state.items.toArray(), ["base"]);
 
     doc.state.items.delete(0);
-    const rejectedDelete = server.receive(batches[2]!);
+    const rejectedDelete = server.receive(batches[2]!).commit;
     doc.receive(rejectedDelete);
     assert.deepEqual(rejectedDelete.operations, []);
     assert.deepEqual(doc.state.items.toArray(), ["base"]);
@@ -352,7 +352,7 @@ describe("list runtime", () => {
       doc.state.title.value = "Ready";
       doc.state.items.push("omitted");
     });
-    const transformed = server.receive(batches[3]!);
+    const transformed = server.receive(batches[3]!).commit;
     doc.receive(transformed);
 
     assert.deepEqual(
@@ -393,7 +393,7 @@ describe("list runtime", () => {
     assert.equal(server.snapshot().serverSeq, 0);
 
     returnWrongKind = false;
-    const commit = server.receive(batch);
+    const commit = server.receive(batch).commit;
     assert.equal(commit.serverSeq, 1);
     assert.equal(server.snapshot().data.title, "Ready");
   });

@@ -190,21 +190,21 @@ describe("text runtime", () => {
     });
 
     doc.state.body.insert(0, "a");
-    doc.receive(server.receive(batches[0]!));
+    doc.receive(server.receive(batches[0]!).commit);
     assert.deepEqual(serverChanges, []);
 
     decision = "reject";
     doc.state.body.insert(1, "b");
-    doc.receive(server.receive(batches[1]!));
+    doc.receive(server.receive(batches[1]!).commit);
     assert.equal(doc.state.body.toString(), "a");
 
     doc.state.body.delete(0);
-    doc.receive(server.receive(batches[2]!));
+    doc.receive(server.receive(batches[2]!).commit);
     assert.equal(doc.state.body.toString(), "a");
 
     decision = "uppercase";
     doc.state.body.insert(1, "c");
-    doc.receive(server.receive(batches[3]!));
+    doc.receive(server.receive(batches[3]!).commit);
     assert.equal(doc.state.body.toString(), "aC");
     assert.deepEqual(serverChanges, ["a", "a", "aC"]);
   });
@@ -223,14 +223,14 @@ describe("text runtime", () => {
     });
 
     client1.state.body.insert(0, "A");
-    const baseCommit = server.receive(client1Batches[0]!);
+    const baseCommit = server.receive(client1Batches[0]!).commit;
     client1.receive(baseCommit);
     client2.receive(baseCommit);
 
     client1.state.body.insert(1, "B");
     client2.state.body.delete(0);
 
-    const deleteCommit = server.receive(client2Batches[0]!);
+    const deleteCommit = server.receive(client2Batches[0]!).commit;
     client1.receive(deleteCommit);
     client2.receive(deleteCommit);
     assert.equal(client1.state.body.toString(), "B");
@@ -245,7 +245,7 @@ describe("text runtime", () => {
     assert.equal(lateClient.state.body.toString(), "");
     assert.equal(snapshot.data.body.idList[0]?.isDeleted, true);
 
-    const insertCommit = server.receive(client1Batches[1]!);
+    const insertCommit = server.receive(client1Batches[1]!).commit;
     client1.receive(insertCommit);
     client2.receive(insertCommit);
     lateClient.receive(insertCommit);
@@ -260,7 +260,7 @@ describe("text runtime", () => {
     const server = createServer(Note);
     const { batches, doc } = setup();
     doc.state.body.insert(0, "A😀");
-    doc.receive(server.receive(batches[0]!));
+    doc.receive(server.receive(batches[0]!).commit);
 
     const snapshot = server.snapshot();
     assert.equal(snapshot.data.body.value, "A😀");
@@ -303,7 +303,7 @@ describe("text runtime", () => {
       clientId: string,
       seq: number,
       operations: readonly NoteOperation[]
-    ) => server.receive({ clientId, seq, operations });
+    ) => server.receive({ clientId, seq, operations }).commit;
 
     assert.throws(
       () =>

@@ -52,6 +52,8 @@ export {
   type ServerChangeEvent,
   type ServerCheckpoint,
   type ServerCommit,
+  type ServerReceipt,
+  type ServerReplayEntry,
   type ServerResolveContext,
   type ServerResolver,
   type Value,

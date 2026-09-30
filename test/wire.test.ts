@@ -100,7 +100,7 @@ describe("wire decoding", () => {
 
     const commit = decodeServerCommit(
       Board,
-      jsonRoundTrip(server.receive(batch))
+      jsonRoundTrip(server.receive(batch).commit)
     );
     assert.ok(Object.isFrozen(commit));
     assert.ok(Object.isFrozen(commit.source));
@@ -133,7 +133,7 @@ describe("wire decoding", () => {
       jsonRoundTrip(
         server.receive(
           decodeClientBatch(Board, jsonRoundTrip(client1.batches[0]!))
-        )
+        ).commit
       )
     );
     client1.doc.receive(baseCommit);
@@ -149,7 +149,7 @@ describe("wire decoding", () => {
       jsonRoundTrip(
         server.receive(
           decodeClientBatch(Board, jsonRoundTrip(client2.batches[0]!))
-        )
+        ).commit
       )
     );
     client1.doc.receive(deleteCommit);
@@ -176,7 +176,7 @@ describe("wire decoding", () => {
       jsonRoundTrip(
         server.receive(
           decodeClientBatch(Board, jsonRoundTrip(client1.batches[1]!))
-        )
+        ).commit
       )
     );
     client1.doc.receive(insertCommit);
@@ -196,7 +196,7 @@ describe("wire decoding", () => {
       client1.doc.state.items.push({ label: "gone" });
       client1.doc.state.body.insert(0, "A");
     });
-    const baseCommit = server.receive(client1.batches[0]!);
+    const baseCommit = server.receive(client1.batches[0]!).commit;
     client1.doc.receive(baseCommit);
     client2.doc.receive(baseCommit);
 
@@ -205,7 +205,7 @@ describe("wire decoding", () => {
       client2.doc.state.items.delete(0);
       client2.doc.state.body.delete(0);
     });
-    const deleteCommit = server.receive(client2.batches[0]!);
+    const deleteCommit = server.receive(client2.batches[0]!).commit;
     client1.doc.receive(deleteCommit);
     client2.doc.receive(deleteCommit);
 
@@ -215,13 +215,15 @@ describe("wire decoding", () => {
           meta: { nested: { enabled: boolean } };
         };
       };
-      lastClientBatches: Array<{ clientId: string }>;
+      replays: Array<{ batch: { clientId: string } }>;
     };
     const checkpoint = decodeServerCheckpoint(Board, input);
     assert.ok(Object.isFrozen(checkpoint));
     assert.ok(Object.isFrozen(checkpoint.snapshot));
-    assert.ok(Object.isFrozen(checkpoint.lastClientBatches));
-    assert.ok(Object.isFrozen(checkpoint.lastClientBatches[0]));
+    assert.ok(Object.isFrozen(checkpoint.replays));
+    assert.ok(Object.isFrozen(checkpoint.replays[0]));
+    assert.ok(Object.isFrozen(checkpoint.replays[0]!.batch));
+    assert.ok(Object.isFrozen(checkpoint.replays[0]!.commit));
     assert.ok(Object.isFrozen(checkpoint.snapshot.data.meta.nested));
     assert.ok(
       checkpoint.snapshot.data.items.idList.some((range) => range.isDeleted)
@@ -231,14 +233,14 @@ describe("wire decoding", () => {
     );
 
     input.snapshot.data.meta.nested.enabled = true;
-    input.lastClientBatches[0]!.clientId = "changed";
+    input.replays[0]!.batch.clientId = "changed";
     assert.equal(checkpoint.snapshot.data.meta.nested.enabled, false);
-    assert.equal(checkpoint.lastClientBatches[0]?.clientId, "client-1");
+    assert.equal(checkpoint.replays[0]?.batch.clientId, "client-1");
 
     const restored = createServer(Board, { checkpoint });
     const insertCommit = restored.receive(
       decodeClientBatch(Board, jsonRoundTrip(client1.batches[1]!))
-    );
+    ).commit;
     assert.equal(insertCommit.serverSeq, 3);
     assert.equal(restored.snapshot().data.body.value, "B");
     assert.deepEqual(restored.snapshot().data.items.values, []);
@@ -542,7 +544,7 @@ describe("wire decoding", () => {
         },
       ],
     });
-    assert.equal(server.receive(valid).serverSeq, 1);
+    assert.equal(server.receive(valid).commit.serverSeq, 1);
   });
 
   it("streams huge Text delete ranges before rejecting unknown ids", () => {
@@ -560,7 +562,7 @@ describe("wire decoding", () => {
         },
       ],
     });
-    assert.equal(server.receive(first).serverSeq, 1);
+    assert.equal(server.receive(first).commit.serverSeq, 1);
 
     const hugeDelete = decodeClientBatch(Board, {
       clientId: "client-1",
@@ -594,7 +596,7 @@ describe("wire decoding", () => {
         },
       ],
     });
-    assert.equal(server.receive(validDelete).serverSeq, 2);
+    assert.equal(server.receive(validDelete).commit.serverSeq, 2);
   });
 
   it("rejects invalid snapshot shape and collection invariants", () => {
@@ -686,6 +688,11 @@ describe("wire decoding", () => {
   });
 
   it("rejects invalid server checkpoint structure and metadata", () => {
+    const replay = (clientId: string, seq: number, serverSeq: number) => ({
+      batch: { clientId, seq, operations: [{ type: "text/insert", path: "body",
+        before: null, id: { bunchId: clientId, counter: 0 }, value: "A" }] },
+      commit: { serverSeq, source: { clientId, seq }, operations: [] },
+    });
     const snapshot = {
       serverSeq: 2,
       data: {
@@ -696,14 +703,14 @@ describe("wire decoding", () => {
     };
 
     assertWireError(
-      () => decodeServerCheckpoint(Board, { lastClientBatches: [] }),
+      () => decodeServerCheckpoint(Board, { replays: [] }),
       "/snapshot"
     );
     assertWireError(
       () =>
         decodeServerCheckpoint(Board, {
           snapshot,
-          lastClientBatches: [],
+          replays: [],
           extra: true,
         }),
       "/extra"
@@ -712,28 +719,28 @@ describe("wire decoding", () => {
       () =>
         decodeServerCheckpoint(Board, {
           snapshot,
-          lastClientBatches: [
-            { clientId: "client-1", seq: 1 },
-            { clientId: "client-1", seq: 1 },
+          replays: [
+            replay("client-1", 1, 1),
+            replay("client-1", 1, 2),
           ],
         }),
-      "/lastClientBatches/1/clientId"
+      "/replays/1/batch/clientId"
     );
     assertWireError(
       () =>
         decodeServerCheckpoint(Board, {
           snapshot,
-          lastClientBatches: [{ clientId: "client-1", seq: 1 }],
+          replays: [replay("client-1", 1, 1)],
         }),
-      "/lastClientBatches"
+      "/replays"
     );
     assertWireError(
       () =>
         decodeServerCheckpoint(Board, {
           snapshot: { ...snapshot, serverSeq: 0 },
-          lastClientBatches: [{ clientId: "client-1", seq: 0 }],
+          replays: [replay("client-1", 0, 1)],
         }),
-      "/lastClientBatches/0/seq"
+      "/replays/0/batch/seq"
     );
     assertWireError(
       () =>
@@ -742,9 +749,9 @@ describe("wire decoding", () => {
             ...snapshot,
             data: { ...snapshot.data, body: undefined },
           },
-          lastClientBatches: [
-            { clientId: "client-1", seq: 1 },
-            { clientId: "client-2", seq: 1 },
+          replays: [
+            replay("client-1", 1, 1),
+            replay("client-2", 1, 2),
           ],
         }),
       "/snapshot/data/body"
@@ -755,9 +762,146 @@ describe("wire decoding", () => {
       () =>
         decodeServerCheckpoint(Board, {
           snapshot: { ...snapshot, serverSeq: 0 },
-          lastClientBatches: sparseBatches,
+          replays: sparseBatches,
         }),
-      "/lastClientBatches"
+      "/replays"
     );
+  });
+
+  it("validates replay metadata and preserves nested JSON Pointer paths", () => {
+    const server = createServer(Board);
+    const a = setupClient("a");
+    const b = setupClient("b");
+    a.doc.state.body.insert(0, "A");
+    b.doc.state.body.insert(0, "B");
+    server.receive(a.batches[0]!);
+    server.receive(b.batches[0]!);
+    const valid = server.checkpoint();
+    const first = valid.replays[0]!;
+    const second = valid.replays[1]!;
+    const operation = first.batch.operations[0]!;
+    assert.equal(operation.type, "text/insert");
+    if (operation.type !== "text/insert") return;
+    const withFirst = (entry: unknown, serverSeq = 2) => ({
+      snapshot: { ...valid.snapshot, serverSeq },
+      replays: [entry, second],
+    });
+    const withCommit = (commit: unknown) => withFirst({ ...first, commit });
+    const cases: Array<[string, unknown]> = [
+      ["/replays/0/batch", withFirst({ commit: first.commit })],
+      ["/replays/0/commit", withFirst({ batch: first.batch })],
+      ["/replays/0/extra", withFirst({ ...first, extra: true })],
+      ["/replays/0/batch/operations", withFirst({
+        ...first, batch: { ...first.batch, operations: [] },
+      })],
+      ["/replays/0/batch/operations/0/id/counter", withFirst({
+        ...first, batch: { ...first.batch, operations: [
+          { ...operation, id: { ...operation.id, counter: -1 } },
+        ] },
+      })],
+      ["/replays/0/commit/source/clientId", withCommit({
+        ...first.commit, source: { ...first.commit.source, clientId: "wrong" },
+      })],
+      ["/replays/0/commit/source/seq", withCommit({
+        ...first.commit, source: { ...first.commit.source, seq: 2 },
+      })],
+      ["/replays/0/commit/serverSeq", withCommit({ ...first.commit, serverSeq: 3 })],
+      ["/replays/0/commit/serverSeq", withCommit({ ...first.commit, serverSeq: 0 })],
+      ["/replays/1/commit/serverSeq", { ...valid, replays: [first, {
+        ...second, commit: { ...second.commit, serverSeq: 1 },
+      }] }],
+      ["/replays/0/commit/operations/0/value", withCommit({
+        ...first.commit, operations: [{ ...operation, value: "" }],
+      })],
+      ["/replays", withFirst(first, 3)],
+      ["/replays", withFirst({ // Sum is valid, but no replay reaches the watermark.
+        batch: { ...first.batch, seq: 2 },
+        commit: { ...first.commit, source: { ...first.commit.source, seq: 2 } },
+      }, 3)],
+    ];
+    for (const [path, input] of cases) {
+      assertWireError(() => decodeServerCheckpoint(Board, input), path);
+      assert.throws(
+        () => createServer(Board, { checkpoint: input as typeof valid }),
+        WireDecodeError
+      );
+    }
+  });
+
+  it("owns and freezes replay payloads, IDs, ranges, and empty reject commits", () => {
+    const id = { bunchId: "a", counter: 0 };
+    const input = {
+      snapshot: { serverSeq: 1, data: {
+        meta: { status: "draft", nested: { enabled: false }, tags: [] },
+        items: { idList: [], values: [] }, body: { idList: [], value: "" },
+      } },
+      replays: [{
+        batch: { clientId: "a", seq: 1, operations: [
+          { type: "list/insert", path: "items", before: null, id, value: { label: "original" } },
+          { type: "text/delete", path: "body", ranges: [{ start: id, count: 1 }] },
+        ] },
+        commit: { serverSeq: 1, source: { clientId: "a", seq: 1 }, operations: [] },
+      }],
+    };
+    const checkpoint = decodeServerCheckpoint(Board, input);
+    const entry = checkpoint.replays[0]!;
+    const insert = entry.batch.operations[0]!;
+    const deletion = entry.batch.operations[1]!;
+    assert.equal(insert.type, "list/insert");
+    assert.equal(deletion.type, "text/delete");
+    if (insert.type !== "list/insert" || deletion.type !== "text/delete") return;
+    for (const container of [checkpoint.replays, entry, entry.batch, entry.batch.operations,
+      insert, insert.id, insert.value, deletion, deletion.ranges, deletion.ranges[0],
+      deletion.ranges[0]!.start, entry.commit, entry.commit.source, entry.commit.operations]) {
+      assert.ok(Object.isFrozen(container));
+    }
+    input.replays[0]!.batch.operations[0]!.value!.label = "changed";
+    id.counter = 99;
+    input.replays[0]!.commit.source.clientId = "changed";
+    assert.equal(insert.value.label, "original");
+    assert.equal(insert.id.counter, 0);
+    assert.equal(deletion.ranges[0]!.start.counter, 0);
+    assert.equal(entry.commit.source.clientId, "a");
+    const restored = createServer(Board, { checkpoint });
+    assert.equal(restored.receive(entry.batch).replayed, true);
+    assert.deepEqual(restored.snapshot(), checkpoint.snapshot);
+  });
+
+  it("rejects replay sequences that cannot form an ordered commit history", () => {
+    const entry = (clientId: string, seq: number, serverSeq: number) => ({
+      batch: {
+        clientId,
+        seq,
+        operations: [{
+          type: "value/set" as const,
+          path: "meta" as const,
+          value: { status: "draft", nested: { enabled: false }, tags: [] },
+        }],
+      },
+      commit: { serverSeq, source: { clientId, seq }, operations: [] },
+    });
+    const cases = [
+      // A second batch cannot have been accepted at the first global commit.
+      { serverSeq: 3, replays: [entry("a", 2, 1), entry("b", 1, 3)], path: "/replays/0/commit/serverSeq" },
+      // By commit 3, a and b cannot already have completed four batches.
+      { serverSeq: 5, replays: [entry("a", 2, 2), entry("b", 2, 3), entry("c", 1, 5)], path: "/replays/1/commit/serverSeq" },
+    ];
+    for (const { serverSeq, replays, path } of cases) {
+      const input = { snapshot: { ...createServer(Board).snapshot(), serverSeq }, replays };
+      assertWireError(() => decodeServerCheckpoint(Board, input), path);
+      assert.throws(
+        () => createServer(Board, { checkpoint: input }),
+        WireDecodeError
+      );
+    }
+
+    // Entry array order need not match global commit order.
+    const input = {
+      snapshot: { ...createServer(Board).snapshot(), serverSeq: 5 },
+      replays: [entry("c", 1, 5), entry("b", 2, 4), entry("a", 2, 2)],
+    };
+    const checkpoint = decodeServerCheckpoint(Board, input);
+    assert.deepEqual(checkpoint.replays.map((entry) => entry.batch.clientId), ["c", "b", "a"]);
+    assert.deepEqual(createServer(Board, { checkpoint }).snapshot(), checkpoint.snapshot);
   });
 });

@@ -27,6 +27,7 @@ import type {
   TextSchema,
   ValueSchema,
 } from "./schema.ts";
+import { decodeServerCheckpoint } from "./wire.ts";
 
 export interface ValueSetOperation<
   Path extends string = string,
@@ -73,6 +74,17 @@ export interface ServerCommit<TOperation extends Operation = Operation> {
   readonly operations: readonly TOperation[];
 }
 
+/** Transport-local routing information; only the commit goes on the wire. */
+export interface ServerReceipt<TOperation extends Operation = Operation> {
+  readonly commit: ServerCommit<TOperation>;
+  readonly replayed: boolean;
+}
+
+export interface ServerReplayEntry<TOperation extends Operation = Operation> {
+  readonly batch: ClientBatch<TOperation>;
+  readonly commit: ServerCommit<TOperation>;
+}
+
 export interface LocalChangeEvent<TOperation extends Operation = Operation> {
   readonly origin: "local";
   readonly batch: ClientBatch<TOperation>;
@@ -102,7 +114,7 @@ export interface ServerCheckpoint<
   S extends SchemaShape = SchemaShape,
 > {
   readonly snapshot: DocumentSnapshot<S>;
-  readonly lastClientBatches: readonly ClientBatchRef[];
+  readonly replays: readonly ServerReplayEntry<DocumentOperation<S>>[];
 }
 
 export interface CreateClientOptions<S extends SchemaShape> {
@@ -323,59 +335,46 @@ function restoreServerCheckpoint<S extends SchemaShape>(
   checkpoint: ServerCheckpoint<S>
 ): {
   readonly states: Map<string, CollectionState>;
-  readonly nextClientSeq: Map<string, number>;
+  readonly replays: Map<string, ServerReplayEntry<DocumentOperation<S>>>;
   readonly nextServerSeq: number;
 } {
-  if (typeof checkpoint !== "object" || checkpoint === null) {
-    throw new Error("Server checkpoint must be an object");
-  }
-  if (!Array.isArray(checkpoint.lastClientBatches)) {
-    throw new Error("Server checkpoint lastClientBatches must be an array");
-  }
-  if (checkpoint.snapshot === undefined) {
-    throw new Error("Server checkpoint snapshot is required");
-  }
+  // Use the same structural and cross-entry validation at both restore boundaries.
+  const owned = decodeServerCheckpoint(schema, checkpoint);
+  return {
+    states: initialStates(schema, owned.snapshot),
+    replays: new Map(owned.replays.map((entry) => [entry.batch.clientId, entry])),
+    nextServerSeq: owned.snapshot.serverSeq + 1,
+  };
+}
 
-  const states = initialStates(schema, checkpoint.snapshot);
-  const nextClientSeq = new Map<string, number>();
-  let totalClientSeq = 0;
-  for (const batch of checkpoint.lastClientBatches) {
-    if (typeof batch !== "object" || batch === null) {
-      throw new Error("Server checkpoint client batch must be an object");
-    }
-    if (typeof batch.clientId !== "string" || batch.clientId.length === 0) {
-      throw new Error("Server checkpoint clientId must not be empty");
-    }
-    if (!Number.isSafeInteger(batch.seq) || batch.seq < 1) {
-      throw new Error(
-        `Server checkpoint client sequence must be a positive safe integer: ${batch.seq}`
-      );
-    }
-    if (nextClientSeq.has(batch.clientId)) {
-      throw new Error(
-        `Server checkpoint contains duplicate clientId: ${batch.clientId}`
-      );
-    }
-    if (totalClientSeq > checkpoint.snapshot.serverSeq - batch.seq) {
-      throw new Error(
-        "Server checkpoint client sequences must sum to serverSeq"
-      );
-    }
-
-    totalClientSeq += batch.seq;
-    nextClientSeq.set(batch.clientId, batch.seq + 1);
+/** JSON equality ignores object key order but preserves array/operation order. */
+function jsonEquals(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (
+    typeof left !== "object" ||
+    left === null ||
+    typeof right !== "object" ||
+    right === null
+  ) {
+    return false;
   }
-  if (totalClientSeq !== checkpoint.snapshot.serverSeq) {
-    throw new Error(
-      "Server checkpoint client sequences must sum to serverSeq"
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => jsonEquals(value, right[index]))
     );
   }
-
-  return {
-    states,
-    nextClientSeq,
-    nextServerSeq: checkpoint.snapshot.serverSeq + 1,
-  };
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = Object.keys(leftRecord);
+  return (
+    keys.length === Object.keys(rightRecord).length &&
+    keys.every((key) =>
+      Object.hasOwn(rightRecord, key) && jsonEquals(leftRecord[key], rightRecord[key])
+    )
+  );
 }
 
 function runtimeState(runtime: RuntimeCollection): CollectionState {
@@ -687,7 +686,7 @@ export class ClientDocument<S extends SchemaShape> {
 /** A synchronous authoritative document that resolves and orders client batches. */
 export class ServerDocument<S extends SchemaShape> {
   private authoritativeStates: Map<string, CollectionState>;
-  private readonly nextClientSeq: Map<string, number>;
+  private readonly replays: Map<string, ServerReplayEntry<DocumentOperation<S>>>;
   private readonly resolve: ServerResolver<S> | undefined;
   private nextServerSeq = 1;
   private receiving = false;
@@ -702,7 +701,7 @@ export class ServerDocument<S extends SchemaShape> {
         : restoreServerCheckpoint(schema, options.checkpoint);
     this.authoritativeStates =
       restored?.states ?? initialStates(schema, undefined);
-    this.nextClientSeq = restored?.nextClientSeq ?? new Map();
+    this.replays = restored?.replays ?? new Map();
     this.nextServerSeq = restored?.nextServerSeq ?? 1;
     this.resolve = options.resolve;
   }
@@ -727,32 +726,39 @@ export class ServerDocument<S extends SchemaShape> {
 
   /** Returns the state needed to restore this authoritative server. */
   checkpoint(): ServerCheckpoint<S> {
-    const lastClientBatches = Object.freeze(
-      [...this.nextClientSeq].map(([clientId, nextSeq]) =>
-        Object.freeze({ clientId, seq: nextSeq - 1 })
-      )
-    );
     return Object.freeze({
       snapshot: this.snapshot(),
-      lastClientBatches,
+      replays: Object.freeze([...this.replays.values()]),
     });
   }
 
-  /** Resolves the next batch from a client and returns its server commit. */
+  /** Resolves the next batch or replays this client's last identical batch. */
   receive(
     batch: ClientBatch<DocumentOperation<S>>
-  ): ServerCommit<DocumentOperation<S>> {
+  ): ServerReceipt<DocumentOperation<S>> {
     if (this.receiving) {
       throw new Error("Cannot call server.receive() reentrantly");
     }
 
     this.receiving = true;
     try {
-      const expectedClientSeq = this.nextClientSeq.get(batch.clientId) ?? 1;
+      const previous = this.replays.get(batch.clientId);
+      const expectedClientSeq = (previous?.batch.seq ?? 0) + 1;
+      if (previous !== undefined && batch.seq === previous.batch.seq) {
+        if (!jsonEquals(batch.operations, previous.batch.operations)) {
+          throw new Error(
+            `Retry batch differs from the saved batch for ${batch.clientId} sequence ${batch.seq}`
+          );
+        }
+        return Object.freeze({ commit: previous.commit, replayed: true });
+      }
       if (batch.seq !== expectedClientSeq) {
         throw new Error(
           `Expected client sequence ${expectedClientSeq} for ${batch.clientId}, received ${batch.seq}`
         );
+      }
+      if (!Number.isSafeInteger(this.nextServerSeq)) {
+        throw new Error("Server sequence exhausted");
       }
 
       const incomingOperations = freezeOperations(batch.operations);
@@ -780,14 +786,17 @@ export class ServerDocument<S extends SchemaShape> {
 
       const commit: ServerCommit<DocumentOperation<S>> = Object.freeze({
         serverSeq: this.nextServerSeq,
-        source: Object.freeze({ clientId: batch.clientId, seq: batch.seq }),
+        source: Object.freeze({ clientId: ownedBatch.clientId, seq: ownedBatch.seq }),
         operations,
       });
 
       this.authoritativeStates = nextAuthoritativeStates;
-      this.nextClientSeq.set(batch.clientId, expectedClientSeq + 1);
+      this.replays.set(
+        ownedBatch.clientId,
+        Object.freeze({ batch: ownedBatch, commit })
+      );
       this.nextServerSeq++;
-      return commit;
+      return Object.freeze({ commit, replayed: false });
     } finally {
       this.receiving = false;
     }
