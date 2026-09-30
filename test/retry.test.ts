@@ -252,6 +252,7 @@ describe("server retry", () => {
     const server = createServer(Board, {
       checkpoint: {
         snapshot: { ...createServer(Board).snapshot(), serverSeq: max - 1 },
+        history: [],
         replays: [{
           batch: previous,
           commit: { serverSeq: max - 1, source: { clientId: "a", seq: max - 1 }, operations: [] },
@@ -268,6 +269,8 @@ describe("server retry", () => {
     const checkpoint = server.checkpoint();
     const restored = createServer(Board, { checkpoint });
     for (const document of [server, restored]) {
+      assert.deepEqual(document.commitsSince(max - 1), [receipt.commit]);
+      assert.deepEqual(document.commitsSince(max), []);
       assert.throws(() => document.receive(batch("new", 1, 2)), /Server sequence exhausted/);
       assert.deepEqual(document.checkpoint(), checkpoint);
       const retry = document.receive(last);

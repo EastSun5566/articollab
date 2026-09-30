@@ -124,11 +124,27 @@ const restoredServer = createServer(Board, { checkpoint });
 
 The decoders strictly validate batches, commits, snapshots, server checkpoints, schema paths, collection kinds, IDs, ranges, and JSON-compatible values. Their outputs are library-owned and deeply frozen. Generic `Value<T>` and `List<T>` payload shapes are only checked as JSON because TypeScript's `T` is unavailable at runtime; application-specific payload validation remains the caller's responsibility and typically belongs in the server resolver for incoming batches. The transport remains responsible for parsing JSON and enforcing message-size or rate limits.
 
-`server.snapshot()` returns the current authoritative values together with the latest `serverSeq`. A new client using the same `DocumentSchema` can hydrate from that snapshot and then expects the following commit. Snapshots do not include a schema ID or version, and Articula does not provide schema migration. A real transport must obtain the snapshot and subscribe to later commits without leaving a gap; Articula does not retain commit history or manage connected clients. Snapshot containers are frozen, while nested JSON values follow the same immutable-value contract as `Value<T>`.
+`server.snapshot()` returns the current authoritative values together with the latest `serverSeq`. A new client using the same `DocumentSchema` can hydrate from that snapshot and then expects the following commit. Snapshots do not include a schema ID or version, and Articula does not provide schema migration. A real transport must obtain the snapshot and subscribe to later commits without leaving a gap; Articula does not manage connected clients. Snapshot containers are frozen, while nested JSON values follow the same immutable-value contract as `Value<T>`.
 
-`server.checkpoint()` saves the authoritative snapshot and a `replays` array containing each known client's last `{ batch, commit }`. Passing it to `createServer()` restores the state, sequences, and saved retry results. Resolver callbacks are application code and must be supplied again; replay uses the saved result even if the restored resolver changes. Containers are frozen and nested JSON payloads retain the immutable-value contract. The previous `lastClientBatches` checkpoint shape is no longer accepted.
+The server retains a bounded, consecutive commit history. `historyLimit` defaults to `1000`, must be a non-negative safe integer, and counts commits rather than payload bytes; `0` disables history. Accepted, rejected, and transformed batches all enter history, while retries do not. Use the client's last successfully received watermark to catch up:
 
-If checkpoints are persisted, save one before sending the corresponding new commit; a failed save must not continue using the advanced in-memory server. After a crash between saving and sending, the source can retry its saved batch to recover the original commit. Other peers that missed that commit still need a future catch-up mechanism; these per-client replay entries are not a global commit history.
+```ts
+const commits = server.commitsSince(lastReceivedServerSeq);
+if (commits === null) {
+  // The retained history cannot fill this gap; recover separately.
+} else {
+  for (const commit of commits) {
+    doc.receive(commit);
+    lastReceivedServerSeq = commit.serverSeq;
+  }
+}
+```
+
+`commitsSince()` returns a frozen array in global sequence order, an empty array when already caught up, or `null` when a complete catch-up is unavailable. Invalid or future watermarks throw. The caller records the watermark and coordinates catch-up with live subscription so no commit is skipped or delivered twice. If catch-up includes a saved retry commit, do not deliver that replay again. A client with pending mutations cannot simply switch to a fresh snapshot without risking lost operations; client recovery is not implemented yet.
+
+`server.checkpoint()` saves the authoritative snapshot, a `replays` array containing each known client's last `{ batch, commit }`, and the retained `history`. Passing it to `createServer()` restores the state, sequences, saved retry results, and history. The full checkpoint is validated before history is trimmed to the current `historyLimit`; that option is not serialized, and increasing it cannot recover evicted commits. Empty history is valid even at a nonzero watermark. Resolver callbacks are application code and must be supplied again; replay uses the saved result even if the restored resolver changes. Containers are frozen and nested JSON payloads retain the immutable-value contract. Older checkpoints without `history` are no longer accepted.
+
+If checkpoints are persisted, save one before sending the corresponding new commit; a failed save must not continue using the advanced in-memory server. After a crash between saving and sending, the source can retry its saved batch to recover the original commit, and peers can catch up while the required history remains available. History eviction does not affect each client's last-batch retry cache.
 
 ## Development
 
@@ -163,9 +179,10 @@ Implemented:
 - Late join from the current authoritative state
 - Server checkpoint and restore
 - Last-batch retry deduplication and replay, including after restore
+- Bounded global commit catch-up, including after restore
 
 Not implemented yet:
 
-- Transports, retry scheduling, commit catch-up, or reconnects
+- Transports, retry scheduling, client checkpoints, or reconnects
 - Bulk list operations, move, public stable positions, cursors, or rich text
 - Persistence, presence, or undo history

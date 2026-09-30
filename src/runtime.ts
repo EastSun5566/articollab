@@ -28,6 +28,7 @@ import type {
   ValueSchema,
 } from "./schema.ts";
 import { decodeServerCheckpoint } from "./wire.ts";
+import { jsonEquals } from "./json.ts";
 
 export interface ValueSetOperation<
   Path extends string = string,
@@ -115,6 +116,7 @@ export interface ServerCheckpoint<
 > {
   readonly snapshot: DocumentSnapshot<S>;
   readonly replays: readonly ServerReplayEntry<DocumentOperation<S>>[];
+  readonly history: readonly ServerCommit<DocumentOperation<S>>[];
 }
 
 export interface CreateClientOptions<S extends SchemaShape> {
@@ -135,6 +137,7 @@ export type ServerResolver<S extends SchemaShape> = (
 export interface CreateServerOptions<S extends SchemaShape> {
   readonly resolve?: ServerResolver<S>;
   readonly checkpoint?: ServerCheckpoint<S>;
+  readonly historyLimit?: number;
 }
 
 /** An optimistic collaborative value. Values are treated as immutable. */
@@ -336,6 +339,7 @@ function restoreServerCheckpoint<S extends SchemaShape>(
 ): {
   readonly states: Map<string, CollectionState>;
   readonly replays: Map<string, ServerReplayEntry<DocumentOperation<S>>>;
+  readonly history: readonly ServerCommit<DocumentOperation<S>>[];
   readonly nextServerSeq: number;
 } {
   // Use the same structural and cross-entry validation at both restore boundaries.
@@ -343,38 +347,9 @@ function restoreServerCheckpoint<S extends SchemaShape>(
   return {
     states: initialStates(schema, owned.snapshot),
     replays: new Map(owned.replays.map((entry) => [entry.batch.clientId, entry])),
+    history: owned.history,
     nextServerSeq: owned.snapshot.serverSeq + 1,
   };
-}
-
-/** JSON equality ignores object key order but preserves array/operation order. */
-function jsonEquals(left: unknown, right: unknown): boolean {
-  if (left === right) return true;
-  if (
-    typeof left !== "object" ||
-    left === null ||
-    typeof right !== "object" ||
-    right === null
-  ) {
-    return false;
-  }
-  if (Array.isArray(left) || Array.isArray(right)) {
-    return (
-      Array.isArray(left) &&
-      Array.isArray(right) &&
-      left.length === right.length &&
-      left.every((value, index) => jsonEquals(value, right[index]))
-    );
-  }
-  const leftRecord = left as Record<string, unknown>;
-  const rightRecord = right as Record<string, unknown>;
-  const keys = Object.keys(leftRecord);
-  return (
-    keys.length === Object.keys(rightRecord).length &&
-    keys.every((key) =>
-      Object.hasOwn(rightRecord, key) && jsonEquals(leftRecord[key], rightRecord[key])
-    )
-  );
 }
 
 function runtimeState(runtime: RuntimeCollection): CollectionState {
@@ -687,6 +662,8 @@ export class ClientDocument<S extends SchemaShape> {
 export class ServerDocument<S extends SchemaShape> {
   private authoritativeStates: Map<string, CollectionState>;
   private readonly replays: Map<string, ServerReplayEntry<DocumentOperation<S>>>;
+  private readonly historyLimit: number;
+  private history: readonly ServerCommit<DocumentOperation<S>>[];
   private readonly resolve: ServerResolver<S> | undefined;
   private nextServerSeq = 1;
   private receiving = false;
@@ -695,6 +672,12 @@ export class ServerDocument<S extends SchemaShape> {
     schema: DocumentSchema<S>,
     options: CreateServerOptions<S> = {}
   ) {
+    const historyLimit =
+      options.historyLimit === undefined ? 1000 : options.historyLimit;
+    if (!Number.isSafeInteger(historyLimit) || historyLimit < 0) {
+      throw new Error("historyLimit must be a non-negative safe integer");
+    }
+    this.historyLimit = historyLimit;
     const restored =
       options.checkpoint === undefined
         ? undefined
@@ -702,6 +685,8 @@ export class ServerDocument<S extends SchemaShape> {
     this.authoritativeStates =
       restored?.states ?? initialStates(schema, undefined);
     this.replays = restored?.replays ?? new Map();
+    this.history =
+      historyLimit === 0 ? [] : (restored?.history ?? []).slice(-historyLimit);
     this.nextServerSeq = restored?.nextServerSeq ?? 1;
     this.resolve = options.resolve;
   }
@@ -729,7 +714,24 @@ export class ServerDocument<S extends SchemaShape> {
     return Object.freeze({
       snapshot: this.snapshot(),
       replays: Object.freeze([...this.replays.values()]),
+      history: Object.freeze([...this.history]),
     });
+  }
+
+  /** Returns every later commit, or null if any required history was evicted. */
+  commitsSince(
+    serverSeq: number
+  ): readonly ServerCommit<DocumentOperation<S>>[] | null {
+    const currentSeq = this.nextServerSeq - 1;
+    if (!Number.isSafeInteger(serverSeq) || serverSeq < 0 || serverSeq > currentSeq) {
+      throw new Error(
+        "Catch-up watermark must be a non-negative safe integer no greater than the current server sequence"
+      );
+    }
+    if (serverSeq === currentSeq) return Object.freeze([]);
+    const first = this.history[0];
+    if (first === undefined || serverSeq < first.serverSeq - 1) return null;
+    return Object.freeze(this.history.slice(serverSeq - first.serverSeq + 1));
   }
 
   /** Resolves the next batch or replays this client's last identical batch. */
@@ -789,12 +791,17 @@ export class ServerDocument<S extends SchemaShape> {
         source: Object.freeze({ clientId: ownedBatch.clientId, seq: ownedBatch.seq }),
         operations,
       });
+      const nextHistory =
+        this.historyLimit === 0
+          ? []
+          : [...this.history, commit].slice(-this.historyLimit);
 
       this.authoritativeStates = nextAuthoritativeStates;
       this.replays.set(
         ownedBatch.clientId,
         Object.freeze({ batch: ownedBatch, commit })
       );
+      this.history = nextHistory;
       this.nextServerSeq++;
       return Object.freeze({ commit, replayed: false });
     } finally {

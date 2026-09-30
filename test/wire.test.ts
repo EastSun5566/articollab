@@ -710,6 +710,7 @@ describe("wire decoding", () => {
       () =>
         decodeServerCheckpoint(Board, {
           snapshot,
+          history: [],
           replays: [],
           extra: true,
         }),
@@ -719,6 +720,7 @@ describe("wire decoding", () => {
       () =>
         decodeServerCheckpoint(Board, {
           snapshot,
+          history: [],
           replays: [
             replay("client-1", 1, 1),
             replay("client-1", 1, 2),
@@ -730,6 +732,7 @@ describe("wire decoding", () => {
       () =>
         decodeServerCheckpoint(Board, {
           snapshot,
+          history: [],
           replays: [replay("client-1", 1, 1)],
         }),
       "/replays"
@@ -738,6 +741,7 @@ describe("wire decoding", () => {
       () =>
         decodeServerCheckpoint(Board, {
           snapshot: { ...snapshot, serverSeq: 0 },
+          history: [],
           replays: [replay("client-1", 0, 1)],
         }),
       "/replays/0/batch/seq"
@@ -749,6 +753,7 @@ describe("wire decoding", () => {
             ...snapshot,
             data: { ...snapshot.data, body: undefined },
           },
+          history: [],
           replays: [
             replay("client-1", 1, 1),
             replay("client-2", 1, 2),
@@ -762,6 +767,7 @@ describe("wire decoding", () => {
       () =>
         decodeServerCheckpoint(Board, {
           snapshot: { ...snapshot, serverSeq: 0 },
+          history: [],
           replays: sparseBatches,
         }),
       "/replays"
@@ -784,6 +790,7 @@ describe("wire decoding", () => {
     if (operation.type !== "text/insert") return;
     const withFirst = (entry: unknown, serverSeq = 2) => ({
       snapshot: { ...valid.snapshot, serverSeq },
+      history: [],
       replays: [entry, second],
     });
     const withCommit = (commit: unknown) => withFirst({ ...first, commit });
@@ -835,6 +842,7 @@ describe("wire decoding", () => {
         meta: { status: "draft", nested: { enabled: false }, tags: [] },
         items: { idList: [], values: [] }, body: { idList: [], value: "" },
       } },
+      history: [],
       replays: [{
         batch: { clientId: "a", seq: 1, operations: [
           { type: "list/insert", path: "items", before: null, id, value: { label: "original" } },
@@ -887,7 +895,7 @@ describe("wire decoding", () => {
       { serverSeq: 5, replays: [entry("a", 2, 2), entry("b", 2, 3), entry("c", 1, 5)], path: "/replays/1/commit/serverSeq" },
     ];
     for (const { serverSeq, replays, path } of cases) {
-      const input = { snapshot: { ...createServer(Board).snapshot(), serverSeq }, replays };
+      const input = { snapshot: { ...createServer(Board).snapshot(), serverSeq }, replays, history: [] };
       assertWireError(() => decodeServerCheckpoint(Board, input), path);
       assert.throws(
         () => createServer(Board, { checkpoint: input }),
@@ -898,6 +906,7 @@ describe("wire decoding", () => {
     // Entry array order need not match global commit order.
     const input = {
       snapshot: { ...createServer(Board).snapshot(), serverSeq: 5 },
+      history: [],
       replays: [entry("c", 1, 5), entry("b", 2, 4), entry("a", 2, 2)],
     };
     const checkpoint = decodeServerCheckpoint(Board, input);

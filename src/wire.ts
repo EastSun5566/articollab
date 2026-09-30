@@ -1,4 +1,5 @@
 import type { ElementId } from "articulated";
+import { jsonEquals } from "./json.ts";
 
 import {
   ListState,
@@ -693,7 +694,7 @@ export function decodeServerCheckpoint<S extends SchemaShape>(
 ): ServerCheckpoint<S> {
   const path: readonly PathSegment[] = [];
   const record = decodeRecord(input, path, "Server checkpoint");
-  requireExactFields(record, path, ["snapshot", "replays"]);
+  requireExactFields(record, path, ["snapshot", "replays", "history"]);
   const snapshot = decodeSnapshotAt(schema, record.snapshot, ["snapshot"]);
   const inputReplays = decodeDenseArray(
     record.replays,
@@ -776,5 +777,86 @@ export function decodeServerCheckpoint<S extends SchemaShape>(
     completedBatches += entry.batch.seq;
   }
 
-  return Object.freeze({ snapshot, replays });
+  const inputHistory = decodeDenseArray(
+    record.history,
+    ["history"],
+    "Commit history"
+  );
+  const history = Object.freeze(
+    inputHistory.map((commit, index) =>
+      decodeServerCommitAt(schema, commit, ["history", index])
+    )
+  );
+  if (history.length > 0) {
+    const firstSeq = history[0]!.serverSeq;
+    if (
+      history.length > snapshot.serverSeq ||
+      firstSeq !== snapshot.serverSeq - history.length + 1
+    ) {
+      fail(
+        ["history", 0, "serverSeq"],
+        "history must be a suffix ending at snapshot serverSeq"
+      );
+    }
+
+    const firstClientSeq = new Map<string, number>();
+    const lastByClient = new Map<string, {
+      readonly commit: ServerCommit<DocumentOperation<S>>;
+      readonly index: number;
+    }>();
+    for (const [index, commit] of history.entries()) {
+      const commitPath = ["history", index] as const;
+      if (commit.serverSeq !== firstSeq + index) {
+        fail(
+          [...commitPath, "serverSeq"],
+          "history serverSeq must be consecutive and ascending"
+        );
+      }
+      const clientId = commit.source.clientId;
+      if (!clientIds.has(clientId)) {
+        fail([...commitPath, "source", "clientId"], "history client must exist in replays");
+      }
+      const previous = lastByClient.get(clientId);
+      if (previous === undefined) {
+        firstClientSeq.set(clientId, commit.source.seq);
+      } else if (commit.source.seq !== previous.commit.source.seq + 1) {
+        fail([...commitPath, "source", "seq"], "history client sequence must be consecutive");
+      }
+      lastByClient.set(clientId, { commit, index });
+    }
+
+    // Account for all batches before this suffix, including absent clients.
+    const beforeHistory = firstSeq - 1;
+    let totalBeforeHistory = 0;
+    for (const replay of replays) {
+      const clientId = replay.batch.clientId;
+      const last = lastByClient.get(clientId);
+      if (last === undefined && replay.commit.serverSeq >= firstSeq) {
+        fail(
+          ["history", replay.commit.serverSeq - firstSeq],
+          "history must include each replay commit within its retained range"
+        );
+      }
+      if (last !== undefined && !jsonEquals(last.commit, replay.commit)) {
+        fail(["history", last.index], "last client history commit must match replay commit");
+      }
+      const first = firstClientSeq.get(clientId);
+      const priorCount = first === undefined ? replay.batch.seq : first - 1;
+      if (totalBeforeHistory > beforeHistory - priorCount) {
+        fail(
+          ["history"],
+          "client sequences before history must sum to its starting watermark"
+        );
+      }
+      totalBeforeHistory += priorCount;
+    }
+    if (totalBeforeHistory !== beforeHistory) {
+      fail(
+        ["history"],
+        "client sequences before history must sum to its starting watermark"
+      );
+    }
+  }
+
+  return Object.freeze({ snapshot, replays, history });
 }

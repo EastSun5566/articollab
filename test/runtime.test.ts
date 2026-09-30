@@ -840,6 +840,7 @@ describe("server checkpoint", () => {
 
     assert.deepEqual(checkpoint, {
       snapshot: { serverSeq: 0, data: { count: 0 } },
+      history: [],
       replays: [],
     });
     assert.ok(Object.isFrozen(checkpoint));
@@ -853,6 +854,7 @@ describe("server checkpoint", () => {
     });
     assert.deepEqual(checkpoint, {
       snapshot: { serverSeq: 0, data: { count: 0 } },
+      history: [],
       replays: [],
     });
   });
@@ -876,6 +878,10 @@ describe("server checkpoint", () => {
     const checkpoint = server.checkpoint();
     assert.deepEqual(checkpoint, {
       snapshot: { serverSeq: 2, data: { count: 1 } },
+      history: [
+        replay("client-1", 1, 1, 1).commit,
+        { serverSeq: 2, source: { clientId: "client-2", seq: 1 }, operations: [] },
+      ],
       replays: [
         replay("client-1", 1, 1, 1),
         {
@@ -956,6 +962,7 @@ describe("server checkpoint", () => {
       () =>
         restore({
           snapshot: { serverSeq: 1, data: { count: 0 } },
+          history: [],
           replays: [],
         }),
       /must sum to snapshot serverSeq/
@@ -964,6 +971,7 @@ describe("server checkpoint", () => {
       () =>
         restore({
           snapshot: { serverSeq: 2, data: { count: 0 } },
+          history: [],
           replays: [
             replay("client-1", 1, 1),
             replay("client-1", 1, 2),
@@ -975,6 +983,7 @@ describe("server checkpoint", () => {
       () =>
         restore({
           snapshot: { serverSeq: 0, data: { count: 0 } },
+          history: [],
           replays: [replay("client-1", 0, 1)],
         }),
       /safe integer greater than or equal to 1/
@@ -1006,6 +1015,7 @@ describe("server checkpoint", () => {
                 },
               },
             },
+            history: [],
             replays: [],
           },
         }),
