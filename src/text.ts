@@ -299,21 +299,33 @@ export class RuntimeText implements Text {
   private readonly path: string;
   private readonly mutate: (operation: TextOperation<string>) => void;
   private readonly idGenerator: ElementIdGenerator;
+  private readonly beforeMutation: () => void;
+  private bunchSeq: number;
 
   constructor(
     mutate: (operation: TextOperation<string>) => void,
     clientId: string,
     path: string,
-    initialState: TextState
+    initialState: TextState,
+    beforeMutation: () => void,
+    lastBunchSeq = 0
   ) {
     this.mutate = mutate;
     this.path = path;
     this.current = initialState;
 
-    let nextBunchSeq = 1;
-    this.idGenerator = new ElementIdGenerator(() =>
-      JSON.stringify([clientId, path, nextBunchSeq++])
-    );
+    this.beforeMutation = beforeMutation;
+    this.bunchSeq = lastBunchSeq;
+    this.idGenerator = new ElementIdGenerator(() => {
+      if (this.bunchSeq === Number.MAX_SAFE_INTEGER) {
+        throw new Error("ID bunch sequence exhausted");
+      }
+      return JSON.stringify([clientId, path, ++this.bunchSeq]);
+    });
+  }
+
+  get lastBunchSeq(): number {
+    return this.bunchSeq;
   }
 
   get state(): TextState {
@@ -330,6 +342,7 @@ export class RuntimeText implements Text {
     }
     if (value.length === 0) return;
 
+    this.beforeMutation();
     const before = index === 0 ? null : this.current.idAt(index - 1);
     const operation = freezeTextOperation({
       type: "text/insert",
@@ -356,6 +369,7 @@ export class RuntimeText implements Text {
     }
     if (count === 0) return;
 
+    this.beforeMutation();
     const operation = freezeTextOperation({
       type: "text/delete",
       path: this.path,

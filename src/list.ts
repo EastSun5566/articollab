@@ -289,21 +289,33 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
   private readonly path: string;
   private readonly mutate: (operation: ListOperation<string, T>) => void;
   private readonly idGenerator: ElementIdGenerator;
+  private readonly beforeMutation: () => void;
+  private bunchSeq: number;
 
   constructor(
     mutate: (operation: ListOperation<string, T>) => void,
     clientId: string,
     path: string,
-    initialState: ListState<T>
+    initialState: ListState<T>,
+    beforeMutation: () => void,
+    lastBunchSeq = 0
   ) {
     this.mutate = mutate;
     this.path = path;
     this.current = initialState;
 
-    let nextBunchSeq = 1;
-    this.idGenerator = new ElementIdGenerator(() =>
-      JSON.stringify([clientId, path, nextBunchSeq++])
-    );
+    this.beforeMutation = beforeMutation;
+    this.bunchSeq = lastBunchSeq;
+    this.idGenerator = new ElementIdGenerator(() => {
+      if (this.bunchSeq === Number.MAX_SAFE_INTEGER) {
+        throw new Error("ID bunch sequence exhausted");
+      }
+      return JSON.stringify([clientId, path, ++this.bunchSeq]);
+    });
+  }
+
+  get lastBunchSeq(): number {
+    return this.bunchSeq;
   }
 
   get state(): ListState<T> {
@@ -323,6 +335,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
       throw new Error(`Index out of bounds: ${index} (length: ${this.length})`);
     }
 
+    this.beforeMutation();
     const before = index === 0 ? null : this.current.idAt(index - 1);
     const operation = freezeListOperation({
       type: "list/insert",
@@ -344,6 +357,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
       throw new Error(`Index out of bounds: ${index} (length: ${this.length})`);
     }
 
+    this.beforeMutation();
     const operation = freezeListOperation({
       type: "list/delete",
       path: this.path,

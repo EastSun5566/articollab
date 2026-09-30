@@ -6,7 +6,6 @@ import {
   type ListDeleteOperation,
   type ListInsertOperation,
   type ListOperation,
-  type ListSnapshotData,
 } from "./list.ts";
 import {
   freezeTextOperation,
@@ -16,7 +15,6 @@ import {
   type TextDeleteOperation,
   type TextInsertOperation,
   type TextOperation,
-  type TextSnapshotData,
 } from "./text.ts";
 import type {
   DocumentSchema,
@@ -27,7 +25,15 @@ import type {
   TextSchema,
   ValueSchema,
 } from "./schema.ts";
-import { decodeServerCheckpoint } from "./wire.ts";
+import { decodeClientCheckpoint, decodeServerCheckpoint } from "./wire.ts";
+import {
+  applyOperations,
+  initialStates,
+  saveSnapshot,
+  unknownOperationType,
+  wrongCollectionKind,
+  type CollectionState,
+} from "./state.ts";
 import { jsonEquals } from "./json.ts";
 
 export interface ValueSetOperation<
@@ -119,10 +125,23 @@ export interface ServerCheckpoint<
   readonly history: readonly ServerCommit<DocumentOperation<S>>[];
 }
 
+export interface ClientCheckpoint<S extends SchemaShape = SchemaShape> {
+  readonly clientId: string;
+  readonly snapshot: DocumentSnapshot<S>;
+  /** Last emitted local batch sequence, including still-pending batches. */
+  readonly lastLocalSeq: number;
+  readonly pendingBatches: readonly ClientBatch<DocumentOperation<S>>[];
+  /** Last allocated bunch per List/Text path, including rolled-back allocations. */
+  readonly lastBunchSeqs: Readonly<{
+    [K in keyof S as S[K] extends ValueSchema ? never : K]: number;
+  }>;
+}
+
 export interface CreateClientOptions<S extends SchemaShape> {
   readonly clientId: string;
   readonly onBatch: (batch: ClientBatch<DocumentOperation<S>>) => void;
   readonly snapshot?: DocumentSnapshot<S>;
+  readonly checkpoint?: ClientCheckpoint<S>;
 }
 
 export interface ServerResolveContext<S extends SchemaShape> {
@@ -151,15 +170,18 @@ class RuntimeValue<T extends JsonValue> implements Value<T> {
   private current: T;
   private readonly path: string;
   private readonly mutate: (operation: ValueSetOperation<string, T>) => void;
+  private readonly beforeMutation: () => void;
 
   constructor(
     mutate: (operation: ValueSetOperation<string, T>) => void,
     path: string,
-    initialValue: T
+    initialValue: T,
+    beforeMutation: () => void
   ) {
     this.mutate = mutate;
     this.path = path;
     this.current = initialValue;
+    this.beforeMutation = beforeMutation;
   }
 
   get state(): T {
@@ -175,6 +197,7 @@ class RuntimeValue<T extends JsonValue> implements Value<T> {
   }
 
   set(nextValue: T): void {
+    this.beforeMutation();
     this.current = nextValue;
     this.mutate(
       Object.freeze({
@@ -194,144 +217,10 @@ class RuntimeValue<T extends JsonValue> implements Value<T> {
   }
 }
 
-type CollectionState = JsonValue | ListState<JsonValue> | TextState;
 type RuntimeCollection =
   | RuntimeValue<JsonValue>
   | RuntimeList<JsonValue>
   | RuntimeText;
-
-function wrongCollectionKind(path: string): Error {
-  return new Error(`Operation type does not match document path: ${path}`);
-}
-
-function unknownOperationType(operation: unknown): Error {
-  const type = (operation as { readonly type?: unknown }).type;
-  return new Error(`Unknown operation type: ${String(type)}`);
-}
-
-function applyOperations(
-  states: Map<string, CollectionState>,
-  operations: readonly Operation[]
-): void {
-  for (const operation of operations) {
-    if (!states.has(operation.path)) {
-      throw new Error(`Unknown document path: ${operation.path}`);
-    }
-    const current = states.get(operation.path)!;
-
-    switch (operation.type) {
-      case "value/set":
-        if (current instanceof ListState || current instanceof TextState) {
-          throw wrongCollectionKind(operation.path);
-        }
-        states.set(operation.path, operation.value);
-        break;
-      case "list/insert":
-        if (!(current instanceof ListState)) {
-          throw wrongCollectionKind(operation.path);
-        }
-        states.set(operation.path, current.insert(operation));
-        break;
-      case "list/delete":
-        if (!(current instanceof ListState)) {
-          throw wrongCollectionKind(operation.path);
-        }
-        states.set(operation.path, current.delete(operation));
-        break;
-      case "text/insert":
-        if (!(current instanceof TextState)) {
-          throw wrongCollectionKind(operation.path);
-        }
-        states.set(operation.path, current.insert(operation));
-        break;
-      case "text/delete":
-        if (!(current instanceof TextState)) {
-          throw wrongCollectionKind(operation.path);
-        }
-        states.set(operation.path, current.delete(operation));
-        break;
-      default:
-        throw unknownOperationType(operation);
-    }
-  }
-}
-
-function validateSnapshot<S extends SchemaShape>(
-  schema: DocumentSchema<S>,
-  snapshot: DocumentSnapshot<S>
-): Readonly<Record<string, unknown>> {
-  if (typeof snapshot !== "object" || snapshot === null) {
-    throw new Error("Snapshot must be an object");
-  }
-  if (!Number.isSafeInteger(snapshot.serverSeq) || snapshot.serverSeq < 0) {
-    throw new Error(
-      `Snapshot server sequence must be a non-negative safe integer: ${snapshot.serverSeq}`
-    );
-  }
-  if (
-    typeof snapshot.data !== "object" ||
-    snapshot.data === null ||
-    Array.isArray(snapshot.data)
-  ) {
-    throw new Error("Snapshot data must be an object");
-  }
-
-  const schemaPaths = Object.keys(schema.definition);
-  const snapshotData = snapshot.data as Readonly<Record<string, unknown>>;
-  for (const path of schemaPaths) {
-    if (!Object.hasOwn(snapshotData, path)) {
-      throw new Error(`Missing snapshot path: ${path}`);
-    }
-  }
-
-  const schemaPathSet = new Set(schemaPaths);
-  for (const path of Object.keys(snapshotData)) {
-    if (!schemaPathSet.has(path)) {
-      throw new Error(`Unknown snapshot path: ${path}`);
-    }
-  }
-  return snapshotData;
-}
-
-function initialStates<S extends SchemaShape>(
-  schema: DocumentSchema<S>,
-  snapshot: DocumentSnapshot<S> | undefined
-): Map<string, CollectionState> {
-  const snapshotData =
-    snapshot === undefined ? undefined : validateSnapshot(schema, snapshot);
-  const states = new Map<string, CollectionState>();
-
-  for (const path of Object.keys(schema.definition) as Array<
-    Extract<keyof S, string>
-  >) {
-    const descriptor = schema.definition[path];
-    if (descriptor.kind === "value") {
-      const value =
-        snapshotData === undefined
-          ? descriptor.initialValue
-          : snapshotData[path];
-      if (value === undefined) {
-        throw new Error(`Missing document path: ${path}`);
-      }
-      states.set(path, value as JsonValue);
-    } else if (descriptor.kind === "list") {
-      states.set(
-        path,
-        snapshotData === undefined
-          ? ListState.empty()
-          : ListState.load(snapshotData[path] as ListSnapshotData<JsonValue>)
-      );
-    } else {
-      states.set(
-        path,
-        snapshotData === undefined
-          ? TextState.empty()
-          : TextState.load(snapshotData[path] as TextSnapshotData)
-      );
-    }
-  }
-  return states;
-}
 
 function restoreServerCheckpoint<S extends SchemaShape>(
   schema: DocumentSchema<S>,
@@ -442,7 +331,7 @@ export class ClientDocument<S extends SchemaShape> {
   private readonly onBatch: CreateClientOptions<S>["onBatch"];
   private readonly listeners = new Set<ChangeListener<S>>();
   private readonly collections = new Map<string, RuntimeCollection>();
-  private authoritativeStates = new Map<string, CollectionState>();
+  private authoritativeStates: Map<string, CollectionState>;
   private readonly pendingBatches: ClientBatch<DocumentOperation<S>>[] = [];
 
   private nextSeq = 1;
@@ -456,10 +345,36 @@ export class ClientDocument<S extends SchemaShape> {
       throw new Error("clientId must not be empty");
     }
 
+    if (options.snapshot !== undefined && options.checkpoint !== undefined) {
+      throw new Error("Cannot provide both snapshot and checkpoint");
+    }
+    const checkpoint =
+      options.checkpoint === undefined
+        ? undefined
+        : decodeClientCheckpoint(schema, options.checkpoint);
+    if (checkpoint !== undefined && checkpoint.clientId !== options.clientId) {
+      throw new Error("Checkpoint clientId must match client options");
+    }
+
     this.clientId = options.clientId;
     this.onBatch = options.onBatch;
-    const states = initialStates(schema, options.snapshot);
-    this.lastServerSeq = options.snapshot?.serverSeq ?? 0;
+    const snapshot = checkpoint?.snapshot ?? options.snapshot;
+    this.authoritativeStates = initialStates(schema, snapshot);
+    this.lastServerSeq = snapshot?.serverSeq ?? 0;
+    this.nextSeq = checkpoint === undefined ? 1 : checkpoint.lastLocalSeq + 1;
+    if (checkpoint !== undefined) {
+      for (const batch of checkpoint.pendingBatches) {
+        this.pendingBatches.push(batch);
+      }
+    }
+    const states = new Map(this.authoritativeStates);
+    for (const batch of this.pendingBatches) {
+      applyOperations(states, batch.operations);
+    }
+    const lastBunchSeqs = checkpoint?.lastBunchSeqs as
+      | Readonly<Record<string, number>>
+      | undefined;
+    const beforeMutation = () => this.assertCanMutate();
 
     const publicState: Partial<
       Record<keyof S, Value<JsonValue> | List<JsonValue> | Text>
@@ -484,7 +399,8 @@ export class ClientDocument<S extends SchemaShape> {
         runtime = new RuntimeValue(
           (operation) => this.mutate(operation),
           path,
-          collectionState
+          collectionState,
+          beforeMutation
         );
       } else if (descriptor.kind === "list") {
         if (!(collectionState instanceof ListState)) {
@@ -494,7 +410,9 @@ export class ClientDocument<S extends SchemaShape> {
           (operation) => this.mutate(operation),
           this.clientId,
           path,
-          collectionState
+          collectionState,
+          beforeMutation,
+          lastBunchSeqs?.[path] ?? 0
         );
       } else {
         if (!(collectionState instanceof TextState)) {
@@ -504,14 +422,44 @@ export class ClientDocument<S extends SchemaShape> {
           (operation) => this.mutate(operation),
           this.clientId,
           path,
-          collectionState
+          collectionState,
+          beforeMutation,
+          lastBunchSeqs?.[path] ?? 0
         );
       }
       this.collections.set(path, runtime);
-      this.authoritativeStates.set(path, collectionState);
       publicState[path] = runtime;
     }
     this.state = Object.freeze(publicState) as DocumentState<S>;
+  }
+
+  /** Saves authoritative state and the pending work needed to rebuild this client. */
+  checkpoint(): ClientCheckpoint<S> {
+    if (this.transactionDepth !== 0) {
+      throw new Error("Cannot checkpoint during a transaction");
+    }
+    const lastBunchSeqs = Object.freeze(
+      Object.fromEntries(
+        [...this.collections].flatMap(([path, runtime]) =>
+          runtime instanceof RuntimeList || runtime instanceof RuntimeText
+            ? [[path, runtime.lastBunchSeq]]
+            : []
+        )
+      )
+    ) as ClientCheckpoint<S>["lastBunchSeqs"];
+    return Object.freeze({
+      clientId: this.clientId,
+      snapshot: saveSnapshot<S>(this.authoritativeStates, this.lastServerSeq),
+      lastLocalSeq: this.nextSeq - 1,
+      pendingBatches: Object.freeze([...this.pendingBatches]),
+      lastBunchSeqs,
+    });
+  }
+
+  private assertCanMutate(): void {
+    if (!Number.isSafeInteger(this.nextSeq)) {
+      throw new Error("Client sequence exhausted");
+    }
   }
 
   private mutate(operation: Operation): void {
@@ -693,20 +641,7 @@ export class ServerDocument<S extends SchemaShape> {
 
   /** Returns the current authoritative state and its server sequence. */
   snapshot(): DocumentSnapshot<S> {
-    const data = Object.freeze(
-      Object.fromEntries(
-        [...this.authoritativeStates].map(([path, state]) => [
-          path,
-          state instanceof ListState || state instanceof TextState
-            ? state.save()
-            : state,
-        ])
-      )
-    ) as DocumentSnapshotData<S>;
-    return Object.freeze({
-      serverSeq: this.nextServerSeq - 1,
-      data,
-    });
+    return saveSnapshot<S>(this.authoritativeStates, this.nextServerSeq - 1);
   }
 
   /** Returns the state needed to restore this authoritative server. */

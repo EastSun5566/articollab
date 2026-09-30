@@ -41,6 +41,7 @@ export {
   type ChangeEvent,
   type ClientBatch,
   type ClientBatchRef,
+  type ClientCheckpoint,
   type CreateClientOptions,
   type CreateServerOptions,
   type DocumentOperation,
@@ -62,6 +63,7 @@ export {
 
 export {
   decodeClientBatch,
+  decodeClientCheckpoint,
   decodeServerCheckpoint,
   decodeServerCommit,
   decodeSnapshot,
