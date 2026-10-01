@@ -249,7 +249,55 @@ Each live client has at most one outbound pump. It selects the earliest **curren
 
 Transfer, parsing, decoding, resolver, receive, or incoming-listener failures stop the whole network and retain the first error. Waiting operations reject even if another transfer is still paused; queued and late-completing work must not continue applying updates. Background jobs have rejection observers. Completed commits are not rolled back, and handles retain their documents for checkpoint recovery. Do not reuse a failed network.
 
-This remains a single-process demonstration, not production transport or reconnect. It assumes one stopped old writer per client ID, FIFO delivery, and synchronous listeners producing finite edits. It provides no persistence, timeouts, cancellation of external transfer-hook side effects, unordered delivery repair, retry scheduling, or automatic repair of pending references invalidated by rejection or transformation.
+This remains a single-process demonstration, not production transport or reconnect. It assumes one stopped old writer per client ID, FIFO delivery, and synchronous listeners producing finite edits. Storage is supplied by the caller, as in the file-backed example below. There are no timeouts, cancellation of external transfer-hook side effects, unordered delivery repair, retry scheduling, or automatic repair of pending references invalidated by rejection or transformation.
+
+## File-backed checkpoint recovery example
+
+```sh
+node examples/persistent-resume.ts
+```
+
+This example adds synchronous JSON storage to the same asynchronous network helper, without changing the package runtime. It saves mixed offline work, accepts a batch without acknowledging its disconnected source, then rebuilds the server and clients from files, resumes, and makes a live edit. It uses and cleans up its own temporary directory; importing it does not run the demo.
+
+```ts
+import { createServer } from "./src/index.ts";
+import { Board } from "./examples/resume.ts";
+import { createAsyncExampleNetwork } from "./examples/async-resume.ts";
+import { createCheckpointStore } from "./examples/persistent-resume.ts";
+
+const store = createCheckpointStore(existingDirectory);
+const savedServer = store.loadServer();
+const server = createServer(Board, {
+  ...(savedServer === null ? {} : { checkpoint: savedServer }),
+  resolve: ({ batch }) => batch.operations, // Supply application policy again.
+});
+store.saveServer(server.checkpoint()); // Finish bootstrap before accepting clients.
+const network = createAsyncExampleNetwork(server, {
+  saveClientCheckpoint: store.saveClient,
+  saveServerCheckpoint: store.saveServer,
+});
+const savedClient = store.loadClient("client-a");
+const connection = network.connect("client-a", savedClient ?? undefined);
+if (savedClient !== null && !(await connection.resume())) {
+  // Keep the saved pending work; retained history cannot fill this gap.
+}
+await network.idle();
+```
+
+The example-only `createCheckpointStore(directory)` requires an existing directory. It provides `loadServer()`, `saveServer(checkpoint)`, `loadClient(clientId)`, and `saveClient(checkpoint)`. Loads read only official files, parse JSON, and use the existing checkpoint decoders; only a missing file returns `null`. Corrupt JSON, invalid checkpoints, mismatched client IDs, and other filesystem errors throw rather than silently starting fresh. Use a new client ID for a genuinely new client; a missing client file is not permission to reset an existing writer or discard its pending work.
+
+The asynchronous helper accepts optional `saveClientCheckpoint` and `saveServerCheckpoint` callbacks. They synchronously return `undefined`, so an async callback fails type checking. They are trusted application code: save only, without reentering the network or mutating documents. When omitted, the helper behaves as before.
+
+Saving happens at these boundaries:
+
+- Connect saves the initial or restored client before registering it.
+- Every local batch saves the complete current client checkpoint before starting a send, including offline and recovery edits.
+- Successful incoming application saves the latest client checkpoint, even for a silent own acknowledgement. Already-consumed commits are skipped.
+- Each new server result is saved before any delivery is queued, including rejection and transformation. A replay receipt does not save the server again.
+
+Local state changes optimistically before saving, and a save failure may throw from the mutation itself; the batch and visible state are not rolled back. Saving failures stop the network and reject waiting operations. Do not reuse an advanced in-memory server after its save fails: rebuild from the last successfully saved files. If an incoming listener throws, preserve that error and do not attempt an extra save that could mask it. Only successfully saved work is promised recoverable.
+
+Files are `server.json` and `client-<hex>.json`, where `<hex>` is the lowercase hex encoding of the client ID's UTF-16LE bytes. For example, `a` uses `client-6100.json` and `A` uses `client-4100.json`. This lossless encoding avoids case and Unicode-normalization collisions on local filesystems. Each save serializes completely, writes a same-directory `<target>.tmp` file, then renames it over the official file; newly created files use mode `0o600`. Orphan temporary files are ignored on load. Writes block the event loop and require one writer per file in a trusted local directory. This verifies process interruption and restart, not power-loss durability: there is no fsync/directory-sync protocol, cross-file transaction, lock, migration, production storage adapter, or recovery beyond retained history.
 
 ## Development
 
@@ -286,6 +334,7 @@ Implemented:
 - Client checkpoint and restore with pending-operation replay
 - Example-only synchronous resume with catch-up, pending resubmission, and live routing
 - Example-only asynchronous JSON resume with independent FIFO delivery
+- Example-only file-backed checkpoint recovery with synchronous JSON storage
 - Last-batch retry deduplication and replay, including after restore
 - Bounded global commit catch-up, including after restore
 
@@ -293,4 +342,4 @@ Not implemented yet:
 
 - Transports, retry scheduling, automatic client resume, or reconnects
 - Bulk list operations, move, public stable positions, cursors, or rich text
-- Persistence, presence, or undo history
+- Production persistence adapters, presence, or undo history

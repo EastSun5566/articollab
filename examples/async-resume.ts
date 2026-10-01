@@ -12,6 +12,7 @@ import {
   type ClientCheckpoint,
   type ClientDocument,
   type DocumentOperation,
+  type ServerCheckpoint,
   type ServerDocument,
 } from "../src/index.ts";
 import { Board } from "./resume.ts";
@@ -34,7 +35,11 @@ type Connection = {
 /** Example-only ordered JSON delivery, with independently progressing clients. */
 export function createAsyncExampleNetwork(
   server: ServerDocument<Shape>,
-  options: { readonly transfer?: Transfer } = {}
+  options: {
+    readonly transfer?: Transfer;
+    readonly saveClientCheckpoint?: (checkpoint: Checkpoint) => undefined;
+    readonly saveServerCheckpoint?: (checkpoint: ServerCheckpoint<Shape>) => undefined;
+  } = {}
 ) {
   const transfer: Transfer = options.transfer ?? (async (_direction, _clientId, message) => message);
   const connections = new Map<string, Connection>();
@@ -61,6 +66,17 @@ export function createAsyncExampleNetwork(
     for (const cancel of cancellations) cancel(error);
     cancellations.clear();
     for (const waiter of idleWaiters.splice(0)) waiter.reject(error);
+  }
+
+  // Saving can run outside a tracked job (connect and synchronous onBatch).
+  function saveClient(connection: Connection): void {
+    requireUsable();
+    try {
+      options.saveClientCheckpoint?.(connection.doc.checkpoint());
+    } catch (error) {
+      stop(error);
+      throw error;
+    }
   }
 
   // Track nested work too: idle must not miss jobs created by listeners or pumps.
@@ -128,6 +144,7 @@ export function createAsyncExampleNetwork(
     const commit = decodeServerCommit(Board, JSON.parse(received));
     if (commit.serverSeq <= connection.doc.checkpoint().snapshot.serverSeq) return;
     connection.doc.receive(commit);
+    saveClient(connection); // Own acknowledgements need not emit a change.
   }
 
   function send(batch: Batch): Promise<{ sourceDelivery: Promise<void> }> {
@@ -139,6 +156,14 @@ export function createAsyncExampleNetwork(
       const decoded = decodeClientBatch(Board, JSON.parse(received));
       return serverJob(() => {
         const { commit, replayed } = server.receive(decoded);
+        if (!replayed) {
+          try {
+            options.saveServerCheckpoint?.(server.checkpoint());
+          } catch (error) {
+            stop(error);
+            throw error;
+          }
+        }
         const wire = JSON.stringify(commit);
         const source = connections.get(decoded.clientId);
         const recipients = replayed
@@ -197,11 +222,13 @@ export function createAsyncExampleNetwork(
         if (connections.get(clientId) !== connection) {
           throw new Error("This connection was replaced; stop the old writer");
         }
+        saveClient(connection);
         startPump(connection);
       },
     });
     connection = { doc, mode: checkpoint === undefined ? "live" : "offline",
       inbox: Promise.resolve(), pumping: false };
+    saveClient(connection);
     connections.set(clientId, connection);
 
     return {
