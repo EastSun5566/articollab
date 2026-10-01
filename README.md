@@ -305,7 +305,7 @@ Files are `server.json` and `client-<hex>.json`, where `<hex>` is the lowercase 
 node examples/http-sync.ts
 ```
 
-This example uses real localhost HTTP requests with Node's built-in HTTP server and fetch. It demonstrates two clients making mixed optimistic edits and manually syncing to convergence. Importing it does not run the demo or open a socket. The helpers are example-only and are not package exports.
+This example uses real localhost HTTP requests with Node's built-in HTTP server and fetch. It demonstrates two clients making mixed optimistic edits, restoring a checkpoint after a lost POST response, and manually syncing to convergence. Importing it does not run the demo or open a socket. The helpers are example-only and are not package exports.
 
 ```ts
 import { createServer } from "./src/index.ts";
@@ -334,13 +334,34 @@ The host listens only on `127.0.0.1`, using an automatically assigned port. Its 
 
 POST requires `application/json` and at most 1 MiB of actual UTF-8 bytes, including chunked bodies. JSON and wire validation use the existing decoder before runtime application. Invalid JSON/wire/watermarks return `400`; runtime receive failures return `409` without distinguishing their causes. Oversized bodies return `413`, unsupported content types `415`, unknown routes `404`, incorrect methods `405`, and unexpected handler errors `500`. Error bodies contain only `{ error: string }`, not stack traces. The server's total order is synchronous `receive()` call order after reading each body, not initial HTTP request arrival. There is no subscription registry or broadcast.
 
-`connectHttpExampleClient(url, clientId, options?)` asynchronously fetches and decodes a snapshot. Its optional `fetch` override is for controlling requests in tests; by default it uses native fetch. The client knows only the URL, not the server object. Updates after the snapshot are caught by the first sync.
+`connectHttpExampleClient(url, clientId, options?)` fetches and decodes a snapshot for a fresh client. With `options.checkpoint`, it instead restores the complete client checkpoint using the existing runtime validation, without making any HTTP requests or automatically submitting pending work. The checkpoint must match `clientId`. Its optional `fetch` override is for controlling requests in tests; by default it uses native fetch. The client knows only the URL, not the server object. Updates after the snapshot or checkpoint watermark are caught by the first sync.
 
 `sync(): Promise<boolean>` first fetches catch-up from the latest checkpoint watermark, validates and applies the whole ordered prefix, then posts the earliest current pending batch. It fetches catch-up again to acknowledge that batch before rereading pending work. Listener-created mutations wait behind earlier batches; silent acknowledgements do not depend on change events. POST success alone never applies a commit: an own result at sequence 12 must not bypass missing sequence 11. A successful submission without a subsequent catch-up acknowledgement throws instead of looping.
 
 `true` means the latest fetched prefix was applied and pending work is empty at that moment, not that later remote edits cannot occur. Peers need their own explicit sync. Concurrent or reentrant calls reject without stopping the active sync. Insufficient history returns `false` permanently for that connection, with no further requests or snapshot replacement; pending work and the document remain available. Fetch, HTTP, JSON, decoder, receive, or incoming-listener failures stop only the affected connection and preserve its first error for subsequent calls. Completed updates are not rolled back. If a POST response is lost, the server may already have accepted the batch while the client still has it pending; this example does not automatically retry or reconnect.
 
-This is a Node-only, single-document localhost demonstration with one writer per client ID and synchronous listeners producing finite edits. It does not provide authentication, TLS, CORS, WebSocket/SSE, automatic polling, retry timers, checkpoint restore, file persistence integration, history pagination, snapshot fallback, or production transport guarantees. Tests include a separate client process talking to the parent server through HTTP.
+To manually reconnect, retire the old writer and restore a new connection from its latest complete checkpoint. Wait for any active sync to settle before taking the checkpoint; this helper does not cancel requests or prevent two independent writers from using the same client ID. For parsed JSON, use the existing decoder:
+
+```ts
+import { decodeClientCheckpoint } from "./src/index.ts";
+
+// The old sync has failed or finished, and the old writer will make no more edits.
+const checkpoint = decodeClientCheckpoint(
+  Board,
+  JSON.parse(JSON.stringify(client.doc.checkpoint()))
+);
+const restored = await connectHttpExampleClient(host.url, "client-a", { checkpoint });
+// Optimistic state and pending edits are already restored, but nothing has been sent.
+if (!(await restored.sync())) {
+  // Preserve restored.doc.checkpoint(); do not discard pending with a fresh snapshot.
+}
+```
+
+If batch 1 was accepted but its POST response was lost, and batch 2 was never submitted, the first catch-up confirms batch 1 and only batch 2 is posted. The resolver does not run again for the confirmed batch. Pending batches, local batch sequences, and List/Text ID allocation progress survive restore; new edits, including listener-created edits during sync, remain behind older pending work. Silent own acknowledgements still advance submission. A failed old connection remains stopped; a restored connection has its own failure state and follows the same stop-on-error rules. History gaps still return `false` permanently without submitting pending or replacing the snapshot.
+
+The server must represent the same document lineage and retain the required history and retry metadata. A server restored from its existing checkpoint can run at a new URL, but this example does not detect server identity/epoch changes or recover from server rollback. Restoring a client checkpoint is not a substitute for retained history; reject/transform results that make later pending operations impossible to replay still throw rather than being repaired.
+
+This is a Node-only, single-document localhost demonstration with one writer per client ID and synchronous listeners producing finite edits. Reconnect is caller-initiated reconstruction, not automatic retry. It does not provide authentication, TLS, CORS, WebSocket/SSE, automatic polling, retry timers, cancellation, file persistence integration, history pagination, snapshot fallback, or production transport guarantees. Tests include a separate client process restoring a JSON checkpoint and talking to the parent server through HTTP.
 
 ## Development
 

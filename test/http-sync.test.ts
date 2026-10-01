@@ -5,7 +5,10 @@ import { describe, it, type TestContext } from "node:test";
 
 import { connectHttpExampleClient, startHttpExampleServer } from "../examples/http-sync.ts";
 import { Board } from "../examples/resume.ts";
-import { createServer, type ServerDocument } from "../src/index.ts";
+import {
+  createServer, decodeClientCheckpoint, decodeServerCheckpoint, WireDecodeError,
+  type ClientCheckpoint, type ServerDocument,
+} from "../src/index.ts";
 
 type Shape = typeof Board.definition;
 const exampleUrl = new URL("../examples/http-sync.ts", import.meta.url).href;
@@ -18,6 +21,10 @@ async function host(t: TestContext, server: ServerDocument<Shape> = createServer
 
 function batch(clientId = "a", seq = 1, value = 1) {
   return { clientId, seq, operations: [{ type: "value/set", path: "count", value }] };
+}
+
+function roundTrip(checkpoint: ClientCheckpoint<Shape>): ClientCheckpoint<Shape> {
+  return decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(checkpoint)));
 }
 
 async function post(url: string, input: unknown): Promise<number> {
@@ -536,6 +543,284 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     }
   });
 
+  it("restores mixed pending work, tombstones and ID allocation progress without initial requests", async (t) => {
+    const server = createServer(Board);
+    const { url } = await host(t, server);
+    const original = await connectHttpExampleClient(url, "a");
+    original.doc.transact(() => {
+      original.doc.state.items.push("Seed");
+      original.doc.state.body.insert(0, "A😀");
+    });
+    assert.equal(await original.sync(), true);
+    original.doc.transact(() => {
+      original.doc.state.items.delete(0);
+      original.doc.state.body.delete(0, 2);
+    });
+    assert.equal(await original.sync(), true);
+    original.doc.transact(() => {
+      original.doc.state.count.value = 3;
+      original.doc.state.items.push("Pending");
+      original.doc.state.body.insert(0, "😀");
+    });
+    original.doc.state.count.value = 4;
+    assert.throws(() => original.doc.transact(() => {
+      original.doc.state.items.insert(0, "Rolled back");
+      original.doc.state.body.insert(0, "Rolled back");
+      throw new Error("abort");
+    }), /abort/);
+    const checkpoint = roundTrip(original.doc.checkpoint());
+    assert.ok(checkpoint.snapshot.data.items.idList.some((range) => range.isDeleted));
+    assert.ok(checkpoint.snapshot.data.body.idList.some((range) => range.isDeleted));
+    const requests: string[] = [];
+    const posts: number[] = [];
+    const restored = await connectHttpExampleClient(url, "a", { checkpoint, fetch: (input, init) => {
+      requests.push(String(input));
+      if (init?.method === "POST") posts.push(JSON.parse(String(init.body)).seq);
+      return fetch(input, init);
+    } });
+    assert.deepEqual(requests, []);
+    assert.deepEqual(restored.doc.checkpoint(), checkpoint);
+    assert.deepEqual(restored.doc.state.items.toArray(), ["Pending"]);
+    assert.equal(restored.doc.state.body.toString(), "😀");
+    // The old writer is retired. Edits before sync must remain behind restored pending.
+    restored.doc.transact(() => {
+      restored.doc.state.items.insert(0, "Restored");
+      restored.doc.state.body.insert(0, "R");
+    });
+    const next = restored.doc.checkpoint().pendingBatches.at(-1)!;
+    assert.equal(next.seq, 5);
+    for (const operation of next.operations) {
+      assert.ok(operation.type === "list/insert" || operation.type === "text/insert");
+      assert.equal(JSON.parse(operation.id.bunchId)[2], checkpoint.lastBunchSeqs[operation.path] + 1);
+    }
+    let serverChanges = 0;
+    restored.doc.on("change", (event) => { if (event.origin === "server") serverChanges++; });
+    assert.equal(await restored.sync(), true);
+    assert.deepEqual(posts, [3, 4, 5]);
+    assert.equal(serverChanges, 0); // Silent own acks still drain all pending.
+    assert.deepEqual(restored.doc.checkpoint().snapshot, server.snapshot());
+    assert.deepEqual(restored.doc.checkpoint().pendingBatches, []);
+    const peer = await connectHttpExampleClient(url, "peer");
+    assert.deepEqual(peer.doc.state.items.toArray(), ["Restored", "Pending"]);
+    assert.equal(peer.doc.state.body.toString(), "R😀");
+    restored.doc.state.count.value = 6;
+    assert.equal(restored.doc.checkpoint().pendingBatches[0]!.seq, 6);
+    assert.equal(await restored.sync(), true);
+    assert.equal(await peer.sync(), true);
+    assert.deepEqual(peer.doc.checkpoint().snapshot, server.snapshot());
+  });
+
+  it("reconnects after a lost POST response and submits only the remaining batch", async (t) => {
+    const resolved: number[] = [];
+    const server = createServer(Board, { resolve: ({ batch }) => {
+      resolved.push(batch.seq);
+      return batch.operations;
+    } });
+    const { url } = await host(t, server);
+    const failure = new Error("Lost response");
+    const original = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
+      const response = await fetch(input, init);
+      if (init?.method === "POST") { await response.text(); throw failure; }
+      return response;
+    } });
+    const peer = await connectHttpExampleClient(url, "peer");
+    original.doc.state.count.value = 1;
+    original.doc.state.items.push("Unsent");
+    await assert.rejects(original.sync(), (error: unknown) => error === failure);
+    const checkpoint = roundTrip(original.doc.checkpoint());
+    assert.deepEqual(checkpoint.pendingBatches.map((batch) => batch.seq), [1, 2]);
+    const posts: number[] = [];
+    const restored = await connectHttpExampleClient(url, "a", { checkpoint, fetch: (input, init) => {
+      if (init?.method === "POST") posts.push(JSON.parse(String(init.body)).seq);
+      return fetch(input, init);
+    } });
+    assert.equal(await restored.sync(), true);
+    assert.deepEqual(posts, [2]);
+    assert.deepEqual(resolved, [1, 2]);
+    assert.equal(server.commitsSince(0)!.length, 2);
+    await assert.rejects(original.sync(), (error: unknown) => error === failure);
+    assert.equal(await peer.sync(), true);
+    assert.deepEqual(peer.doc.checkpoint().snapshot, restored.doc.checkpoint().snapshot);
+  });
+
+  it("confirms multiple accepted, rejected or transformed pending batches before submitting", async (t) => {
+    for (const mode of ["accept", "reject", "transform"] as const) {
+      const resolved: number[] = [];
+      const server = createServer(Board, { resolve: ({ batch }) => {
+        resolved.push(batch.seq);
+        if (batch.seq > 2 || mode === "accept") return batch.operations;
+        return mode === "reject" ? [] : [{ type: "value/set", path: "count", value: batch.seq * 10 }];
+      } });
+      const { url } = await host(t, server);
+      const original = await connectHttpExampleClient(url, "a");
+      const peer = await connectHttpExampleClient(url, "peer");
+      original.doc.state.count.value = 1;
+      original.doc.state.count.value = 2;
+      original.doc.transact(() => {
+        original.doc.state.items.push("Remaining");
+        original.doc.state.body.insert(0, "😀");
+      });
+      const checkpoint = roundTrip(original.doc.checkpoint());
+      // Server receives two batches while the original client receives neither ack.
+      for (const batch of checkpoint.pendingBatches.slice(0, 2)) assert.equal(await post(url, batch), 204);
+      const posts: number[] = [];
+      const restored = await connectHttpExampleClient(url, "a", { checkpoint, fetch: (input, init) => {
+        if (init?.method === "POST") posts.push(JSON.parse(String(init.body)).seq);
+        return fetch(input, init);
+      } });
+      assert.equal(await restored.sync(), true);
+      assert.deepEqual(posts, [3]);
+      assert.deepEqual(resolved, [1, 2, 3]);
+      assert.equal(restored.doc.state.count.value, mode === "accept" ? 2 : mode === "reject" ? 0 : 20);
+      assert.deepEqual(restored.doc.checkpoint().pendingBatches, []);
+      assert.equal(await peer.sync(), true);
+      assert.deepEqual(peer.doc.checkpoint().snapshot, restored.doc.checkpoint().snapshot);
+    }
+  });
+
+  it("queues listener edits during both restored catch-up and submission behind older pending", async (t) => {
+    const resolved: number[] = [];
+    const server = createServer(Board, { resolve: ({ batch }) => {
+      resolved.push(batch.seq);
+      return batch.clientId === "a" && batch.seq <= 2
+        ? [{ type: "value/set", path: "count", value: batch.seq }] : batch.operations;
+    } });
+    const { url } = await host(t, server);
+    const original = await connectHttpExampleClient(url, "a");
+    original.doc.state.count.value = 10;
+    original.doc.state.count.value = 20;
+    const checkpoint = roundTrip(original.doc.checkpoint());
+    assert.equal(await post(url, checkpoint.pendingBatches[0]), 204);
+    const restored = await connectHttpExampleClient(url, "a", { checkpoint });
+    const watermarks: number[] = [];
+    restored.doc.on("change", (event) => {
+      if (event.origin !== "server") return;
+      const watermark = restored.doc.checkpoint().snapshot.serverSeq;
+      watermarks.push(watermark);
+      if (watermark <= 3) restored.doc.transact(() => {
+        restored.doc.state.items.push("Listener " + watermark);
+        restored.doc.state.body.insert(restored.doc.state.body.length, String(watermark));
+      });
+    });
+    // A pending write to count hides the first transform. A remote visible update triggers catch-up's listener.
+    assert.equal(await post(url, { ...batch("peer"), operations: [{ type: "list/insert", path: "items",
+      before: null, id: { bunchId: "remote", counter: 0 }, value: "Remote" }] }), 204);
+    assert.equal(await restored.sync(), true);
+    assert.deepEqual(resolved, [1, 1, 2, 3, 4]);
+    assert.deepEqual(watermarks, [2, 3]);
+    assert.deepEqual(restored.doc.state.items.toArray(), ["Remote", "Listener 2", "Listener 3"]);
+    assert.equal(restored.doc.state.body.toString(), "23");
+    assert.deepEqual(restored.doc.checkpoint().snapshot, server.snapshot());
+  });
+
+  it("rejects invalid or mismatched checkpoints before requests and owns restored input", async (t) => {
+    const { url } = await host(t);
+    const original = await connectHttpExampleClient(url, "a");
+    original.doc.transact(() => {
+      original.doc.state.count.value = 1;
+      original.doc.state.items.push("Owned");
+      original.doc.state.body.insert(0, "😀");
+    });
+    const checkpoint = roundTrip(original.doc.checkpoint());
+    let requests = 0;
+    const neverFetch: typeof fetch = async () => { requests++; throw new Error("Unexpected request"); };
+    await assert.rejects(connectHttpExampleClient(url, "b", { checkpoint, fetch: neverFetch }), /clientId must match/);
+    await assert.rejects(connectHttpExampleClient(url, "a", {
+      checkpoint: { ...checkpoint, lastLocalSeq: -1 }, fetch: neverFetch,
+    }), WireDecodeError);
+    const input = JSON.parse(JSON.stringify(checkpoint));
+    const restored = await connectHttpExampleClient(url, "a", { checkpoint: input, fetch: neverFetch });
+    input.snapshot.data.count = 99;
+    input.pendingBatches[0].operations[0].value = 99;
+    input.pendingBatches[0].operations[1].id.counter = 99;
+    input.lastBunchSeqs.items = 99;
+    input.pendingBatches.length = 0;
+    assert.deepEqual(restored.doc.checkpoint(), checkpoint);
+    assert.deepEqual(restored.doc.state.items.toArray(), ["Owned"]);
+    assert.equal(restored.doc.state.count.value, 1);
+    assert.equal(requests, 0);
+  });
+
+  it("keeps restored pending unchanged when retained history is insufficient", async (t) => {
+    const server = createServer(Board, { historyLimit: 0 });
+    const { url } = await host(t, server);
+    const original = await connectHttpExampleClient(url, "a");
+    original.doc.state.items.push("Keep pending");
+    const checkpoint = roundTrip(original.doc.checkpoint());
+    assert.equal(await post(url, batch("peer")), 204);
+    let requests = 0;
+    const restored = await connectHttpExampleClient(url, "a", { checkpoint, fetch: (input, init) => {
+      requests++;
+      assert.notEqual(init?.method, "POST");
+      return fetch(input, init);
+    } });
+    assert.equal(await restored.sync(), false);
+    assert.equal(await restored.sync(), false);
+    assert.equal(requests, 1);
+    assert.deepEqual(restored.doc.checkpoint(), checkpoint);
+    assert.equal(server.snapshot().serverSeq, 1);
+  });
+
+  it("can reconnect again after a restored incoming listener fails without losing remaining pending", async (t) => {
+    const server = createServer(Board);
+    const { url } = await host(t, server);
+    const original = await connectHttpExampleClient(url, "a");
+    original.doc.state.count.value = 1;
+    original.doc.state.count.value = 2;
+    const restored = await connectHttpExampleClient(url, "a", { checkpoint: roundTrip(original.doc.checkpoint()) });
+    const peer = await connectHttpExampleClient(url, "peer");
+    peer.doc.state.items.push("Remote");
+    assert.equal(await peer.sync(), true);
+    const failure = new Error("Restored listener failed");
+    restored.doc.on("change", (event) => {
+      if (event.origin === "server") { restored.doc.state.items.push("Listener pending"); throw failure; }
+    });
+    await assert.rejects(restored.sync(), (error: unknown) => error === failure);
+    await assert.rejects(restored.sync(), (error: unknown) => error === failure);
+    const checkpoint = roundTrip(restored.doc.checkpoint());
+    assert.equal(checkpoint.snapshot.serverSeq, 1);
+    assert.deepEqual(checkpoint.pendingBatches.map((batch) => batch.seq), [1, 2, 3]);
+    assert.equal(server.snapshot().serverSeq, 1);
+    const again = await connectHttpExampleClient(url, "a", { checkpoint });
+    assert.equal(await again.sync(), true);
+    assert.equal(await peer.sync(), true);
+    assert.deepEqual(again.doc.checkpoint().snapshot, peer.doc.checkpoint().snapshot);
+    assert.deepEqual(again.doc.state.items.toArray(), ["Remote", "Listener pending"]);
+  });
+
+  it("resumes against a new HTTP host backed by a restored server checkpoint", async (t) => {
+    const server = createServer(Board);
+    const first = await host(t, server);
+    const original = await connectHttpExampleClient(first.url, "a");
+    original.doc.transact(() => {
+      original.doc.state.items.push("Seed");
+      original.doc.state.body.insert(0, "😀");
+    });
+    assert.equal(await original.sync(), true);
+    original.doc.transact(() => {
+      original.doc.state.items.delete(0);
+      original.doc.state.body.delete(0);
+    });
+    original.doc.state.count.value = 3;
+    const checkpoint = roundTrip(original.doc.checkpoint());
+    assert.equal(await post(first.url, checkpoint.pendingBatches[0]), 204);
+    const savedServer = decodeServerCheckpoint(Board, JSON.parse(JSON.stringify(server.checkpoint())));
+    await first.close();
+    const restoredServer = createServer(Board, { checkpoint: savedServer });
+    const second = await host(t, restoredServer);
+    const posts: number[] = [];
+    const restored = await connectHttpExampleClient(second.url, "a", { checkpoint, fetch: (input, init) => {
+      if (init?.method === "POST") posts.push(JSON.parse(String(init.body)).seq);
+      return fetch(input, init);
+    } });
+    assert.equal(await restored.sync(), true);
+    assert.deepEqual(posts, [3]);
+    assert.deepEqual(restored.doc.checkpoint().snapshot, restoredServer.snapshot());
+    assert.ok(restoredServer.snapshot().data.items.idList.some((range) => range.isDeleted));
+    assert.ok(restoredServer.snapshot().data.body.idList.some((range) => range.isDeleted));
+    assert.equal(restoredServer.snapshot().serverSeq, 3);
+  });
+
   it("syncs a separate client process through HTTP while the parent serves requests", async (t) => {
     const server = createServer(Board);
     const { url } = await host(t, server);
@@ -554,5 +839,40 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     assert.deepEqual(peer.doc.state.items.toArray(), ["Child"]);
     assert.equal(peer.doc.state.body.toString(), "😀");
     assert.equal(peer.doc.state.count.value, 7);
+  });
+
+  it("restores a JSON checkpoint in a separate client process and catches up before resending", async (t) => {
+    const server = createServer(Board);
+    const { url } = await host(t, server);
+    const original = await connectHttpExampleClient(url, "child");
+    original.doc.transact(() => {
+      original.doc.state.count.value = 7;
+      original.doc.state.items.push("Child");
+      original.doc.state.body.insert(0, "😀");
+    });
+    original.doc.state.items.push("Unsent");
+    const checkpoint = roundTrip(original.doc.checkpoint());
+    assert.equal(await post(url, checkpoint.pendingBatches[0]), 204);
+    const coreUrl = new URL("../src/index.ts", import.meta.url).href;
+    const boardUrl = new URL("../examples/resume.ts", import.meta.url).href;
+    const code = [
+      "import { connectHttpExampleClient } from " + JSON.stringify(exampleUrl),
+      "import { decodeClientCheckpoint } from " + JSON.stringify(coreUrl),
+      "import { Board } from " + JSON.stringify(boardUrl),
+      "const checkpoint = decodeClientCheckpoint(Board, JSON.parse(" + JSON.stringify(JSON.stringify(checkpoint)) + "))",
+      "const client = await connectHttpExampleClient(" + JSON.stringify(url) + ", 'child', { checkpoint })",
+      "if (!(await client.sync())) throw new Error('Unexpected history gap')",
+      "client.doc.state.body.insert(client.doc.state.body.length, '!')",
+      "if (!(await client.sync())) throw new Error('Unexpected history gap')",
+      "console.log(JSON.stringify(client.doc.checkpoint()))",
+    ].join(";\n");
+    const saved = JSON.parse(await child(t, code));
+    assert.equal(saved.lastLocalSeq, 3);
+    assert.deepEqual(saved.pendingBatches, []);
+    assert.deepEqual(saved.snapshot, server.snapshot());
+    assert.equal(server.snapshot().serverSeq, 3);
+    const peer = await connectHttpExampleClient(url, "peer");
+    assert.deepEqual(peer.doc.state.items.toArray(), ["Child", "Unsent"]);
+    assert.equal(peer.doc.state.body.toString(), "😀!");
   });
 });

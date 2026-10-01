@@ -6,9 +6,11 @@ import {
   createClient,
   createServer,
   decodeClientBatch,
+  decodeClientCheckpoint,
   decodeServerCommit,
   decodeSnapshot,
   type ClientBatch,
+  type ClientCheckpoint,
   type DocumentOperation,
   type ServerDocument,
 } from "../src/index.ts";
@@ -131,7 +133,10 @@ export async function startHttpExampleServer(server: ServerDocument<Shape>) {
 export async function connectHttpExampleClient(
   url: string,
   clientId: string,
-  options: { readonly fetch?: typeof globalThis.fetch } = {}
+  options: {
+    readonly fetch?: typeof globalThis.fetch;
+    readonly checkpoint?: ClientCheckpoint<Shape>;
+  } = {}
 ) {
   const fetch = options.fetch ?? globalThis.fetch;
   async function request(path: string, status: number, init?: RequestInit): Promise<string> {
@@ -140,14 +145,17 @@ export async function connectHttpExampleClient(
     if (response.status !== status) throw new Error("Unexpected HTTP status: " + response.status);
     return message;
   }
-  const snapshot = decodeSnapshot(Board, JSON.parse(await request("/snapshot", 200)));
+  // Restore before making any request; only fresh clients fetch a snapshot.
+  const initial = options.checkpoint === undefined
+    ? { snapshot: decodeSnapshot(Board, JSON.parse(await request("/snapshot", 200))) }
+    : { checkpoint: options.checkpoint };
   let busy = false;
   let missingHistory = false;
   let failed = false;
   let failure: unknown;
   const doc = createClient(Board, {
     clientId,
-    snapshot,
+    ...initial,
     onBatch() { if (failed) throw failure; }, // Pending is the only outbound buffer; no automatic send.
   });
 
@@ -202,21 +210,39 @@ async function runDemo(): Promise<void> {
   const server = createServer(Board);
   const host = await startHttpExampleServer(server);
   try {
-    const a = await connectHttpExampleClient(host.url, "a");
+    const lostResponse = new Error("POST response lost after server acceptance");
+    let a = await connectHttpExampleClient(host.url, "a", { fetch: async (input, init) => {
+      const response = await fetch(input, init);
+      if (init?.method === "POST") { await response.text(); throw lostResponse; }
+      return response;
+    } });
     const b = await connectHttpExampleClient(host.url, "b");
     a.doc.transact(() => {
       a.doc.state.count.value = 1;
       a.doc.state.items.push("Saved");
       a.doc.state.body.insert(0, "Hello 😀");
     });
+    a.doc.state.items.push("Still pending"); // A second batch, not yet submitted.
     b.doc.transact(() => {
       b.doc.state.count.value = 2;
       b.doc.state.items.push("Peer");
       b.doc.state.body.insert(0, "!");
     });
+    await assert.rejects(a.sync(), (error: unknown) => error === lostResponse);
+    const checkpoint = decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(a.doc.checkpoint())));
+    assert.equal(checkpoint.pendingBatches.length, 2);
+    // Retire the old writer. Catch-up confirms batch 1 before submitting batch 2.
+    a = await connectHttpExampleClient(host.url, "a", { checkpoint });
     assert.equal(await a.sync(), true);
     assert.equal(await b.sync(), true);
     assert.equal(await a.sync(), true); // Poll the peer's update; there is no live broadcast.
+    a.doc.transact(() => {
+      a.doc.state.count.value = 3;
+      a.doc.state.items.push("Reconnected");
+      a.doc.state.body.insert(a.doc.state.body.length, "!");
+    });
+    assert.equal(await a.sync(), true);
+    assert.equal(await b.sync(), true);
     for (const { doc } of [a, b]) {
       assert.deepEqual(doc.checkpoint().pendingBatches, []);
       assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
