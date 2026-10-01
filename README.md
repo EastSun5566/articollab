@@ -299,6 +299,49 @@ Local state changes optimistically before saving, and a save failure may throw f
 
 Files are `server.json` and `client-<hex>.json`, where `<hex>` is the lowercase hex encoding of the client ID's UTF-16LE bytes. For example, `a` uses `client-6100.json` and `A` uses `client-4100.json`. This lossless encoding avoids case and Unicode-normalization collisions on local filesystems. Each save serializes completely, writes a same-directory `<target>.tmp` file, then renames it over the official file; newly created files use mode `0o600`. Orphan temporary files are ignored on load. Writes block the event loop and require one writer per file in a trusted local directory. This verifies process interruption and restart, not power-loss durability: there is no fsync/directory-sync protocol, cross-file transaction, lock, migration, production storage adapter, or recovery beyond retained history.
 
+## Localhost HTTP sync example
+
+```sh
+node examples/http-sync.ts
+```
+
+This example uses real localhost HTTP requests with Node's built-in HTTP server and fetch. It demonstrates two clients making mixed optimistic edits and manually syncing to convergence. Importing it does not run the demo or open a socket. The helpers are example-only and are not package exports.
+
+```ts
+import { createServer } from "./src/index.ts";
+import { Board } from "./examples/resume.ts";
+import { startHttpExampleServer, connectHttpExampleClient } from "./examples/http-sync.ts";
+
+const host = await startHttpExampleServer(createServer(Board));
+try {
+  const client = await connectHttpExampleClient(host.url, "client-a");
+  client.doc.state.items.push("Saved"); // Optimistic and pending; no automatic send.
+  if (!(await client.sync())) {
+    // Preserve client.doc.checkpoint(); retained history cannot fill this gap.
+  }
+} finally {
+  await host.close();
+}
+```
+
+The host listens only on `127.0.0.1`, using an automatically assigned port. Its endpoints are:
+
+| Endpoint | Successful response |
+| --- | --- |
+| `GET /snapshot` | `200`: the current document snapshot |
+| `POST /batches` | `204`: no body, including for a valid retry |
+| `GET /commits?since=N` | `200`: the complete later commit array, or JSON `null` when history is insufficient |
+
+POST requires `application/json` and at most 1 MiB of actual UTF-8 bytes, including chunked bodies. JSON and wire validation use the existing decoder before runtime application. Invalid JSON/wire/watermarks return `400`; runtime receive failures return `409` without distinguishing their causes. Oversized bodies return `413`, unsupported content types `415`, unknown routes `404`, incorrect methods `405`, and unexpected handler errors `500`. Error bodies contain only `{ error: string }`, not stack traces. The server's total order is synchronous `receive()` call order after reading each body, not initial HTTP request arrival. There is no subscription registry or broadcast.
+
+`connectHttpExampleClient(url, clientId, options?)` asynchronously fetches and decodes a snapshot. Its optional `fetch` override is for controlling requests in tests; by default it uses native fetch. The client knows only the URL, not the server object. Updates after the snapshot are caught by the first sync.
+
+`sync(): Promise<boolean>` first fetches catch-up from the latest checkpoint watermark, validates and applies the whole ordered prefix, then posts the earliest current pending batch. It fetches catch-up again to acknowledge that batch before rereading pending work. Listener-created mutations wait behind earlier batches; silent acknowledgements do not depend on change events. POST success alone never applies a commit: an own result at sequence 12 must not bypass missing sequence 11. A successful submission without a subsequent catch-up acknowledgement throws instead of looping.
+
+`true` means the latest fetched prefix was applied and pending work is empty at that moment, not that later remote edits cannot occur. Peers need their own explicit sync. Concurrent or reentrant calls reject without stopping the active sync. Insufficient history returns `false` permanently for that connection, with no further requests or snapshot replacement; pending work and the document remain available. Fetch, HTTP, JSON, decoder, receive, or incoming-listener failures stop only the affected connection and preserve its first error for subsequent calls. Completed updates are not rolled back. If a POST response is lost, the server may already have accepted the batch while the client still has it pending; this example does not automatically retry or reconnect.
+
+This is a Node-only, single-document localhost demonstration with one writer per client ID and synchronous listeners producing finite edits. It does not provide authentication, TLS, CORS, WebSocket/SSE, automatic polling, retry timers, checkpoint restore, file persistence integration, history pagination, snapshot fallback, or production transport guarantees. Tests include a separate client process talking to the parent server through HTTP.
+
 ## Development
 
 Requires Node.js 24 or newer and pnpm 10.
@@ -335,11 +378,12 @@ Implemented:
 - Example-only synchronous resume with catch-up, pending resubmission, and live routing
 - Example-only asynchronous JSON resume with independent FIFO delivery
 - Example-only file-backed checkpoint recovery with synchronous JSON storage
+- Example-only localhost HTTP snapshot, batch submission, and manual commit catch-up
 - Last-batch retry deduplication and replay, including after restore
 - Bounded global commit catch-up, including after restore
 
 Not implemented yet:
 
-- Transports, retry scheduling, automatic client resume, or reconnects
+- Production transports, retry scheduling, automatic client resume, or reconnects
 - Bulk list operations, move, public stable positions, cursors, or rich text
 - Production persistence adapters, presence, or undo history
