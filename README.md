@@ -211,6 +211,46 @@ Call `resume()` only while the queue is idle; reentrant calls throw. Resolver, r
 
 This is an example-layer resume workflow, not a package API or production reconnect implementation. Its exports are only for the example and tests. It assumes one stopped old writer per client ID, finite listener-generated edits, and synchronous single-process routing. The queue provides the catch-up/live handoff only within that process; it does not solve a subscription race across a real network. Storage, async transport, retry scheduling, recovery beyond retained history, and automatic repair of pending operations invalidated by rejection or transformation remain the caller's responsibility.
 
+## Asynchronous JSON/resume example
+
+```sh
+node examples/async-resume.ts
+```
+
+This second example uses independent FIFO Promise chains. The server orders batches without waiting for clients to receive commits, and each client receives commits in order. Its fixed `Board` schema is shared with the synchronous example; neither helper is part of the package API.
+
+```ts
+import { createServer } from "./src/index.ts";
+import { Board } from "./examples/resume.ts";
+import { createAsyncExampleNetwork } from "./examples/async-resume.ts";
+
+const network = createAsyncExampleNetwork(createServer(Board));
+const connection = network.connect("client-a");
+connection.doc.state.count.value = 1; // Optimistic state changes immediately.
+await network.idle(); // Includes acknowledgement delivery and listener-created work.
+
+connection.disconnect();
+connection.doc.state.items.push("Offline");
+if (!(await connection.resume())) {
+  // Preserve connection.doc.checkpoint(); retained history cannot fill this gap.
+}
+await network.idle();
+```
+
+Batch and commit messages are serialized before delivery, asynchronously transferred, parsed, and passed through `decodeClientBatch()` or `decodeServerCommit()` before application. The optional `transfer(direction, clientId, message): Promise<string>` hook defaults to returning the message asynchronously. Tests use manually released Promise gates to delay or corrupt messages without timers or real network traffic. Directions are `"client-to-server"` and `"server-to-client"`.
+
+Each live client has at most one outbound pump. It selects the earliest **current** pending batch, waits for its own commit to be applied, and then rereads pending work. Editing can continue while an acknowledgement is delayed. A slow sender or recipient does not block other clients. New commits go to subscribed clients; replay receipts go only to their source, with already-consumed sequences skipped.
+
+`connect(clientId, checkpoint?)` is synchronous and requires the network to be idle. Without a checkpoint it creates a live client from a JSON-decoded snapshot; with one it restores a disconnected client. Initial snapshot creation is in-process, not an asynchronous network handshake. `disconnect()` stops subsequent sends and incoming application, but an already-started request may still reach the server. Await `network.idle()` after disconnecting before replacing the stopped writer with its latest checkpoint.
+
+`resume(): Promise<boolean>` also requires idle at entry. It buffers local edits while the server atomically obtains catch-up, queues the entire prefix, and enables subscription. That server job contains no delivery awaits: peers may generate new commits while catch-up delivery is paused, but those commits queue after the prefix in the recovering client's inbox. Resume drains the latest pending work and queued incoming updates before switching live. Insufficient history returns `false` without submitting or replacing pending work. Reentrant resume and disconnect during recovery are rejected.
+
+`network.submit(batch): Promise<void>` is an example/test helper for manually submitting offline work. Completion means the server has processed the batch and scheduled delivery, not that the sender has received its acknowledgement. Use `idle()` to wait for all tracked server work, incoming delivery, pumps, and recovery, including work added while waiting. Do not await `idle()` from inside a listener.
+
+Transfer, parsing, decoding, resolver, receive, or incoming-listener failures stop the whole network and retain the first error. Waiting operations reject even if another transfer is still paused; queued and late-completing work must not continue applying updates. Background jobs have rejection observers. Completed commits are not rolled back, and handles retain their documents for checkpoint recovery. Do not reuse a failed network.
+
+This remains a single-process demonstration, not production transport or reconnect. It assumes one stopped old writer per client ID, FIFO delivery, and synchronous listeners producing finite edits. It provides no persistence, timeouts, cancellation of external transfer-hook side effects, unordered delivery repair, retry scheduling, or automatic repair of pending references invalidated by rejection or transformation.
+
 ## Development
 
 Requires Node.js 24 or newer and pnpm 10.
@@ -245,6 +285,7 @@ Implemented:
 - Server checkpoint and restore
 - Client checkpoint and restore with pending-operation replay
 - Example-only synchronous resume with catch-up, pending resubmission, and live routing
+- Example-only asynchronous JSON resume with independent FIFO delivery
 - Last-batch retry deduplication and replay, including after restore
 - Bounded global commit catch-up, including after restore
 
