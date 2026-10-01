@@ -180,6 +180,37 @@ There must be only one active writer for a client ID. Do not keep the old writer
 
 For durable recovery, persist the checkpoint before sending a batch from `onBatch`, and again after successfully receiving commits. An own acknowledgement may emit no change, so a change listener alone cannot reliably trigger persistence. Runtime checkpoint containers are frozen and nested JSON payloads retain the immutable-value contract; decoding and restore deeply copy and freeze input. Callbacks, listeners, timers, storage, and transports are not serialized or provided.
 
+## In-memory resume example
+
+Run the synchronous example directly:
+
+```sh
+node examples/resume.ts
+```
+
+It demonstrates a lost acknowledgement, unsent mixed Value/List/Text mutations, checkpoint JSON decoding, catch-up, and a subsequent live edit. The same example-only helper is used by the end-to-end tests:
+
+```ts
+import { Board, createExampleNetwork } from "./examples/resume.ts";
+
+const network = createExampleNetwork(createServer(Board));
+// Stop the original writer before restoring its client ID.
+const connection = network.connect(clientCheckpoint.clientId, clientCheckpoint);
+if (!connection.resume()) {
+  // Preserve connection.doc.checkpoint(); retained history cannot fill this gap.
+}
+```
+
+Without a checkpoint, `connect(clientId)` starts live from the server snapshot. With a checkpoint, it starts disconnected and does not resend anything. `disconnect()` stops incoming and outgoing delivery; local mutations remain in the document's pending batches.
+
+`resume()` first checks whether the server can fill the document's watermark gap. If not, it returns `false`, leaves the connection disconnected, and neither submits pending work nor replaces the snapshot. Otherwise it enables incoming delivery, applies the entire catch-up in one queue job, and repeatedly reads the **current** checkpoint's earliest pending batch, submitting and completing delivery before selecting the next one. An accepted batch whose acknowledgement was lost is removed during catch-up rather than submitted again. Own acknowledgements need not emit a change for this loop to continue.
+
+Listeners may create new mutations during recovery. The recovering document buffers them behind its existing pending batches; mutations from live peers enter the FIFO queue. Each new commit finishes delivery to all recipients before the next queued batch is processed. Retry receipts go only to the source, and already-consumed server sequences are skipped. After pending work and queued delivery are drained, the connection becomes live.
+
+Call `resume()` only while the queue is idle; reentrant calls throw. Resolver, receive, or listener errors during queued processing stop the network and propagate to the caller. Do not reuse that failed network. Connection handles still expose their documents so their latest checkpoints can be saved; completed commits are not rolled back, and unacknowledged work remains pending.
+
+This is an example-layer resume workflow, not a package API or production reconnect implementation. Its exports are only for the example and tests. It assumes one stopped old writer per client ID, finite listener-generated edits, and synchronous single-process routing. The queue provides the catch-up/live handoff only within that process; it does not solve a subscription race across a real network. Storage, async transport, retry scheduling, recovery beyond retained history, and automatic repair of pending operations invalidated by rejection or transformation remain the caller's responsibility.
+
 ## Development
 
 Requires Node.js 24 or newer and pnpm 10.
@@ -213,6 +244,7 @@ Implemented:
 - Late join from the current authoritative state
 - Server checkpoint and restore
 - Client checkpoint and restore with pending-operation replay
+- Example-only synchronous resume with catch-up, pending resubmission, and live routing
 - Last-batch retry deduplication and replay, including after restore
 - Bounded global commit catch-up, including after restore
 
