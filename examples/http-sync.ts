@@ -12,6 +12,7 @@ import {
   type ClientBatch,
   type ClientCheckpoint,
   type DocumentOperation,
+  type ServerCheckpoint,
   type ServerDocument,
 } from "../src/index.ts";
 import { Board } from "./resume.ts";
@@ -41,12 +42,19 @@ async function readBody(request: IncomingMessage): Promise<string | null> {
 }
 
 /** Example-only localhost HTTP routes for one Board, without subscriptions. */
-export async function startHttpExampleServer(server: ServerDocument<Shape>) {
+export async function startHttpExampleServer(
+  server: ServerDocument<Shape>,
+  options: { readonly saveServerCheckpoint?: (checkpoint: ServerCheckpoint<Shape>) => undefined } = {}
+) {
+  options.saveServerCheckpoint?.(server.checkpoint()); // Bootstrap before opening a socket.
+  let failed = false;
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     function reject(status: number, message: string): void {
       request.resume(); // Discard unread bodies without buffering them.
       json(response, status, { error: message });
     }
+
+    if (failed) { reject(503, "Checkpoint storage failed; restart this host"); return; }
 
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const method = url.pathname === "/batches" ? "POST" : "GET";
@@ -82,6 +90,8 @@ export async function startHttpExampleServer(server: ServerDocument<Shape>) {
       return;
     }
     const message = await readBody(request);
+    // A different request may have failed to save while this body was arriving.
+    if (failed) { reject(503, "Checkpoint storage failed; restart this host"); return; }
     if (message === null) {
       response.setHeader("Connection", "close");
       reject(413, "Batch body exceeds 1 MiB");
@@ -94,11 +104,21 @@ export async function startHttpExampleServer(server: ServerDocument<Shape>) {
       reject(400, "Invalid batch JSON or wire data");
       return;
     }
+    let replayed: boolean;
     try {
-      server.receive(batch); // Total order is this synchronous call order, not request arrival.
+      ({ replayed } = server.receive(batch)); // Total order is this synchronous call order, not request arrival.
     } catch {
       reject(409, "Batch could not be applied");
       return;
+    }
+    if (!replayed) {
+      try {
+        options.saveServerCheckpoint?.(server.checkpoint());
+      } catch {
+        failed = true; // The advanced in-memory server must never be served again.
+        reject(500, "Checkpoint could not be saved");
+        return;
+      }
     }
     response.writeHead(204, { "Cache-Control": "no-store" });
     response.end(); // Submission success is not a client acknowledgement.
@@ -136,12 +156,21 @@ export async function connectHttpExampleClient(
   options: {
     readonly fetch?: typeof globalThis.fetch;
     readonly checkpoint?: ClientCheckpoint<Shape>;
+    readonly saveClientCheckpoint?: (checkpoint: ClientCheckpoint<Shape>) => undefined;
   } = {}
 ) {
   const fetch = options.fetch ?? globalThis.fetch;
+  let failed = false;
+  let failure: unknown;
+  function requireUsable(): void { if (failed) throw failure; }
+  function stop(error: unknown): void {
+    if (!failed) { failed = true; failure = error; }
+  }
   async function request(path: string, status: number, init?: RequestInit): Promise<string> {
+    requireUsable();
     const response = await fetch(new URL(path, url), init);
     const message = await response.text(); // Consume error responses as well as successful ones.
+    requireUsable(); // Local saving may have failed while the request was in flight.
     if (response.status !== status) throw new Error("Unexpected HTTP status: " + response.status);
     return message;
   }
@@ -151,13 +180,17 @@ export async function connectHttpExampleClient(
     : { checkpoint: options.checkpoint };
   let busy = false;
   let missingHistory = false;
-  let failed = false;
-  let failure: unknown;
   const doc = createClient(Board, {
     clientId,
     ...initial,
-    onBatch() { if (failed) throw failure; }, // Pending is the only outbound buffer; no automatic send.
+    onBatch() { saveClient(); }, // Pending is already present; save without automatically sending.
   });
+  function saveClient(): void {
+    requireUsable();
+    try { options.saveClientCheckpoint?.(doc.checkpoint()); }
+    catch (error) { stop(error); throw failure; }
+  }
+  saveClient(); // Fresh and restored documents are saved before returning a handle.
 
   async function catchUp(): Promise<boolean> {
     const watermark = doc.checkpoint().snapshot.serverSeq;
@@ -171,20 +204,25 @@ export async function connectHttpExampleClient(
       }
     }
     // Validate the whole prefix first; never sort, skip, or repair a response.
-    for (const commit of commits) doc.receive(commit);
+    for (const commit of commits) {
+      requireUsable();
+      doc.receive(commit);
+      saveClient(); // Own acknowledgements need not emit a change.
+    }
     return true;
   }
 
   return {
     doc,
     async sync(): Promise<boolean> {
-      if (failed) throw failure;
+      requireUsable();
       if (busy) throw new Error("Cannot call sync() concurrently or reentrantly");
       if (missingHistory) return false;
       busy = true;
       try {
         if (!(await catchUp())) return false;
         while (true) {
+          requireUsable();
           const batch = doc.checkpoint().pendingBatches[0];
           if (batch === undefined) return true;
           await request("/batches", 204, {
@@ -196,9 +234,8 @@ export async function connectHttpExampleClient(
           }
         }
       } catch (error) {
-        failed = true;
-        failure = error;
-        throw error;
+        stop(error);
+        throw failure;
       } finally {
         busy = false;
       }

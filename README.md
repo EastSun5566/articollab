@@ -361,7 +361,57 @@ If batch 1 was accepted but its POST response was lost, and batch 2 was never su
 
 The server must represent the same document lineage and retain the required history and retry metadata. A server restored from its existing checkpoint can run at a new URL, but this example does not detect server identity/epoch changes or recover from server rollback. Restoring a client checkpoint is not a substitute for retained history; reject/transform results that make later pending operations impossible to replay still throw rather than being repaired.
 
-This is a Node-only, single-document localhost demonstration with one writer per client ID and synchronous listeners producing finite edits. Reconnect is caller-initiated reconstruction, not automatic retry. It does not provide authentication, TLS, CORS, WebSocket/SSE, automatic polling, retry timers, cancellation, file persistence integration, history pagination, snapshot fallback, or production transport guarantees. Tests include a separate client process restoring a JSON checkpoint and talking to the parent server through HTTP.
+This is a Node-only, single-document localhost demonstration with one writer per client ID and synchronous listeners producing finite edits. Reconnect is caller-initiated reconstruction, not automatic retry. It does not provide authentication, TLS, CORS, WebSocket/SSE, automatic polling, retry timers, cancellation, history pagination, snapshot fallback, or production transport guarantees. Tests include a separate client process restoring a JSON checkpoint and talking to the parent server through HTTP. Optional synchronous saving callbacks integrate file storage as shown below.
+
+## File-backed HTTP recovery example
+
+```sh
+node examples/persistent-http-sync.ts
+```
+
+This demo combines the existing JSON checkpoint store with real localhost HTTP. It saves mixed optimistic edits, loses a POST response after the server has saved its result, closes the old host, and rebuilds server and clients from the official files. Manual sync confirms the accepted batch through catch-up and submits only remaining pending work, then demonstrates subsequent edits and convergence. Importing the demo has no side effects; direct execution owns and cleans up its temporary directory and hosts.
+
+The saving callbacks are example-only options, not package APIs. They must return synchronously (`undefined`, not a Promise), only save their argument, and never reenter the helpers or mutate documents:
+
+```ts
+import { createServer } from "./src/index.ts";
+import { Board } from "./examples/resume.ts";
+import { createCheckpointStore } from "./examples/persistent-resume.ts";
+import { startHttpExampleServer, connectHttpExampleClient } from "./examples/http-sync.ts";
+
+const store = createCheckpointStore(directory); // Caller supplies an existing trusted directory.
+const savedServer = store.loadServer();
+const server = createServer(Board, {
+  ...(savedServer === null ? {} : { checkpoint: savedServer }),
+  resolve: ({ batch }) => batch.operations, // Application policy must be supplied again.
+});
+const host = await startHttpExampleServer(server, { saveServerCheckpoint: store.saveServer });
+try {
+  const savedClient = store.loadClient("client-a");
+  const client = await connectHttpExampleClient(host.url, "client-a", {
+    ...(savedClient === null ? {} : { checkpoint: savedClient }),
+    saveClientCheckpoint: store.saveClient,
+  });
+  client.doc.state.items.push("Saved before sending");
+  if (!(await client.sync())) {
+    // Retain the saved pending state; history is insufficient, not permission to reset it.
+  }
+} finally {
+  await host.close();
+}
+```
+
+Saving order is deliberate:
+
+- The server saves its initial checkpoint before listening. After each new `receive()`, including reject/transform, it saves before sending `204`. Valid retries do not save again. Receive, save, and response contain no intervening await, so another request cannot observe a result before saving finishes.
+- Fresh and restored clients save once before returning a handle. Every local batch saves after pending is added, without automatic sending. Each successfully received commit saves again, including silent own acknowledgements. Listener-created local mutations save the full current pending state.
+- Without saving callbacks, the existing HTTP behavior is unchanged. The store uses synchronous temporary-write/rename and the existing decoders. Corrupt JSON, invalid checkpoints and filesystem errors throw, rather than silently starting fresh.
+
+A client save failure permanently stops that connection and preserves its first error. Connect rejects on initial failure; a local mutation can throw after its optimistic state and pending have already changed. An active sync stops at its next checked asynchronous boundary, without applying further commits or sending subsequent batches. Responses are still consumed, but already-sent requests cannot be recalled: the server may have accepted them. Incoming listener failure does not trigger an extra save that could hide its error. Only the last successfully saved client checkpoint is recoverable; unsaved edits are not claimed recoverable, and runtime changes are not rolled back.
+
+A server save failure after receive returns `500` for that request and permanently disables the host. Subsequent requests, including bodies already being read, receive `503` instead of accessing advanced state. Ordinary resolver/runtime validation failures remain `409` and do not disable the host. The caller closes the disabled host and rebuilds from files; it must not reuse the advanced in-memory server. Error responses contain only generic `{ error: string }` messages.
+
+Restore assumes the same document lineage, retained history/retry metadata, one writer per file/client ID, and retired old writers with settled sync calls. Client and server files are not a cross-file transaction. This example adds no async persistence, fsync/directory-sync protocol, locks, migration, snapshot fallback, automatic retry, or power-loss durability guarantee. Pending operations invalidated by policy still fail explicitly. It is a process-interruption recovery example, not production persistence or transport.
 
 ## Development
 
@@ -400,6 +450,7 @@ Implemented:
 - Example-only asynchronous JSON resume with independent FIFO delivery
 - Example-only file-backed checkpoint recovery with synchronous JSON storage
 - Example-only localhost HTTP snapshot, batch submission, and manual commit catch-up
+- Example-only file-backed HTTP checkpoint recovery and caller-initiated reconnect
 - Last-batch retry deduplication and replay, including after restore
 - Bounded global commit catch-up, including after restore
 
