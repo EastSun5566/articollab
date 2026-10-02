@@ -7,6 +7,7 @@ import {
 } from "articulated";
 
 import type { JsonValue } from "./schema.ts";
+import { CollectionConflictError } from "./conflict.ts";
 
 export interface SavedIdRange {
   readonly bunchId: string;
@@ -178,12 +179,12 @@ export class ListState<T extends JsonValue> {
       operation.before !== null &&
       !this.idList.isKnown(operation.before)
     ) {
-      throw new Error(
+      throw new CollectionConflictError(
         `Unknown list insertion anchor: ${idKey(operation.before)}`
       );
     }
     if (this.idList.isKnown(operation.id)) {
-      throw new Error(`Duplicate list element id: ${idKey(operation.id)}`);
+      throw new CollectionConflictError(`Duplicate list element id: ${idKey(operation.id)}`);
     }
 
     const nextIdList = this.idList.insertAfter(operation.before, operation.id);
@@ -194,7 +195,7 @@ export class ListState<T extends JsonValue> {
 
   delete(operation: ListDeleteOperation): ListState<T> {
     if (!this.idList.isKnown(operation.id)) {
-      throw new Error(`Unknown list element id: ${idKey(operation.id)}`);
+      throw new CollectionConflictError(`Unknown list element id: ${idKey(operation.id)}`);
     }
     if (!this.idList.has(operation.id)) return this;
 

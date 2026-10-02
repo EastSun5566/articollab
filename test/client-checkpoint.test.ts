@@ -398,7 +398,7 @@ describe("client checkpoint decoding", () => {
     for (const [input, path] of cases) assertInvalid(input, path);
   });
 
-  it("validates pending ID namespaces and stateful replay before exposing a client", () => {
+  it("validates pending ID namespaces and preserves stateful replay conflicts", () => {
     const doc = createClient(Board, { clientId: "a", onBatch: () => {} });
     doc.transact(() => {
       doc.state.items.push("first");
@@ -414,8 +414,14 @@ describe("client checkpoint decoding", () => {
     });
     const unknown = { bunchId: "unknown", counter: 0 };
     const path = "/pendingBatches/0/operations/0";
-    assertInvalid(withOperation({ ...insert, before: unknown }), path);
-    assertInvalid(withOperation({ type: "list/delete", path: "items", id: unknown }), path);
+    const assertBlocked = (input: unknown): void => {
+      const decoded = decodeClientCheckpoint(Board, input);
+      const restored = createClient(Board, { clientId: "a", checkpoint: decoded, onBatch: () => {} });
+      assert.equal(restored.replayConflict?.operationIndex, 0);
+      assert.deepEqual(restored.checkpoint(), decoded);
+    };
+    assertBlocked(withOperation({ ...insert, before: unknown }));
+    assertBlocked(withOperation({ type: "list/delete", path: "items", id: unknown }));
     for (const bunchId of [
       "foreign",
       JSON.stringify(["other", "items", 1]),
@@ -434,12 +440,12 @@ describe("client checkpoint decoding", () => {
     assertInvalid(withOperation({
       type: "text/insert", path: "items", before: null, id: insert.id, value: "x",
     }), path + "/path");
-    assertInvalid({
+    assertBlocked({
       ...checkpoint, pendingBatches: [{ ...first, operations: [{
         type: "text/delete", path: "body",
         ranges: [{ start: unknown, count: Number.MAX_SAFE_INTEGER }],
       }] }],
-    }, path);
+    });
   });
 
   it("deeply owns snapshot and pending JSON, operation IDs and ranges", () => {

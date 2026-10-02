@@ -2,10 +2,13 @@ import { ListState, type ListSnapshotData } from "./list.ts";
 import { TextState, type TextSnapshotData } from "./text.ts";
 import type { DocumentSchema, JsonValue, SchemaShape } from "./schema.ts";
 import type {
+  ClientBatch,
   DocumentSnapshot,
   DocumentSnapshotData,
   Operation,
+  PendingReplayConflict,
 } from "./runtime.ts";
+import { CollectionConflictError, PendingReplayError } from "./conflict.ts";
 
 export type CollectionState = JsonValue | ListState<JsonValue> | TextState;
 
@@ -63,6 +66,35 @@ export function applyOperations(
         throw unknownOperationType(operation);
     }
   }
+}
+
+/** Replay whole batches only, retaining the last complete optimistic prefix. */
+export function replayPending<TOperation extends Operation>(
+  authoritative: ReadonlyMap<string, CollectionState>,
+  pending: readonly ClientBatch<TOperation>[]
+): {
+  readonly states: Map<string, CollectionState>;
+  readonly conflict: PendingReplayConflict<TOperation> | null;
+} {
+  let states = new Map(authoritative);
+  for (const [batchIndex, batch] of pending.entries()) {
+    const next = new Map(states);
+    for (const [operationIndex, operation] of batch.operations.entries()) {
+      try {
+        applyOperations(next, [operation]);
+      } catch (error) {
+        if (!(error instanceof CollectionConflictError)) {
+          throw new PendingReplayError(batchIndex, operationIndex, error);
+        }
+        return {
+          states,
+          conflict: Object.freeze({ batch, operationIndex, message: error.message }),
+        };
+      }
+    }
+    states = next;
+  }
+  return { states, conflict: null };
 }
 
 function validateSnapshot<S extends SchemaShape>(

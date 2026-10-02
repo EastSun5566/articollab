@@ -1,6 +1,7 @@
 import type { ElementId } from "articulated";
 import { jsonEquals } from "./json.ts";
-import { applyOperations, initialStates } from "./state.ts";
+import { initialStates, replayPending } from "./state.ts";
+import { PendingReplayError } from "./conflict.ts";
 
 import {
   ListState,
@@ -785,7 +786,9 @@ export function decodeClientCheckpoint<S extends SchemaShape>(
     }
   }
 
-  const states = initialStates(schema, snapshot);
+  const insertedRanges = new Map<string, Array<{
+    start: number; end: number; path: readonly PathSegment[];
+  }>>();
   for (const [batchIndex, batch] of pendingBatches.entries()) {
     const batchPath = ["pendingBatches", batchIndex] as const;
     if (batch.clientId !== clientId) {
@@ -816,13 +819,31 @@ export function decodeClientCheckpoint<S extends SchemaShape>(
             "bunch sequence must cover pending insert IDs"
           );
         }
-      }
-      try {
-        applyOperations(states, [operation]);
-      } catch (error) {
-        fail(operationPath, `invalid pending replay: ${errorMessage(error)}`);
+        const key = JSON.stringify([operation.path, operation.id.bunchId]);
+        const ranges = insertedRanges.get(key) ?? [];
+        const count = operation.type === "list/insert" ? 1 : [...operation.value].length;
+        ranges.push({ start: operation.id.counter,
+          end: operation.id.counter + count - 1, path: operationPath });
+        insertedRanges.set(key, ranges);
       }
     }
+  }
+
+  // Validate all pending metadata, even after the first replay conflict.
+  for (const ranges of insertedRanges.values()) {
+    ranges.sort((left, right) => left.start - right.start);
+    for (let index = 1; index < ranges.length; index++) {
+      if (ranges[index]!.start <= ranges[index - 1]!.end) {
+        fail(ranges[index]!.path, "pending insert ID ranges must not overlap");
+      }
+    }
+  }
+  try {
+    replayPending(initialStates(schema, snapshot), pendingBatches);
+  } catch (error) {
+    if (!(error instanceof PendingReplayError)) throw error;
+    fail(["pendingBatches", error.batchIndex, "operations", error.operationIndex],
+      `invalid pending replay: ${error.message}`);
   }
 
   return Object.freeze({

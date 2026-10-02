@@ -50,6 +50,7 @@ export {
   type DocumentState,
   type LocalChangeEvent,
   type Operation,
+  type PendingReplayConflict,
   type ServerChangeEvent,
   type ServerCheckpoint,
   type ServerCommit,

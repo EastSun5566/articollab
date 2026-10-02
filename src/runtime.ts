@@ -29,6 +29,7 @@ import { decodeClientCheckpoint, decodeServerCheckpoint } from "./wire.ts";
 import {
   applyOperations,
   initialStates,
+  replayPending,
   saveSnapshot,
   unknownOperationType,
   wrongCollectionKind,
@@ -73,6 +74,13 @@ export interface ClientBatchRef {
 export interface ClientBatch<TOperation extends Operation = Operation>
   extends ClientBatchRef {
   readonly operations: readonly TOperation[];
+}
+
+/** The first batch that cannot currently be replayed on authoritative state. */
+export interface PendingReplayConflict<TOperation extends Operation = Operation> {
+  readonly batch: ClientBatch<TOperation>;
+  readonly operationIndex: number;
+  readonly message: string;
 }
 
 export interface ServerCommit<TOperation extends Operation = Operation> {
@@ -333,6 +341,7 @@ export class ClientDocument<S extends SchemaShape> {
   private readonly collections = new Map<string, RuntimeCollection>();
   private authoritativeStates: Map<string, CollectionState>;
   private readonly pendingBatches: ClientBatch<DocumentOperation<S>>[] = [];
+  private currentReplayConflict: PendingReplayConflict<DocumentOperation<S>> | null = null;
 
   private nextSeq = 1;
   private lastServerSeq = 0;
@@ -367,10 +376,8 @@ export class ClientDocument<S extends SchemaShape> {
         this.pendingBatches.push(batch);
       }
     }
-    const states = new Map(this.authoritativeStates);
-    for (const batch of this.pendingBatches) {
-      applyOperations(states, batch.operations);
-    }
+    const { states, conflict } = replayPending(this.authoritativeStates, this.pendingBatches);
+    this.currentReplayConflict = conflict;
     const lastBunchSeqs = checkpoint?.lastBunchSeqs as
       | Readonly<Record<string, number>>
       | undefined;
@@ -433,6 +440,10 @@ export class ClientDocument<S extends SchemaShape> {
     this.state = Object.freeze(publicState) as DocumentState<S>;
   }
 
+  get replayConflict(): PendingReplayConflict<DocumentOperation<S>> | null {
+    return this.currentReplayConflict;
+  }
+
   /** Saves authoritative state and the pending work needed to rebuild this client. */
   checkpoint(): ClientCheckpoint<S> {
     if (this.transactionDepth !== 0) {
@@ -457,8 +468,15 @@ export class ClientDocument<S extends SchemaShape> {
   }
 
   private assertCanMutate(): void {
+    this.assertReplayable();
     if (!Number.isSafeInteger(this.nextSeq)) {
       throw new Error("Client sequence exhausted");
+    }
+  }
+
+  private assertReplayable(): void {
+    if (this.currentReplayConflict !== null) {
+      throw new Error("Cannot mutate while pending replay is blocked");
     }
   }
 
@@ -477,6 +495,7 @@ export class ClientDocument<S extends SchemaShape> {
         : []
   ): T;
   transact<T>(callback: () => T): T {
+    this.assertReplayable();
     const isOuterTransaction = this.transactionDepth === 0;
     if (isOuterTransaction) {
       this.transactionSnapshot = new Map(
@@ -545,12 +564,16 @@ export class ClientDocument<S extends SchemaShape> {
     const remainingBatches = isOwnCommit
       ? this.pendingBatches.slice(1)
       : this.pendingBatches;
-    const nextOptimisticStates = new Map(nextAuthoritativeStates);
-    for (const pending of remainingBatches) {
-      applyOperations(nextOptimisticStates, pending.operations);
-    }
-
-    let changed = false;
+    const { states: nextOptimisticStates, conflict } = replayPending(
+      nextAuthoritativeStates, remainingBatches
+    );
+    const previous = this.currentReplayConflict;
+    const sameConflict = previous === null || conflict === null
+      ? previous === conflict
+      : previous.batch === conflict.batch &&
+        previous.operationIndex === conflict.operationIndex &&
+        previous.message === conflict.message;
+    let changed = !sameConflict;
     for (const [path, runtime] of this.collections) {
       const nextState = nextOptimisticStates.get(path);
       if (nextState === undefined) {
@@ -562,6 +585,7 @@ export class ClientDocument<S extends SchemaShape> {
     this.authoritativeStates = nextAuthoritativeStates;
     if (isOwnCommit) this.pendingBatches.shift();
     this.lastServerSeq = commit.serverSeq;
+    this.currentReplayConflict = sameConflict ? previous : conflict;
 
     for (const [path, runtime] of this.collections) {
       restoreRuntime(runtime, nextOptimisticStates.get(path)!, path);

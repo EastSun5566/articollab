@@ -223,6 +223,7 @@ export async function connectHttpExampleClient(
         if (!(await catchUp())) return false;
         while (true) {
           requireUsable();
+          if (doc.replayConflict !== null) return false;
           const batch = doc.checkpoint().pendingBatches[0];
           if (batch === undefined) return true;
           await request("/batches", 204, {

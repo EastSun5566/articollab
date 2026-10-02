@@ -145,16 +145,31 @@ export function createAsyncExampleNetwork(
     if (commit.serverSeq <= connection.doc.checkpoint().snapshot.serverSeq) return;
     connection.doc.receive(commit);
     saveClient(connection); // Own acknowledgements need not emit a change.
+    startPump(connection);
   }
 
-  function send(batch: Batch): Promise<{ sourceDelivery: Promise<void> }> {
+  function canSend(connection: Connection, batch: Batch): boolean {
+    return connections.get(batch.clientId) === connection &&
+      connection.doc.replayConflict === null &&
+      connection.doc.checkpoint().pendingBatches[0]?.seq === batch.seq;
+  }
+
+  function send(batch: Batch, automatic?: Connection): Promise<{
+    sourceDelivery: Promise<void>; submitted: boolean;
+  }> {
     const message = JSON.stringify(batch); // Capture before the asynchronous boundary.
     const clientId = batch.clientId;
     return track(async () => {
+      if (automatic !== undefined && !canSend(automatic, batch)) {
+        return { sourceDelivery: Promise.resolve(), submitted: false };
+      }
       const received = await transfer("client-to-server", clientId, message);
       requireUsable();
       const decoded = decodeClientBatch(Board, JSON.parse(received));
       return serverJob(() => {
+        if (automatic !== undefined && !canSend(automatic, batch)) {
+          return { sourceDelivery: Promise.resolve(), submitted: false };
+        }
         const { commit, replayed } = server.receive(decoded);
         if (!replayed) {
           try {
@@ -175,13 +190,14 @@ export function createAsyncExampleNetwork(
           const delivery = incoming(connection, () => deliver(connection, wire));
           if (connection === source) sourceDelivery = delivery;
         }
-        return { sourceDelivery };
+        return { sourceDelivery, submitted: true };
       });
     });
   }
 
   async function sendAndReceive(connection: Connection, batch: Batch): Promise<void> {
-    const { sourceDelivery } = await send(batch);
+    const { sourceDelivery, submitted } = await send(batch, connection);
+    if (!submitted) return; // A queued send became blocked or was already acknowledged.
     await sourceDelivery;
     requireUsable();
     if (subscribed(connection) && connection.doc.checkpoint().pendingBatches[0]?.seq === batch.seq) {
@@ -190,11 +206,12 @@ export function createAsyncExampleNetwork(
   }
 
   function startPump(connection: Connection): void {
-    if (connection.mode !== "live" || connection.pumping) return;
+    if (connection.mode !== "live" || connection.pumping || connection.doc.replayConflict !== null) return;
+    if (connection.doc.checkpoint().pendingBatches.length === 0) return;
     connection.pumping = true;
     void track(async () => {
       try {
-        while (connection.mode === "live") {
+        while (connection.mode === "live" && connection.doc.replayConflict === null) {
           const batch = connection.doc.checkpoint().pendingBatches[0];
           if (batch === undefined) break;
           await sendAndReceive(connection, batch);
@@ -244,7 +261,7 @@ export function createAsyncExampleNetwork(
         if (connections.get(clientId) !== connection) {
           throw new Error("Cannot resume a replaced connection");
         }
-        if (connection.mode === "live") return true;
+        if (connection.mode === "live") return doc.replayConflict === null;
         connection.mode = "joining";
         return track(async () => {
           try {
@@ -268,6 +285,11 @@ export function createAsyncExampleNetwork(
               const inbox = connection.inbox;
               await inbox;
               requireUsable();
+              if (inbox !== connection.inbox) continue; // Drain all queued incoming work first.
+              if (doc.replayConflict !== null) {
+                connection.mode = "offline";
+                return false;
+              }
               const batch = doc.checkpoint().pendingBatches[0];
               if (batch !== undefined) {
                 await sendAndReceive(connection, batch);

@@ -96,7 +96,7 @@ console.log(lateDoc.state.body.toString()); // "Hello😀"
 
 Values and list elements must be JSON-compatible and are treated as immutable. Lists support single-element `insert`, `push`, and `delete`, plus array-like reads and iteration. Text supports range `insert` and `delete`, string conversion, and iteration by Unicode code point; indexes therefore do not always match JavaScript's UTF-16 `string.length`. List and text wire operations use articulated stable IDs instead of mutable indexes, so pending insertions can still reference an element after it becomes a tombstone. Text inserts allocate consecutive ID ranges, while deletes compress their targets into consecutive ranges. Each mutation outside a transaction creates one client batch. A transaction groups all of its synchronous mutations into one batch and emits one change event.
 
-The client keeps local batches pending until their matching server commits arrive. On each commit, it updates its authoritative state, removes the acknowledged local batch when applicable, then replays the remaining pending batches. A commit with no operations rolls back the matching optimistic batch. Commits must arrive exactly once, starting at `serverSeq: 1`, and `receive()` must not be called inside `transact()`.
+The client keeps local batches pending until their matching server commits arrive. On each commit, it updates its authoritative state, removes the acknowledged local batch when applicable, then replays the remaining pending batches. A commit with no operations rolls back the matching optimistic batch. Commits must arrive exactly once, starting at `serverSeq: 1`, and `receive()` must not be called inside `transact()`. If pending replay encounters a state conflict, the valid commit still advances the client; the failed batch and its suffix stay pending, as described below.
 
 The server assigns new batches a total order synchronously, in the order of `server.receive(batch)` calls that return `replayed: false`. An optional batch-level `resolve` callback receives a frozen owned batch and the authoritative snapshot from immediately before that batch. Returning the original operations accepts it, returning different operations transforms it, and returning an empty array rejects its authoritative effect while still acknowledging the batch. A resolver should be a pure synchronous decision: throwing, returning a non-array, producing an invalid operation, or calling the same server's `receive()` reentrantly aborts without consuming sequence numbers. When reusing an incoming text insertion ID, a resolver should preserve its code-point length; a different-length or server-created insertion requires an application-supplied globally unique ID range that cannot collide with client pending IDs.
 
@@ -147,6 +147,26 @@ if (commits === null) {
 
 If checkpoints are persisted, save one before sending the corresponding new commit; a failed save must not continue using the advanced in-memory server. After a crash between saving and sending, the source can retry its saved batch to recover the original commit, and peers can catch up while the required history remains available. History eviction does not affect each client's last-batch retry cache.
 
+## Pending replay conflicts
+
+Rejection or transformation can invalidate later local operations. For example, batch 1 inserts A, batch 2 inserts B after A, and the server rejects batch 1: batch 2 now references an unknown anchor. The client accepts the valid commit and records a frozen, read-only `doc.replayConflict` rather than throwing or silently dropping batch 2:
+
+```ts
+doc.on("change", () => {
+  const conflict = doc.replayConflict;
+  if (conflict !== null) {
+    console.log(conflict.batch.seq, conflict.operationIndex, conflict.message);
+    // Preserve doc.checkpoint(); do not change or discard the pending batch.
+  }
+});
+```
+
+`replayConflict` is `null` when every pending batch can be replayed. Otherwise it identifies the first failed batch and its zero-based operation index; `message` is diagnostic text, not a stable error code. The visible document is authoritative state plus the complete replayable pending prefix. A failed mixed transaction contributes no partial Value/List/Text changes, and later batches are not replayed. Original pending batches, local sequences and ID allocations remain intact.
+
+While blocked, reads, subscriptions, checkpointing and incoming commits remain available. Actual local mutations throw before changing state or allocating sequences/IDs, and `transact()` throws before invoking its callback. Valid empty Text insertions and zero-count deletions remain no-ops. Each later commit retries replay from authoritative state, so the conflict can change or clear. Document-level server `change` fires once when visible values or the conflict descriptor change, including a conflict-only transition; identical conflicts do not emit solely because the watermark advanced. An ordinary own acknowledgement remains silent when neither changes.
+
+Only state-dependent List/Text errors (unknown anchors/targets or insertion ID collisions) become replay conflicts. Invalid server operations, sequence errors, wrong acknowledgements and unexpected replay errors still throw atomically. Listener exceptions occur after a successful receive has committed, as before. No new wire fields, automatic rebase, cancellation, ID remapping or conflict-resolution API are provided. A blocked client may stay blocked until application-driven server commits resolve the pending dependencies or acknowledge those batches. Do not edit a previously submitted batch, skip its sequence or replace pending work with a fresh snapshot.
+
 ## Client checkpoint and restore
 
 `doc.checkpoint()` saves the authoritative snapshot, the last emitted local batch sequence, pending batches, and List/Text bunch allocation counters. It does not save the optimistic view separately: restore rebuilds that view by replaying pending batches. Checkpointing inside a transaction throws.
@@ -176,6 +196,8 @@ if (missed === null) {
 
 Restore does not emit changes or resend pending batches. `snapshot` and `checkpoint` options are mutually exclusive. Existing pending IDs are preserved; future List/Text IDs use a fresh generator starting after the saved allocation counters. Counters are not rolled back when a transaction fails or a batch is rejected. Sequence and ID allocation exhaustion throws before changing visible state; valid no-op text edits remain allowed.
 
+Checkpoint shape is unchanged: conflict is derived again from snapshot and pending during restore, producing the same complete optimistic prefix. The decoder accepts structurally valid pending work that currently conflicts with authoritative state, including unknown references and snapshot ID collisions. It still validates every pending batch, even after the first conflict: fields, JSON, schema kinds, sequence suffix, canonical client/path insert namespaces and allocation counters. Pending insertion ID ranges must not overlap each other. Malformed checkpoints remain errors; accepting a blocked checkpoint does not mean its pending operations can be submitted safely.
+
 There must be only one active writer for a client ID. Do not keep the old writer running, fork a checkpoint into multiple writers, or resume an older checkpoint that omits batches that may already have been sent. A fresh snapshot is for a new client with a new ID, not a replacement for pending work. Callers coordinate catch-up with live delivery, avoid duplicate commits, and decide whether to retry the last unresolved batch; there is no automatic resend or snapshot fallback.
 
 For durable recovery, persist the checkpoint before sending a batch from `onBatch`, and again after successfully receiving commits. An own acknowledgement may emit no change, so a change listener alone cannot reliably trigger persistence. Runtime checkpoint containers are frozen and nested JSON payloads retain the immutable-value contract; decoding and restore deeply copy and freeze input. Callbacks, listeners, timers, storage, and transports are not serialized or provided.
@@ -197,13 +219,13 @@ const network = createExampleNetwork(createServer(Board));
 // Stop the original writer before restoring its client ID.
 const connection = network.connect(clientCheckpoint.clientId, clientCheckpoint);
 if (!connection.resume()) {
-  // Preserve connection.doc.checkpoint(); retained history cannot fill this gap.
+  // Preserve connection.doc.checkpoint(); inspect replayConflict or handle a history gap.
 }
 ```
 
 Without a checkpoint, `connect(clientId)` starts live from the server snapshot. With a checkpoint, it starts disconnected and does not resend anything. `disconnect()` stops incoming and outgoing delivery; local mutations remain in the document's pending batches.
 
-`resume()` first checks whether the server can fill the document's watermark gap. If not, it returns `false`, leaves the connection disconnected, and neither submits pending work nor replaces the snapshot. Otherwise it enables incoming delivery, applies the entire catch-up in one queue job, and repeatedly reads the **current** checkpoint's earliest pending batch, submitting and completing delivery before selecting the next one. An accepted batch whose acknowledgement was lost is removed during catch-up rather than submitted again. Own acknowledgements need not emit a change for this loop to continue.
+`resume()` first checks whether the server can fill the document's watermark gap. If not, it returns `false`, leaves the connection disconnected, and neither submits pending work nor replaces the snapshot. Otherwise it enables incoming delivery, applies the entire catch-up in one queue job, and repeatedly reads the **current** checkpoint's earliest pending batch, submitting and completing delivery before selecting the next one. After the complete catch-up, and before each submission, a remaining `replayConflict` returns `false` and leaves recovery offline without discarding pending work. A later resume can try catch-up again. Temporary conflicts within the prefix do not interrupt it: a later own commit may clear them. An accepted batch whose acknowledgement was lost is removed during catch-up rather than submitted again. Own acknowledgements need not emit a change for this loop to continue.
 
 Listeners may create new mutations during recovery. The recovering document buffers them behind its existing pending batches; mutations from live peers enter the FIFO queue. Each new commit finishes delivery to all recipients before the next queued batch is processed. Retry receipts go only to the source, and already-consumed server sequences are skipped. After pending work and queued delivery are drained, the connection becomes live.
 
@@ -232,18 +254,20 @@ await network.idle(); // Includes acknowledgement delivery and listener-created 
 connection.disconnect();
 connection.doc.state.items.push("Offline");
 if (!(await connection.resume())) {
-  // Preserve connection.doc.checkpoint(); retained history cannot fill this gap.
+  // Preserve connection.doc.checkpoint(); inspect replayConflict or handle a history gap.
 }
 await network.idle();
 ```
 
 Batch and commit messages are serialized before delivery, asynchronously transferred, parsed, and passed through `decodeClientBatch()` or `decodeServerCommit()` before application. The optional `transfer(direction, clientId, message): Promise<string>` hook defaults to returning the message asynchronously. Tests use manually released Promise gates to delay or corrupt messages without timers or real network traffic. Directions are `"client-to-server"` and `"server-to-client"`.
 
-Each live client has at most one outbound pump. It selects the earliest **current** pending batch, waits for its own commit to be applied, and then rereads pending work. Editing can continue while an acknowledgement is delayed. A slow sender or recipient does not block other clients. New commits go to subscribed clients; replay receipts go only to their source, with already-consumed sequences skipped.
+Each live client has at most one outbound pump. It selects the earliest **current** pending batch, waits for its own commit to be applied, and then rereads pending work. Editing can continue while an acknowledgement is delayed unless replay is blocked. A slow sender or recipient does not block other clients. New commits go to subscribed clients; replay receipts go only to their source, with already-consumed sequences skipped.
+
+Both in-memory networks pause automatic outbound work while blocked, but keep incoming delivery active for live clients and leave peers usable. Queued sends recheck current pending state before server application. A subsequent incoming commit that clears the conflict restarts live pumping. Explicit `submit(batch)` remains an application/test action, not automatic conflict repair. Already-accepted work cannot be recalled.
 
 `connect(clientId, checkpoint?)` is synchronous and requires the network to be idle. Without a checkpoint it creates a live client from a JSON-decoded snapshot; with one it restores a disconnected client. Initial snapshot creation is in-process, not an asynchronous network handshake. `disconnect()` stops subsequent sends and incoming application, but an already-started request may still reach the server. Await `network.idle()` after disconnecting before replacing the stopped writer with its latest checkpoint.
 
-`resume(): Promise<boolean>` also requires idle at entry. It buffers local edits while the server atomically obtains catch-up, queues the entire prefix, and enables subscription. That server job contains no delivery awaits: peers may generate new commits while catch-up delivery is paused, but those commits queue after the prefix in the recovering client's inbox. Resume drains the latest pending work and queued incoming updates before switching live. Insufficient history returns `false` without submitting or replacing pending work. Reentrant resume and disconnect during recovery are rejected.
+`resume(): Promise<boolean>` also requires idle at entry. It buffers local edits while the server atomically obtains catch-up, queues the entire prefix, and enables subscription. That server job contains no delivery awaits: peers may generate new commits while catch-up delivery is paused, but those commits queue after the prefix in the recovering client's inbox. Resume drains queued incoming updates before checking for blocked replay and submitting the latest pending work. Insufficient history or a remaining replay conflict returns `false` and leaves recovery offline without submitting or replacing pending work; conflict is not network failure and a later resume can try again. Reentrant resume and disconnect during recovery are rejected.
 
 `network.submit(batch): Promise<void>` is an example/test helper for manually submitting offline work. Completion means the server has processed the batch and scheduled delivery, not that the sender has received its acknowledgement. Use `idle()` to wait for all tracked server work, incoming delivery, pumps, and recovery, including work added while waiting. Do not await `idle()` from inside a listener.
 
@@ -279,7 +303,7 @@ const network = createAsyncExampleNetwork(server, {
 const savedClient = store.loadClient("client-a");
 const connection = network.connect("client-a", savedClient ?? undefined);
 if (savedClient !== null && !(await connection.resume())) {
-  // Keep the saved pending work; retained history cannot fill this gap.
+  // Keep the saved pending work; inspect replayConflict or handle a history gap.
 }
 await network.idle();
 ```
@@ -317,7 +341,7 @@ try {
   const client = await connectHttpExampleClient(host.url, "client-a");
   client.doc.state.items.push("Saved"); // Optimistic and pending; no automatic send.
   if (!(await client.sync())) {
-    // Preserve client.doc.checkpoint(); retained history cannot fill this gap.
+    // Preserve client.doc.checkpoint(); inspect replayConflict or handle a history gap.
   }
 } finally {
   await host.close();
@@ -337,6 +361,8 @@ POST requires `application/json` and at most 1 MiB of actual UTF-8 bytes, includ
 `connectHttpExampleClient(url, clientId, options?)` fetches and decodes a snapshot for a fresh client. With `options.checkpoint`, it instead restores the complete client checkpoint using the existing runtime validation, without making any HTTP requests or automatically submitting pending work. The checkpoint must match `clientId`. Its optional `fetch` override is for controlling requests in tests; by default it uses native fetch. The client knows only the URL, not the server object. Updates after the snapshot or checkpoint watermark are caught by the first sync.
 
 `sync(): Promise<boolean>` first fetches catch-up from the latest checkpoint watermark, validates and applies the whole ordered prefix, then posts the earliest current pending batch. It fetches catch-up again to acknowledge that batch before rereading pending work. Listener-created mutations wait behind earlier batches; silent acknowledgements do not depend on change events. POST success alone never applies a commit: an own result at sequence 12 must not bypass missing sequence 11. A successful submission without a subsequent catch-up acknowledgement throws instead of looping.
+
+If the full catch-up leaves `doc.replayConflict` non-null, sync returns `false` without posting pending work, including any replayable prefix. This is not permanent connection failure: later calls still poll for commits that may unblock replay. A conflict that appears and clears within one catch-up response does not stop sync. Saving hooks persist successfully applied commits and blocked checkpoints as usual. Check `replayConflict` when handling `false`; history gaps and actual failures retain the distinct behavior below.
 
 `true` means the latest fetched prefix was applied and pending work is empty at that moment, not that later remote edits cannot occur. Peers need their own explicit sync. Concurrent or reentrant calls reject without stopping the active sync. Insufficient history returns `false` permanently for that connection, with no further requests or snapshot replacement; pending work and the document remain available. Fetch, HTTP, JSON, decoder, receive, or incoming-listener failures stop only the affected connection and preserve its first error for subsequent calls. Completed updates are not rolled back. If a POST response is lost, the server may already have accepted the batch while the client still has it pending; this example does not automatically retry or reconnect.
 
@@ -359,7 +385,7 @@ if (!(await restored.sync())) {
 
 If batch 1 was accepted but its POST response was lost, and batch 2 was never submitted, the first catch-up confirms batch 1 and only batch 2 is posted. The resolver does not run again for the confirmed batch. Pending batches, local batch sequences, and List/Text ID allocation progress survive restore; new edits, including listener-created edits during sync, remain behind older pending work. Silent own acknowledgements still advance submission. A failed old connection remains stopped; a restored connection has its own failure state and follows the same stop-on-error rules. History gaps still return `false` permanently without submitting pending or replacing the snapshot.
 
-The server must represent the same document lineage and retain the required history and retry metadata. A server restored from its existing checkpoint can run at a new URL, but this example does not detect server identity/epoch changes or recover from server rollback. Restoring a client checkpoint is not a substitute for retained history; reject/transform results that make later pending operations impossible to replay still throw rather than being repaired.
+The server must represent the same document lineage and retain the required history and retry metadata. A server restored from its existing checkpoint can run at a new URL, but this example does not detect server identity/epoch changes or recover from server rollback. Restoring a client checkpoint is not a substitute for retained history; reject/transform results that make later pending operations impossible to replay preserve blocked pending work rather than repairing it.
 
 This is a Node-only, single-document localhost demonstration with one writer per client ID and synchronous listeners producing finite edits. Reconnect is caller-initiated reconstruction, not automatic retry. It does not provide authentication, TLS, CORS, WebSocket/SSE, automatic polling, retry timers, cancellation, history pagination, snapshot fallback, or production transport guarantees. Tests include a separate client process restoring a JSON checkpoint and talking to the parent server through HTTP. Optional synchronous saving callbacks integrate file storage as shown below.
 
@@ -394,7 +420,7 @@ try {
   });
   client.doc.state.items.push("Saved before sending");
   if (!(await client.sync())) {
-    // Retain the saved pending state; history is insufficient, not permission to reset it.
+    // Retain the saved pending state; inspect replayConflict or handle a history gap.
   }
 } finally {
   await host.close();
@@ -411,7 +437,7 @@ A client save failure permanently stops that connection and preserves its first 
 
 A server save failure after receive returns `500` for that request and permanently disables the host. Subsequent requests, including bodies already being read, receive `503` instead of accessing advanced state. Ordinary resolver/runtime validation failures remain `409` and do not disable the host. The caller closes the disabled host and rebuilds from files; it must not reuse the advanced in-memory server. Error responses contain only generic `{ error: string }` messages.
 
-Restore assumes the same document lineage, retained history/retry metadata, one writer per file/client ID, and retired old writers with settled sync calls. Client and server files are not a cross-file transaction. This example adds no async persistence, fsync/directory-sync protocol, locks, migration, snapshot fallback, automatic retry, or power-loss durability guarantee. Pending operations invalidated by policy still fail explicitly. It is a process-interruption recovery example, not production persistence or transport.
+Restore assumes the same document lineage, retained history/retry metadata, one writer per file/client ID, and retired old writers with settled sync calls. Client and server files are not a cross-file transaction. This example adds no async persistence, fsync/directory-sync protocol, locks, migration, snapshot fallback, automatic retry, or power-loss durability guarantee. Pending operations invalidated by policy remain explicitly blocked and are not automatically repaired. It is a process-interruption recovery example, not production persistence or transport.
 
 ## Development
 
@@ -439,6 +465,7 @@ Implemented:
 - Document-level change subscriptions
 - Ordered authoritative server commits
 - Local acknowledgement and pending-operation replay
+- Explicit pending replay conflicts, complete-batch optimistic prefixes and blocked checkpoint restore
 - Rejected or server-transformed operations
 - Synchronous server runtime with batch-level accept, reject, and transform policies
 - Strict wire decoding for batches, commits, and snapshots

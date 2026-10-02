@@ -29,6 +29,7 @@ type Checkpoint = ClientCheckpoint<Shape>;
 type Connection = {
   readonly doc: ClientDocument<Shape>;
   mode: "offline" | "recovering" | "live";
+  pumping: boolean;
 };
 
 /** Example-only synchronous routing; not a production transport. */
@@ -66,16 +67,34 @@ export function createExampleNetwork(server: ServerDocument<Shape>) {
     if (connection.mode === "offline") return;
     if (commit.serverSeq <= connection.doc.checkpoint().snapshot.serverSeq) return;
     connection.doc.receive(commit); // Future gaps still throw.
+    startPump(connection);
+  }
+
+  function applyBatch(batch: Batch): void {
+    const { commit, replayed } = server.receive(batch);
+    const source = connections.get(batch.clientId);
+    const recipients = replayed
+      ? (source === undefined ? [] : [source])
+      : [...connections.values()];
+    for (const connection of recipients) deliver(connection, commit);
   }
 
   function submit(batch: Batch): void {
+    enqueue(() => applyBatch(batch));
+  }
+
+  function startPump(connection: Connection): void {
+    if (connection.mode !== "live" || connection.pumping || connection.doc.replayConflict !== null) return;
+    if (connection.doc.checkpoint().pendingBatches.length === 0) return;
+    connection.pumping = true;
     enqueue(() => {
-      const { commit, replayed } = server.receive(batch);
-      const source = connections.get(batch.clientId);
-      const recipients = replayed
-        ? (source === undefined ? [] : [source])
-        : [...connections.values()];
-      for (const connection of recipients) deliver(connection, commit);
+      // Re-read after earlier broadcasts; never submit a captured stale batch.
+      if (connection.mode === "live" && connection.doc.replayConflict === null) {
+        const pending = connection.doc.checkpoint().pendingBatches[0];
+        if (pending !== undefined) applyBatch(pending);
+      }
+      connection.pumping = false;
+      startPump(connection);
     });
   }
 
@@ -90,16 +109,16 @@ export function createExampleNetwork(server: ServerDocument<Shape>) {
     const doc = createClient(Board, {
       clientId,
       ...(checkpoint === undefined ? { snapshot: server.snapshot() } : { checkpoint }),
-      onBatch(batch) {
+      onBatch() {
         requireUsable();
         if (connections.get(clientId) !== connection) {
           throw new Error("This connection was replaced; stop the old writer");
         }
         // Offline/recovering mutations are already buffered in the document.
-        if (connection.mode === "live") submit(batch);
+        startPump(connection);
       },
     });
-    connection = { doc, mode: checkpoint === undefined ? "live" : "offline" };
+    connection = { doc, mode: checkpoint === undefined ? "live" : "offline", pumping: false };
     connections.set(clientId, connection);
 
     return {
@@ -116,7 +135,7 @@ export function createExampleNetwork(server: ServerDocument<Shape>) {
         if (connections.get(clientId) !== connection) {
           throw new Error("Cannot resume a replaced connection");
         }
-        if (connection.mode === "live") return true;
+        if (connection.mode === "live") return doc.replayConflict === null;
 
         const missed = server.commitsSince(doc.checkpoint().snapshot.serverSeq);
         if (missed === null) return false;
@@ -127,6 +146,10 @@ export function createExampleNetwork(server: ServerDocument<Shape>) {
             for (const commit of missed) deliver(connection, commit);
           });
           while (true) {
+            if (doc.replayConflict !== null) {
+              connection.mode = "offline";
+              return false;
+            }
             const pending = doc.checkpoint().pendingBatches[0];
             if (pending === undefined) break;
             submit(pending); // Complete delivery before selecting the next pending batch.

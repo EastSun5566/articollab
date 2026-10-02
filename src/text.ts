@@ -6,6 +6,7 @@ import {
 } from "articulated";
 
 import { loadIdList, type SavedIdRange } from "./list.ts";
+import { CollectionConflictError } from "./conflict.ts";
 
 export interface TextSnapshotData {
   readonly idList: readonly SavedIdRange[];
@@ -150,7 +151,7 @@ export class TextState {
       operation.before !== null &&
       !this.idList.isKnown(operation.before)
     ) {
-      throw new Error(
+      throw new CollectionConflictError(
         `Unknown text insertion anchor: ${idKey(operation.before)}`
       );
     }
@@ -159,7 +160,7 @@ export class TextState {
     const ids = [...idsInRange(operation.id, values.length)];
     for (const id of ids) {
       if (this.idList.isKnown(id)) {
-        throw new Error(`Duplicate text element id: ${idKey(id)}`);
+        throw new CollectionConflictError(`Duplicate text element id: ${idKey(id)}`);
       }
     }
 
@@ -183,7 +184,7 @@ export class TextState {
     for (const range of operation.ranges) {
       for (const id of idsInRange(range.start, range.count)) {
         if (!this.idList.isKnown(id)) {
-          throw new Error(`Unknown text element id: ${idKey(id)}`);
+          throw new CollectionConflictError(`Unknown text element id: ${idKey(id)}`);
         }
       }
     }
