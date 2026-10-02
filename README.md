@@ -98,7 +98,7 @@ Values and list elements must be JSON-compatible and are treated as immutable. L
 
 The client keeps local batches pending until their matching server commits arrive. On each commit, it updates its authoritative state, removes the acknowledged local batch when applicable, then replays the remaining pending batches. A commit with no operations rolls back the matching optimistic batch. Commits must arrive exactly once, starting at `serverSeq: 1`, and `receive()` must not be called inside `transact()`. If pending replay encounters a state conflict, the valid commit still advances the client; the failed batch and its suffix stay pending, as described below.
 
-The server assigns new batches a total order synchronously, in the order of `server.receive(batch)` calls that return `replayed: false`. An optional batch-level `resolve` callback receives a frozen owned batch and the authoritative snapshot from immediately before that batch. Returning the original operations accepts it, returning different operations transforms it, and returning an empty array rejects its authoritative effect while still acknowledging the batch. A resolver should be a pure synchronous decision: throwing, returning a non-array, producing an invalid operation, or calling the same server's `receive()` reentrantly aborts without consuming sequence numbers. When reusing an incoming text insertion ID, a resolver should preserve its code-point length; a different-length or server-created insertion requires an application-supplied globally unique ID range that cannot collide with client pending IDs.
+The server assigns new batches a total order synchronously, in the order of `server.receive(batch)` or `server.reject(batch)` calls that return `replayed: false`. An optional batch-level `resolve` callback receives a frozen owned batch and the authoritative snapshot from immediately before that batch. Returning the original operations accepts it, returning different operations transforms it, and returning an empty array rejects its authoritative effect while still acknowledging the batch. A resolver should be a pure synchronous decision: throwing, returning a non-array, producing an invalid operation, or calling the same server's `receive()` or `reject()` reentrantly aborts without consuming sequence numbers. When reusing an incoming text insertion ID, a resolver should preserve its code-point length; a different-length or server-created insertion requires an application-supplied globally unique ID range that cannot collide with client pending IDs.
 
 Each client's new batches must arrive in sequence, starting at `seq: 1`. `server.receive()` returns a frozen `{ commit, replayed }` receipt. Broadcast new commits to every client, including their sender. If the sender missed the response, it may resend its last batch: an identical retry returns the saved commit with `replayed: true`, without rerunning the resolver or advancing state or sequences. Send that replay only to the source awaiting the commit. The receipt itself is routing metadata, not a wire message. The example queues deliveries so a change listener cannot interrupt one broadcast with the next commit.
 
@@ -165,7 +165,30 @@ doc.on("change", () => {
 
 While blocked, reads, subscriptions, checkpointing and incoming commits remain available. Actual local mutations throw before changing state or allocating sequences/IDs, and `transact()` throws before invoking its callback. Valid empty Text insertions and zero-count deletions remain no-ops. Each later commit retries replay from authoritative state, so the conflict can change or clear. Document-level server `change` fires once when visible values or the conflict descriptor change, including a conflict-only transition; identical conflicts do not emit solely because the watermark advanced. An ordinary own acknowledgement remains silent when neither changes.
 
-Only state-dependent List/Text errors (unknown anchors/targets or insertion ID collisions) become replay conflicts. Invalid server operations, sequence errors, wrong acknowledgements and unexpected replay errors still throw atomically. Listener exceptions occur after a successful receive has committed, as before. No new wire fields, automatic rebase, cancellation, ID remapping or conflict-resolution API are provided. A blocked client may stay blocked until application-driven server commits resolve the pending dependencies or acknowledge those batches. Do not edit a previously submitted batch, skip its sequence or replace pending work with a fresh snapshot.
+Only state-dependent List/Text errors (unknown anchors/targets or insertion ID collisions) become replay conflicts. Invalid server operations, sequence errors, wrong acknowledgements and unexpected replay errors still throw atomically. Listener exceptions occur after a successful receive has committed, as before. There is no automatic rebase, client-side pending purge or ID remapping. A blocked client may stay blocked until application-driven server commits resolve the pending dependencies or acknowledge those batches. Do not edit a previously submitted batch, skip its sequence or replace pending work with a fresh snapshot.
+
+## Explicit server rejection and manual recovery
+
+A trusted server application can explicitly reject an original batch:
+
+```ts
+const { commit, replayed } = server.reject(batch);
+// Deliver a new commit normally; route a replay only to its waiting source.
+```
+
+For a new sequence-valid batch, `reject()` skips the resolver and does not apply incoming operations. It creates a frozen empty-operations commit, advances client/global sequences, and records the original owned batch in the retry cache and the commit in history. Authoritative values and tombstones do not change. State-dependent unknown anchors/targets or insertion ID collisions therefore do not prevent explicit rejection. As with `receive()`, input must come from the same-schema client or `decodeClientBatch()`; this typed API is not a wire decoder or an authorization boundary.
+
+Rejection is not undo. If the last batch was already processed, both `receive()` and `reject()` replay its original result, even if it was accepted or transformed. Changing the batch payload, retrying an older batch or skipping a client sequence still throws. The original batch must be preserved; sending an empty client batch or deleting pending locally is not cancellation.
+
+Run the manual recovery example:
+
+```sh
+node examples/reject-pending.ts
+```
+
+Its example-only `rejectPending(server, doc)` captures the initial `lastLocalSeq`, then applies the complete catch-up before rejecting any remaining pending batches up to that cutoff. It re-reads the earliest pending after each acknowledgement, so it neither resubmits already-confirmed work nor relies on change events for silent acknowledgements. Returning `true` means the targeted batches are confirmed, not that all later pending work is empty: listener-created higher-sequence edits remain pending. New edits may depend on a cancelled insertion and become blocked themselves; inspect `doc.replayConflict` again rather than assuming recovery made every suffix replayable. The explicit action cancels the whole original pending range, including mutations that were still replayable, rather than only the failing operation.
+
+If retained history is insufficient, it returns `false` without rejecting anything or replacing the document. Exceptions propagate; completed commits are not rolled back and the latest checkpoint retains unconfirmed work. Recovery cannot run concurrently or reentrantly for the same server or document. The example uses manual submission with no other server writes interleaving, no background pump and no transport queue; peers catch up separately. A production caller must coordinate submission, persistence, commit delivery and authorization. Existing HTTP and resume helpers do not automatically request cancellation, and no new wire fields, transport endpoints or client cancellation API are added.
 
 ## Client checkpoint and restore
 
@@ -466,6 +489,7 @@ Implemented:
 - Ordered authoritative server commits
 - Local acknowledgement and pending-operation replay
 - Explicit pending replay conflicts, complete-batch optimistic prefixes and blocked checkpoint restore
+- Explicit server rejection with cross-entrypoint retry and example-only manual pending recovery
 - Rejected or server-transformed operations
 - Synchronous server runtime with batch-level accept, reject, and transform policies
 - Strict wire decoding for batches, commits, and snapshots

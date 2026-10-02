@@ -697,8 +697,22 @@ export class ServerDocument<S extends SchemaShape> {
   receive(
     batch: ClientBatch<DocumentOperation<S>>
   ): ServerReceipt<DocumentOperation<S>> {
+    return this.processBatch(batch, false);
+  }
+
+  /** Rejects a new batch, or replays its original result if already processed. */
+  reject(
+    batch: ClientBatch<DocumentOperation<S>>
+  ): ServerReceipt<DocumentOperation<S>> {
+    return this.processBatch(batch, true);
+  }
+
+  private processBatch(
+    batch: ClientBatch<DocumentOperation<S>>,
+    reject: boolean
+  ): ServerReceipt<DocumentOperation<S>> {
     if (this.receiving) {
-      throw new Error("Cannot call server.receive() reentrantly");
+      throw new Error(`Cannot call server.${reject ? "reject" : "receive"}() reentrantly`);
     }
 
     this.receiving = true;
@@ -729,14 +743,16 @@ export class ServerDocument<S extends SchemaShape> {
         operations: incomingOperations,
       });
       const resolvedOperations =
-        this.resolve === undefined
-          ? incomingOperations
-          : this.resolve(
-              Object.freeze({
-                batch: ownedBatch,
-                snapshot: this.snapshot(),
-              })
-            );
+        reject
+          ? []
+          : this.resolve === undefined
+            ? incomingOperations
+            : this.resolve(
+                Object.freeze({
+                  batch: ownedBatch,
+                  snapshot: this.snapshot(),
+                })
+              );
       if (!Array.isArray(resolvedOperations)) {
         throw new Error("Server resolver must return an array of operations");
       }
