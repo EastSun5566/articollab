@@ -25,6 +25,7 @@
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json",
     "test": "node --test test/*.test.ts",
+    "test:package": "node --unhandled-rejections=strict --test test/package-consumer/smoke.test.ts",
     "test:coverage": "node --experimental-test-coverage --test test/*.test.ts"
   },
   "dependencies": {

@@ -515,6 +515,12 @@ pnpm build
 
 Tests run the TypeScript source directly with Node.js's native test runner. Type checking and builds use TypeScript 7's standard `tsc` executable; production builds emit only `src` into `dist`.
 
+```sh
+pnpm test:package
+```
+
+This separate installed-package smoke test builds and packs a local tarball, then installs it into a fresh temporary ESM consumer outside the checkout. It checks package contents, mixed Value/List/Text synchronization and JSON checkpoint restore, and public declarations with an independent strict NodeNext typecheck (`skipLibCheck: false`). The consumer installs the same exact TypeScript and Node types versions currently installed in the checkout; installation scripts are disabled, and registry access may be needed. Nothing is published. Temporary files are cleaned up on success or failure, and this check is not part of `pnpm test`.
+
 The synchronous interleaving tests use three clients, five fixed seeds and 200 scheduling steps per run. They mix Value/List/Text edits, delayed ordered delivery, policy outcomes, explicit rejection, retries and JSON checkpoint restore. Each seed runs twice and compares its full trace and result. Failures report the seed, step, action, client watermarks/pending sequences and trace, retaining the original assertion as the error cause; passing tests stay quiet.
 
 ```sh
