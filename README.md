@@ -484,6 +484,24 @@ A server save failure after receive returns `500` for that request and permanent
 
 Restore assumes the same document lineage, retained history/retry metadata, one writer per file/client ID, and retired old writers with settled sync calls. Client and server files are not a cross-file transaction. This example adds no async persistence, fsync/directory-sync protocol, locks, migration, snapshot fallback, automatic retry, or power-loss durability guarantee. Pending operations invalidated by policy remain explicitly blocked and are not automatically repaired. It is a process-interruption recovery example, not production persistence or transport.
 
+## Browser core smoke example
+
+```sh
+pnpm build
+node examples/browser-smoke/server.ts
+```
+
+Open the printed localhost URL in desktop Chrome. The page runs three fixed scenarios: optimistic mixed edits with delayed delivery, JSON checkpoint restore with tombstones and pending work, and explicit rejection followed by blocked recovery and resumed editing. Each scenario shows client watermarks, pending sequences, visible values and conflict state. A successful run reports `PASS: all 3 scenarios completed`; **Run again** uses fresh objects, and reloading runs the checks again. Module-loading or assertion failures appear on the page instead of being reported as success.
+
+Both clients and the authoritative server run inside the page. The Node host only serves local assets: the production ESM build and the installed articulated/sparse-array-rled ESM builds. An import map resolves package names, while fixed extensionless asset aliases accommodate the dependencies' relative imports. No JavaScript is rewritten, and no CDN, bundler, Node polyfill or new dependency is used. The aliases are example-only loading support, not a package loader contract or a production browser transport. This smoke check validates desktop Chrome, not a complete browser compatibility matrix.
+
+```sh
+pnpm exec tsc --ignoreConfig --allowJs --checkJs --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js
+node --unhandled-rejections=strict --test test/browser-smoke.test.ts
+```
+
+The focused native tests build production code once before importing the same smoke module, verify its repeatability and local asset routes, and check import side effects. Running them in Node does not replace opening the page in a real browser. The JavaScript smoke module uses JSDoc for type checking and browser-native execution; production `dist` still contains only library code.
+
 ## Development
 
 Requires Node.js 24 or newer and pnpm 10.
@@ -534,6 +552,7 @@ Implemented:
 - Example-only localhost HTTP snapshot, batch submission, and manual commit catch-up
 - Example-only HTTP pending cancellation with ordered acknowledgement and checkpoint recovery
 - Example-only file-backed HTTP checkpoint recovery and caller-initiated reconnect
+- Example-only native ESM browser core smoke with local assets, JSON restore and blocked recovery
 - Last-batch retry deduplication and replay, including after restore
 - Bounded global commit catch-up, including after restore
 
