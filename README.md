@@ -497,6 +497,15 @@ pnpm build
 
 Tests run the TypeScript source directly with Node.js's native test runner. Type checking and builds use TypeScript 7's standard `tsc` executable; production builds emit only `src` into `dist`.
 
+The synchronous interleaving tests use three clients, five fixed seeds and 200 scheduling steps per run. They mix Value/List/Text edits, delayed ordered delivery, policy outcomes, explicit rejection, retries and JSON checkpoint restore. Each seed runs twice and compares its full trace and result. Failures report the seed, step, action, client watermarks/pending sequences and trace, retaining the original assertion as the error cause; passing tests stay quiet.
+
+```sh
+node --unhandled-rejections=strict --test test/interleaving.test.ts
+node --test --test-name-pattern="seed=42" test/interleaving.test.ts
+```
+
+These tests check protocol invariants, a simple Value oracle, restore equivalence and final convergence, not an independent implementation of List/Text ordering. Focused tests still define stable-ID and tombstone semantics. A separate history-gap case verifies that missing history preserves pending work rather than replacing the client with a fresh snapshot.
+
 ## Current scope
 
 Implemented:
