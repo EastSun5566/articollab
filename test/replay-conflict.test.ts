@@ -418,7 +418,7 @@ describe("blocked resume examples", { timeout: 15_000 }, () => {
   });
 
   it("saves blocked HTTP checkpoints, polls again after false, and processes transient conflicts", async (t) => {
-    const directory = mkdtempSync(join(tmpdir(), "articula-blocked-http-"));
+    const directory = mkdtempSync(join(tmpdir(), "articollab-blocked-http-"));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const store = createCheckpointStore(directory);
     const resolved: number[] = [];

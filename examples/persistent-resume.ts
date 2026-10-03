@@ -70,7 +70,7 @@ export function createCheckpointStore(directory: string) {
 }
 
 async function runDemo(): Promise<void> {
-  const directory = mkdtempSync(join(tmpdir(), "articula-checkpoints-"));
+  const directory = mkdtempSync(join(tmpdir(), "articollab-checkpoints-"));
   try {
     const store = createCheckpointStore(directory);
     function boot() {

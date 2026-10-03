@@ -66,7 +66,7 @@ describe("browser core smoke example", { timeout: 30_000 }, () => {
     const html = readFileSync(cases[0][1], "utf8");
     const map = html.match(/<script type="importmap">\s*([\s\S]*?)\s*<\/script>/);
     assert.ok(map);
-    assert.deepEqual(JSON.parse(map[1]!).imports, { articula: "/dist/index.js",
+    assert.deepEqual(JSON.parse(map[1]!).imports, { articollab: "/dist/index.js",
       articulated: "/vendor/articulated/index.js", "sparse-array-rled": "/vendor/sparse-array-rled/index.js" });
     assert.ok(html.indexOf('type="importmap"') < html.indexOf('type="module"'));
   });

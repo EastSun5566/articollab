@@ -18,7 +18,7 @@ const httpUrl = new URL("../examples/http-sync.ts", import.meta.url).href;
 const storeUrl = new URL("../examples/persistent-resume.ts", import.meta.url).href;
 
 function directory(t: TestContext): string {
-  const path = mkdtempSync(join(tmpdir(), "articula-persistent-http-test-"));
+  const path = mkdtempSync(join(tmpdir(), "articollab-persistent-http-test-"));
   t.after(() => rmSync(path, { recursive: true, force: true }));
   return path;
 }

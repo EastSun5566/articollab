@@ -1,6 +1,6 @@
-# Articula
+# Articollab
 
-Articula is a small TypeScript library for building server-authoritative collaborative collections on top of [articulated](https://github.com/mweidner037/articulated).
+Articollab is a small TypeScript library for building server-authoritative collaborative collections on top of [articulated](https://github.com/mweidner037/articulated).
 
 The project is intentionally early and minimal. It provides a typed document schema, optimistic values, lists, and plain text, explicit transactions, client-side reconciliation, snapshot hydration, and a synchronous authoritative server runtime with batch policies. Production transports are planned next.
 
@@ -19,7 +19,7 @@ import {
   list,
   text,
   value,
-} from "articula";
+} from "articollab";
 
 const Board = defineDocument({
   count: value(0),
@@ -125,7 +125,7 @@ const restoredServer = createServer(Board, { checkpoint });
 
 The decoders strictly validate batches, commits, snapshots, client and server checkpoints, schema paths, collection kinds, IDs, ranges, and JSON-compatible values. Their outputs are library-owned and deeply frozen. Generic `Value<T>` and `List<T>` payload shapes are only checked as JSON because TypeScript's `T` is unavailable at runtime; application-specific payload validation remains the caller's responsibility and typically belongs in the server resolver for incoming batches. The transport remains responsible for parsing JSON and enforcing message-size or rate limits.
 
-`server.snapshot()` returns the current authoritative values together with the latest `serverSeq`. A new client using the same `DocumentSchema` can hydrate from that snapshot and then expects the following commit. Snapshots do not include a schema ID or version, and Articula does not provide schema migration. A real transport must obtain the snapshot and subscribe to later commits without leaving a gap; Articula does not manage connected clients. Snapshot containers are frozen, while nested JSON values follow the same immutable-value contract as `Value<T>`.
+`server.snapshot()` returns the current authoritative values together with the latest `serverSeq`. A new client using the same `DocumentSchema` can hydrate from that snapshot and then expects the following commit. Snapshots do not include a schema ID or version, and Articollab does not provide schema migration. A real transport must obtain the snapshot and subscribe to later commits without leaving a gap; Articollab does not manage connected clients. Snapshot containers are frozen, while nested JSON values follow the same immutable-value contract as `Value<T>`.
 
 The server retains a bounded, consecutive commit history. `historyLimit` defaults to `1000`, must be a non-negative safe integer, and counts commits rather than payload bytes; `0` disables history. Accepted, rejected, and transformed batches all enter history, while retries do not. Use the client's last successfully received watermark to catch up:
 

@@ -3,17 +3,17 @@ import {
   createClient, createServer, decodeClientBatch, decodeClientCheckpoint,
   decodeServerCheckpoint, decodeServerCommit, decodeSnapshot,
   defineDocument, list, text, value,
-} from "articula";
+} from "articollab";
 
 const Board = defineDocument({
   count: value(0),
-  items: /** @type {import("articula").ListSchema<string>} */ (list()),
+  items: /** @type {import("articollab").ListSchema<string>} */ (list()),
   body: text(),
 });
 /** @typedef {typeof Board.definition} Shape */
-/** @typedef {import("articula").ClientDocument<Shape>} Client */
-/** @typedef {import("articula").ClientCheckpoint<Shape>} Checkpoint */
-/** @typedef {import("articula").ClientBatch<import("articula").DocumentOperation<Shape>>} Batch */
+/** @typedef {import("articollab").ClientDocument<Shape>} Client */
+/** @typedef {import("articollab").ClientCheckpoint<Shape>} Checkpoint */
+/** @typedef {import("articollab").ClientBatch<import("articollab").DocumentOperation<Shape>>} Batch */
 
 /** @param {unknown} input @returns {unknown} */
 function json(input) { return JSON.parse(JSON.stringify(input)); }
@@ -47,7 +47,7 @@ function newPair() {
   /** @type {{a: Batch[], b: Batch[]}} */
   const emitted = { a: [], b: [] };
   const serverChanges = { a: 0, b: 0 };
-  /** @type {import("articula").ServerResolver<Shape>} */
+  /** @type {import("articollab").ServerResolver<Shape>} */
   const resolve = ({ batch }) => batch.operations;
   const server = createServer(Board, { resolve });
   /** @param {"a" | "b"} id @param {Checkpoint} [checkpoint] */

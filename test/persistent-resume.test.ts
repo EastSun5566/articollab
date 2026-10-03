@@ -18,7 +18,7 @@ type Store = ReturnType<typeof createCheckpointStore>;
 type Options = NonNullable<Parameters<typeof createAsyncExampleNetwork>[1]>;
 
 function directory(t: TestContext): string {
-  const path = mkdtempSync(join(tmpdir(), "articula-persistence-test-"));
+  const path = mkdtempSync(join(tmpdir(), "articollab-persistence-test-"));
   t.after(() => rmSync(path, { recursive: true, force: true }));
   return path;
 }

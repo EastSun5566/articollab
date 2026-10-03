@@ -10,7 +10,7 @@ import { createCheckpointStore } from "./persistent-resume.ts";
 import { Board } from "./resume.ts";
 
 async function runDemo(): Promise<void> {
-  const directory = mkdtempSync(join(tmpdir(), "articula-http-checkpoints-"));
+  const directory = mkdtempSync(join(tmpdir(), "articollab-http-checkpoints-"));
   const hosts: Awaited<ReturnType<typeof startHttpExampleServer>>[] = [];
   try {
     const store = createCheckpointStore(directory);

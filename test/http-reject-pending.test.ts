@@ -304,7 +304,7 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
 
   for (const fault of ["lost-response", "server-save", "client-save"] as const) {
     it("restores saved checkpoints after " + fault + " during cancellation", async (t) => {
-      const directory = mkdtempSync(join(tmpdir(), "articula-http-reject-test-"));
+      const directory = mkdtempSync(join(tmpdir(), "articollab-http-reject-test-"));
       const store = createCheckpointStore(directory);
       const hosts: Awaited<ReturnType<typeof startHttpExampleServer>>[] = [];
       t.after(async () => {
