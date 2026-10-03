@@ -57,8 +57,8 @@ export async function startHttpExampleServer(
     if (failed) { reject(503, "Checkpoint storage failed; restart this host"); return; }
 
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    const method = url.pathname === "/batches" ? "POST" : "GET";
-    if (!["/snapshot", "/batches", "/commits"].includes(url.pathname)) {
+    const method = url.pathname === "/batches" || url.pathname === "/rejections" ? "POST" : "GET";
+    if (!["/snapshot", "/batches", "/rejections", "/commits"].includes(url.pathname)) {
       reject(404, "Unknown route");
       return;
     }
@@ -106,7 +106,8 @@ export async function startHttpExampleServer(
     }
     let replayed: boolean;
     try {
-      ({ replayed } = server.receive(batch)); // Total order is this synchronous call order, not request arrival.
+      // Total order is this synchronous call order, not request arrival.
+      ({ replayed } = url.pathname === "/rejections" ? server.reject(batch) : server.receive(batch));
     } catch {
       reject(409, "Batch could not be applied");
       return;
@@ -212,35 +213,42 @@ export async function connectHttpExampleClient(
     return true;
   }
 
+  async function synchronize(rejectPending: boolean): Promise<boolean> {
+    requireUsable();
+    const action = rejectPending ? "rejectPending" : "sync";
+    if (busy) throw new Error("Cannot call " + action + "() concurrently or reentrantly");
+    if (missingHistory) return false;
+    busy = true;
+    try {
+      // Capture before the first await; listener-created batches are not cancellation targets.
+      const cutoff = rejectPending ? doc.checkpoint().lastLocalSeq : undefined;
+      if (!(await catchUp())) return false;
+      while (true) {
+        requireUsable();
+        if (!rejectPending && doc.replayConflict !== null) return false;
+        const batch = doc.checkpoint().pendingBatches[0];
+        if (batch === undefined || (cutoff !== undefined && batch.seq > cutoff)) return true;
+        await request(rejectPending ? "/rejections" : "/batches", 204, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(batch),
+        });
+        if (!(await catchUp())) return false;
+        if (doc.checkpoint().pendingBatches[0]?.seq === batch.seq) {
+          throw new Error((rejectPending ? "Rejection" : "Submission") +
+            " completed without acknowledging the pending batch");
+        }
+      }
+    } catch (error) {
+      stop(error);
+      throw failure;
+    } finally {
+      busy = false;
+    }
+  }
+
   return {
     doc,
-    async sync(): Promise<boolean> {
-      requireUsable();
-      if (busy) throw new Error("Cannot call sync() concurrently or reentrantly");
-      if (missingHistory) return false;
-      busy = true;
-      try {
-        if (!(await catchUp())) return false;
-        while (true) {
-          requireUsable();
-          if (doc.replayConflict !== null) return false;
-          const batch = doc.checkpoint().pendingBatches[0];
-          if (batch === undefined) return true;
-          await request("/batches", 204, {
-            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(batch),
-          });
-          if (!(await catchUp())) return false;
-          if (doc.checkpoint().pendingBatches[0]?.seq === batch.seq) {
-            throw new Error("Submission completed without acknowledging the pending batch");
-          }
-        }
-      } catch (error) {
-        stop(error);
-        throw failure;
-      } finally {
-        busy = false;
-      }
-    },
+    sync(): Promise<boolean> { return synchronize(false); },
+    rejectPending(): Promise<boolean> { return synchronize(true); },
   };
 }
 

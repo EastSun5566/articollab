@@ -188,7 +188,7 @@ node examples/reject-pending.ts
 
 Its example-only `rejectPending(server, doc)` captures the initial `lastLocalSeq`, then applies the complete catch-up before rejecting any remaining pending batches up to that cutoff. It re-reads the earliest pending after each acknowledgement, so it neither resubmits already-confirmed work nor relies on change events for silent acknowledgements. Returning `true` means the targeted batches are confirmed, not that all later pending work is empty: listener-created higher-sequence edits remain pending. New edits may depend on a cancelled insertion and become blocked themselves; inspect `doc.replayConflict` again rather than assuming recovery made every suffix replayable. The explicit action cancels the whole original pending range, including mutations that were still replayable, rather than only the failing operation.
 
-If retained history is insufficient, it returns `false` without rejecting anything or replacing the document. Exceptions propagate; completed commits are not rolled back and the latest checkpoint retains unconfirmed work. Recovery cannot run concurrently or reentrantly for the same server or document. The example uses manual submission with no other server writes interleaving, no background pump and no transport queue; peers catch up separately. A production caller must coordinate submission, persistence, commit delivery and authorization. Existing HTTP and resume helpers do not automatically request cancellation, and no new wire fields, transport endpoints or client cancellation API are added.
+If retained history is insufficient, it returns `false` without rejecting anything or replacing the document. Exceptions propagate; completed commits are not rolled back and the latest checkpoint retains unconfirmed work. Recovery cannot run concurrently or reentrantly for the same server or document. The example uses manual submission with no other server writes interleaving, no background pump and no transport queue; peers catch up separately. A production caller must coordinate submission, persistence, commit delivery and authorization. No helper automatically requests cancellation. The HTTP helper offers an explicit action as described below; the package client API and wire formats remain unchanged.
 
 ## Client checkpoint and restore
 
@@ -377,9 +377,10 @@ The host listens only on `127.0.0.1`, using an automatically assigned port. Its 
 | --- | --- |
 | `GET /snapshot` | `200`: the current document snapshot |
 | `POST /batches` | `204`: no body, including for a valid retry |
+| `POST /rejections` | `204`: no body, including for a valid retry; the original batch is passed to `server.reject()` |
 | `GET /commits?since=N` | `200`: the complete later commit array, or JSON `null` when history is insufficient |
 
-POST requires `application/json` and at most 1 MiB of actual UTF-8 bytes, including chunked bodies. JSON and wire validation use the existing decoder before runtime application. Invalid JSON/wire/watermarks return `400`; runtime receive failures return `409` without distinguishing their causes. Oversized bodies return `413`, unsupported content types `415`, unknown routes `404`, incorrect methods `405`, and unexpected handler errors `500`. Error bodies contain only `{ error: string }`, not stack traces. The server's total order is synchronous `receive()` call order after reading each body, not initial HTTP request arrival. There is no subscription registry or broadcast.
+Both POST routes require `application/json` and at most 1 MiB of actual UTF-8 bytes, including chunked bodies. JSON and wire validation use the existing decoder before runtime handling. Invalid JSON/wire/watermarks return `400`; runtime receive/reject failures return `409` without distinguishing their causes. Oversized bodies return `413`, unsupported content types `415`, unknown routes `404`, incorrect methods `405`, and unexpected handler errors `500`. Error bodies contain only `{ error: string }`, not stack traces. The server's total order is synchronous `receive()`/`reject()` call order after reading each body, not initial HTTP request arrival. There is no subscription registry or broadcast. Neither POST route authenticates or authorizes callers: `clientId` is not proof of identity, and the host is only for trusted localhost use.
 
 `connectHttpExampleClient(url, clientId, options?)` fetches and decodes a snapshot for a fresh client. With `options.checkpoint`, it instead restores the complete client checkpoint using the existing runtime validation, without making any HTTP requests or automatically submitting pending work. The checkpoint must match `clientId`. Its optional `fetch` override is for controlling requests in tests; by default it uses native fetch. The client knows only the URL, not the server object. Updates after the snapshot or checkpoint watermark are caught by the first sync.
 
@@ -387,7 +388,28 @@ POST requires `application/json` and at most 1 MiB of actual UTF-8 bytes, includ
 
 If the full catch-up leaves `doc.replayConflict` non-null, sync returns `false` without posting pending work, including any replayable prefix. This is not permanent connection failure: later calls still poll for commits that may unblock replay. A conflict that appears and clears within one catch-up response does not stop sync. Saving hooks persist successfully applied commits and blocked checkpoints as usual. Check `replayConflict` when handling `false`; history gaps and actual failures retain the distinct behavior below.
 
-`true` means the latest fetched prefix was applied and pending work is empty at that moment, not that later remote edits cannot occur. Peers need their own explicit sync. Concurrent or reentrant calls reject without stopping the active sync. Insufficient history returns `false` permanently for that connection, with no further requests or snapshot replacement; pending work and the document remain available. Fetch, HTTP, JSON, decoder, receive, or incoming-listener failures stop only the affected connection and preserve its first error for subsequent calls. Completed updates are not rolled back. If a POST response is lost, the server may already have accepted the batch while the client still has it pending; this example does not automatically retry or reconnect.
+`true` means the latest fetched prefix was applied and pending work is empty at that moment, not that later remote edits cannot occur. Peers need their own explicit sync. `sync()` and `rejectPending()` share one concurrent/reentrant guard: a competing call rejects without stopping the active operation. Insufficient history returns `false` permanently for that connection, with no further requests or snapshot replacement; pending work and the document remain available. Fetch, HTTP, JSON, decoder, receive, or incoming-listener failures stop only the affected connection and preserve its first error for subsequent calls. Completed updates are not rolled back. If a POST response is lost, the server may already have processed the batch while the client still has it pending; this example does not automatically retry or reconnect.
+
+### Explicit HTTP pending cancellation
+
+```sh
+node examples/http-reject-pending.ts
+```
+
+The demo shows a policy rejection invalidating later mixed List/Text edits, explicit cancellation, peer catch-up and subsequent editing. It reuses the same HTTP helpers; importing it does not run the demo or open a socket.
+
+```ts
+if (!(await client.sync()) && client.doc.replayConflict !== null) {
+  // Explicitly abandon all batches pending when this action starts, not just the conflict.
+  const confirmed = await client.rejectPending();
+  // false: history is insufficient; preserve the checkpoint instead of replacing the snapshot.
+  // true: the original targets are confirmed; inspect remaining pending/conflict before syncing.
+}
+```
+
+`rejectPending(): Promise<boolean>` captures `lastLocalSeq` before its first await and applies the complete catch-up before posting any original pending batch to `/rejections`. It then re-reads the earliest pending after each POST and ordered catch-up acknowledgement, even while blocked. POST success is not an ack, and missing acknowledgement throws rather than looping. Batches accepted or transformed before cancellation are confirmed without undoing their authoritative effects. Across both POST routes, a valid latest-batch retry always preserves the first processed result.
+
+Returning `true` means every targeted batch has been confirmed, not that pending is empty or replay is unblocked. Listener-created higher-sequence batches remain pending and are not submitted automatically; they can themselves depend on cancelled IDs and become blocked. No automatic cancellation, pending purge or rebase occurs. History gaps and errors follow the same connection-stop rules as sync. After a lost rejection response, wait for the operation to settle, retire the old writer, restore a new connection from its checkpoint and catch up before deciding whether to cancel the remaining work. Cancellation scope is not stored as a durable intent: calling `rejectPending()` again captures a new cutoff.
 
 To manually reconnect, retire the old writer and restore a new connection from its latest complete checkpoint. Wait for any active sync to settle before taking the checkpoint; this helper does not cancel requests or prevent two independent writers from using the same client ID. For parsed JSON, use the existing decoder:
 
@@ -410,7 +432,7 @@ If batch 1 was accepted but its POST response was lost, and batch 2 was never su
 
 The server must represent the same document lineage and retain the required history and retry metadata. A server restored from its existing checkpoint can run at a new URL, but this example does not detect server identity/epoch changes or recover from server rollback. Restoring a client checkpoint is not a substitute for retained history; reject/transform results that make later pending operations impossible to replay preserve blocked pending work rather than repairing it.
 
-This is a Node-only, single-document localhost demonstration with one writer per client ID and synchronous listeners producing finite edits. Reconnect is caller-initiated reconstruction, not automatic retry. It does not provide authentication, TLS, CORS, WebSocket/SSE, automatic polling, retry timers, cancellation, history pagination, snapshot fallback, or production transport guarantees. Tests include a separate client process restoring a JSON checkpoint and talking to the parent server through HTTP. Optional synchronous saving callbacks integrate file storage as shown below.
+This is a Node-only, single-document localhost demonstration with one writer per client ID and synchronous listeners producing finite edits. Reconnect is caller-initiated reconstruction, not automatic retry. It does not provide authentication, TLS, CORS, WebSocket/SSE, automatic polling, retry timers, request abortion, history pagination, snapshot fallback, or production transport guarantees. Tests include a separate client process restoring a JSON checkpoint and talking to the parent server through HTTP. Optional synchronous saving callbacks integrate file storage as shown below.
 
 ## File-backed HTTP recovery example
 
@@ -452,7 +474,7 @@ try {
 
 Saving order is deliberate:
 
-- The server saves its initial checkpoint before listening. After each new `receive()`, including reject/transform, it saves before sending `204`. Valid retries do not save again. Receive, save, and response contain no intervening await, so another request cannot observe a result before saving finishes.
+- The server saves its initial checkpoint before listening. After each new `receive()` or `reject()`, including policy reject/transform, it saves before sending `204`. Valid retries do not save again. Runtime handling, save, and response contain no intervening await, so another request cannot observe a result before saving finishes.
 - Fresh and restored clients save once before returning a handle. Every local batch saves after pending is added, without automatic sending. Each successfully received commit saves again, including silent own acknowledgements. Listener-created local mutations save the full current pending state.
 - Without saving callbacks, the existing HTTP behavior is unchanged. The store uses synchronous temporary-write/rename and the existing decoders. Corrupt JSON, invalid checkpoints and filesystem errors throw, rather than silently starting fresh.
 
@@ -501,6 +523,7 @@ Implemented:
 - Example-only asynchronous JSON resume with independent FIFO delivery
 - Example-only file-backed checkpoint recovery with synchronous JSON storage
 - Example-only localhost HTTP snapshot, batch submission, and manual commit catch-up
+- Example-only HTTP pending cancellation with ordered acknowledgement and checkpoint recovery
 - Example-only file-backed HTTP checkpoint recovery and caller-initiated reconnect
 - Last-batch retry deduplication and replay, including after restore
 - Bounded global commit catch-up, including after restore
