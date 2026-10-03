@@ -521,6 +521,8 @@ pnpm test:package
 
 This separate installed-package smoke test builds and packs a local tarball, then installs it into a fresh temporary ESM consumer outside the checkout. It checks package contents, mixed Value/List/Text synchronization and JSON checkpoint restore, and public declarations with an independent strict NodeNext typecheck (`skipLibCheck: false`). The consumer installs the same exact TypeScript and Node types versions currently installed in the checkout; installation scripts are disabled, and registry access may be needed. Nothing is published. Temporary files are cleaned up on success or failure, and this check is not part of `pnpm test`.
 
+GitHub Actions runs the `CI` workflow on pushes to `main`, pull requests targeting `main`, and manual dispatch. A single Ubuntu 24.04 job uses Node.js 24 and the pnpm version pinned in `packageManager`, installs with `--frozen-lockfile`, then runs typechecking, tests, the production build, browser smoke JSDoc checking, and the installed-package smoke test in sequence. Consumer installation may need registry access. The workflow has read-only repository permissions, no dependency cache, and no publishing or deployment steps. Its Node-based browser smoke checks do not replace the manual desktop Chrome check described above.
+
 The synchronous interleaving tests use three clients, five fixed seeds and 200 scheduling steps per run. They mix Value/List/Text edits, delayed ordered delivery, policy outcomes, explicit rejection, retries and JSON checkpoint restore. Each seed runs twice and compares its full trace and result. Failures report the seed, step, action, client watermarks/pending sequences and trace, retaining the original assertion as the error cause; passing tests stay quiet.
 
 ```sh
