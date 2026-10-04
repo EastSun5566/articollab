@@ -502,6 +502,24 @@ node --unhandled-rejections=strict --test test/browser-smoke.test.ts
 
 The focused native tests build production code once before importing the same smoke module, verify its repeatability and local asset routes, and check import side effects. Running them in Node does not replace opening the page in a real browser. The JavaScript smoke module uses JSDoc for type checking and browser-native execution; production `dist` still contains only library code.
 
+## Browser HTTP smoke example
+
+```sh
+pnpm build
+node examples/browser-http-smoke/server.ts
+```
+
+Open the printed localhost URL in desktop Chrome. Unlike the core smoke above, the authoritative server runs in Node; the two browser clients use native `fetch` for snapshots, batch submission, ordered commit catch-up and explicit rejection. The page and fixed ESM assets share the API's origin, so no CORS, CDN, bundler or Node polyfill is needed. Both Node and browser wrappers use the same example-only synchronization controller; their initialization remains separate so source-based Node tests do not require a production build.
+
+Three fixed scenarios check mixed optimistic edits and silent acknowledgements, JSON checkpoint restore with tombstones and pending work, and rejection followed by blocked recovery and resumed editing. Each reports client/server state, watermarks, pending sequences and conflicts; failures stop the run and appear on the page. **Run again** and reload create new UUID client namespaces and start from the current server snapshot, not a reset document. The demo policy rejects only the first batch of each `reject-` client, then accepts later work. Assume no other writers while a smoke run is in progress.
+
+```sh
+node --unhandled-rejections=strict --test test/browser-http-smoke.test.ts
+pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js examples/http-sync-controller.js examples/browser-http-smoke/smoke.js
+```
+
+The focused Node tests run the same browser-compatible module with built ESM and real localhost HTTP, but do not replace checking all three scenarios, **Run again** and reload in Chrome. Synchronization is manual: there is no polling, automatic retry, browser storage or production reconnect. The host is unauthenticated, including `/rejections`; client IDs are namespaces, not authorization. Checkpoint restore is in memory, cancellation is not undo, and module/HTTP/decode/listener failures are not automatically repaired.
+
 ## Development
 
 Requires Node.js 24 or newer and pnpm 10.
@@ -561,6 +579,7 @@ Implemented:
 - Example-only HTTP pending cancellation with ordered acknowledgement and checkpoint recovery
 - Example-only file-backed HTTP checkpoint recovery and caller-initiated reconnect
 - Example-only native ESM browser core smoke with local assets, JSON restore and blocked recovery
+- Example-only same-origin browser HTTP smoke using built ESM and the shared manual sync controller
 - Last-batch retry deduplication and replay, including after restore
 - Bounded global commit catch-up, including after restore
 

@@ -16,6 +16,7 @@ import {
   type ServerDocument,
 } from "../src/index.ts";
 import { Board } from "./resume.ts";
+import { createHttpSyncController, readHttpResponse } from "./http-sync-controller.js";
 
 type Shape = typeof Board.definition;
 type Batch = ClientBatch<DocumentOperation<Shape>>;
@@ -44,7 +45,10 @@ async function readBody(request: IncomingMessage): Promise<string | null> {
 /** Example-only localhost HTTP routes for one Board, without subscriptions. */
 export async function startHttpExampleServer(
   server: ServerDocument<Shape>,
-  options: { readonly saveServerCheckpoint?: (checkpoint: ServerCheckpoint<Shape>) => undefined } = {}
+  options: {
+    readonly saveServerCheckpoint?: (checkpoint: ServerCheckpoint<Shape>) => undefined;
+    readonly serveAsset?: (request: IncomingMessage, response: ServerResponse) => boolean;
+  } = {}
 ) {
   options.saveServerCheckpoint?.(server.checkpoint()); // Bootstrap before opening a socket.
   let failed = false;
@@ -59,6 +63,7 @@ export async function startHttpExampleServer(
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const method = url.pathname === "/batches" || url.pathname === "/rejections" ? "POST" : "GET";
     if (!["/snapshot", "/batches", "/rejections", "/commits"].includes(url.pathname)) {
+      if (options.serveAsset?.(request, response)) return;
       reject(404, "Unknown route");
       return;
     }
@@ -161,94 +166,31 @@ export async function connectHttpExampleClient(
   } = {}
 ) {
   const fetch = options.fetch ?? globalThis.fetch;
-  let failed = false;
-  let failure: unknown;
-  function requireUsable(): void { if (failed) throw failure; }
-  function stop(error: unknown): void {
-    if (!failed) { failed = true; failure = error; }
-  }
-  async function request(path: string, status: number, init?: RequestInit): Promise<string> {
-    requireUsable();
-    const response = await fetch(new URL(path, url), init);
-    const message = await response.text(); // Consume error responses as well as successful ones.
-    requireUsable(); // Local saving may have failed while the request was in flight.
-    if (response.status !== status) throw new Error("Unexpected HTTP status: " + response.status);
-    return message;
-  }
   // Restore before making any request; only fresh clients fetch a snapshot.
   const initial = options.checkpoint === undefined
-    ? { snapshot: decodeSnapshot(Board, JSON.parse(await request("/snapshot", 200))) }
+    ? { snapshot: decodeSnapshot(Board, JSON.parse(await readHttpResponse(url, fetch, "/snapshot", 200))) }
     : { checkpoint: options.checkpoint };
-  let busy = false;
-  let missingHistory = false;
   const doc = createClient(Board, {
     clientId,
     ...initial,
     onBatch() { saveClient(); }, // Pending is already present; save without automatically sending.
   });
+  const controller = createHttpSyncController({ url, fetch,
+    checkpoint: () => doc.checkpoint(), receive: (commit) => doc.receive(commit),
+    decodeCommit: (input) => decodeServerCommit(Board, input),
+    isBlocked: () => doc.replayConflict !== null, saveClient,
+  });
   function saveClient(): void {
-    requireUsable();
+    controller.requireUsable();
     try { options.saveClientCheckpoint?.(doc.checkpoint()); }
-    catch (error) { stop(error); throw failure; }
+    catch (error) { throw controller.stop(error); }
   }
   saveClient(); // Fresh and restored documents are saved before returning a handle.
 
-  async function catchUp(): Promise<boolean> {
-    const watermark = doc.checkpoint().snapshot.serverSeq;
-    const input: unknown = JSON.parse(await request("/commits?since=" + watermark, 200));
-    if (input === null) { missingHistory = true; return false; }
-    if (!Array.isArray(input)) throw new Error("Expected a commit array or null");
-    const commits = input.map((entry: unknown) => decodeServerCommit(Board, entry));
-    for (const [index, commit] of commits.entries()) {
-      if (commit.serverSeq !== watermark + index + 1) {
-        throw new Error("Catch-up commits must be consecutive and ordered");
-      }
-    }
-    // Validate the whole prefix first; never sort, skip, or repair a response.
-    for (const commit of commits) {
-      requireUsable();
-      doc.receive(commit);
-      saveClient(); // Own acknowledgements need not emit a change.
-    }
-    return true;
-  }
-
-  async function synchronize(rejectPending: boolean): Promise<boolean> {
-    requireUsable();
-    const action = rejectPending ? "rejectPending" : "sync";
-    if (busy) throw new Error("Cannot call " + action + "() concurrently or reentrantly");
-    if (missingHistory) return false;
-    busy = true;
-    try {
-      // Capture before the first await; listener-created batches are not cancellation targets.
-      const cutoff = rejectPending ? doc.checkpoint().lastLocalSeq : undefined;
-      if (!(await catchUp())) return false;
-      while (true) {
-        requireUsable();
-        if (!rejectPending && doc.replayConflict !== null) return false;
-        const batch = doc.checkpoint().pendingBatches[0];
-        if (batch === undefined || (cutoff !== undefined && batch.seq > cutoff)) return true;
-        await request(rejectPending ? "/rejections" : "/batches", 204, {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(batch),
-        });
-        if (!(await catchUp())) return false;
-        if (doc.checkpoint().pendingBatches[0]?.seq === batch.seq) {
-          throw new Error((rejectPending ? "Rejection" : "Submission") +
-            " completed without acknowledging the pending batch");
-        }
-      }
-    } catch (error) {
-      stop(error);
-      throw failure;
-    } finally {
-      busy = false;
-    }
-  }
-
   return {
     doc,
-    sync(): Promise<boolean> { return synchronize(false); },
-    rejectPending(): Promise<boolean> { return synchronize(true); },
+    sync: controller.sync,
+    rejectPending: controller.rejectPending,
   };
 }
 

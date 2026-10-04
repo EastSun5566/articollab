@@ -55,7 +55,7 @@ jobs:
         run: pnpm build
 
       - name: Check browser smoke JSDoc
-        run: pnpm exec tsc --ignoreConfig --allowJs --checkJs --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js
+        run: pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js examples/http-sync-controller.js examples/browser-http-smoke/smoke.js
 
       - name: Test installed package consumer
         run: pnpm test:package

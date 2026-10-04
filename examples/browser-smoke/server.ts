@@ -1,19 +1,16 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-/** Example-only asset host. The collaborative server itself runs in the browser. */
-export async function startBrowserSmokeServer() {
+/** Fixed application-owned routes, shared by the two browser smoke hosts. */
+export function createBrowserAssetHandler(entries: ReadonlyMap<string, { file: string; type: string }>) {
   const directory = import.meta.dirname;
   const require = createRequire(import.meta.url);
   const articulatedPackage = require.resolve("articulated/package.json");
   const sparsePackage = createRequire(articulatedPackage).resolve("sparse-array-rled/package.json");
-  const assets = new Map<string, { file: string; type: string }>([
-    ["/", { file: join(directory, "index.html"), type: "text/html; charset=utf-8" }],
-    ["/smoke.js", { file: join(directory, "smoke.js"), type: "text/javascript; charset=utf-8" }],
-  ]);
+  const assets = new Map(entries);
 
   function addModules(root: string, prefix: string, extensionless = false): void {
     for (const entry of readdirSync(root, { withFileTypes: true })) {
@@ -33,7 +30,7 @@ export async function startBrowserSmokeServer() {
     addModules(join(directory, "../../dist"), "/dist");
     addModules(join(dirname(articulatedPackage), "build/esm"), "/vendor/articulated", true);
     addModules(join(dirname(sparsePackage), "build/esm"), "/vendor/sparse-array-rled", true);
-    for (const route of ["/", "/smoke.js", "/dist/index.js", "/vendor/articulated/index.js", "/vendor/sparse-array-rled/index.js"]) {
+    for (const route of [...entries.keys(), "/dist/index.js", "/vendor/articulated/index.js", "/vendor/sparse-array-rled/index.js"]) {
       const asset = assets.get(route);
       if (asset === undefined) throw new Error("Missing entrypoint: " + route);
       readFileSync(asset.file);
@@ -42,19 +39,19 @@ export async function startBrowserSmokeServer() {
     throw new Error("Browser assets are unavailable; run pnpm build and check installed dependencies", { cause });
   }
 
-  const http = createServer((request, response) => {
-    request.resume();
+  return (request: IncomingMessage, response: ServerResponse): boolean => {
     // Look up a fixed route, never resolve a filesystem path supplied by the request.
     const asset = assets.get((request.url ?? "/").split("?", 1)[0]!);
+    if (asset === undefined) return false;
+    request.resume();
     function error(status: number, message: string): void {
       response.writeHead(status, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
       response.end(message);
     }
-    if (asset === undefined) { error(404, "Unknown asset"); return; }
     if (request.method !== "GET") {
       response.setHeader("Allow", "GET");
       error(405, "Method not allowed");
-      return;
+      return true;
     }
     try {
       const content = readFileSync(asset.file);
@@ -63,6 +60,22 @@ export async function startBrowserSmokeServer() {
     } catch {
       error(500, "Unable to read browser asset");
     }
+    return true;
+  };
+}
+
+/** Example-only asset host. The collaborative server itself runs in the browser. */
+export async function startBrowserSmokeServer() {
+  const directory = import.meta.dirname;
+  const serveAsset = createBrowserAssetHandler(new Map([
+    ["/", { file: join(directory, "index.html"), type: "text/html; charset=utf-8" }],
+    ["/smoke.js", { file: join(directory, "smoke.js"), type: "text/javascript; charset=utf-8" }],
+  ]));
+  const http = createServer((request, response) => {
+    if (serveAsset(request, response)) return;
+    request.resume();
+    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+    response.end("Unknown asset");
   });
   await new Promise<void>((resolve, reject) => {
     http.once("error", reject);

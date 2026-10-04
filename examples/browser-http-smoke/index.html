@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Browser HTTP smoke | Articollab</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.5; }
+    body { margin: 0; }
+    main { max-width: 72rem; margin: 2rem auto; padding: 0 1.25rem; }
+    h1 { font-size: 1.75rem; margin-bottom: .5rem; }
+    h2 { font-size: 1.2rem; }
+    p { max-width: 75ch; }
+    button { font: inherit; padding: .5rem 1rem; cursor: pointer; }
+    button:focus-visible { outline: 3px solid #326fb6; outline-offset: 3px; }
+    #status { font-weight: 600; }
+    #status[data-state="pass"] { color: light-dark(#116b3a, #9be0b9); }
+    #status[data-state="fail"] { color: light-dark(#9f2535, #ffabb4); }
+    li { margin: 2rem 0; }
+    pre { font: .875rem/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+  <script type="importmap">
+    { "imports": {
+      "articollab": "/dist/index.js",
+      "articulated": "/vendor/articulated/index.js",
+      "sparse-array-rled": "/vendor/sparse-array-rled/index.js"
+    } }
+  </script>
+</head>
+<body>
+  <main>
+    <h1>Articollab browser HTTP smoke</h1>
+    <p>Two browser clients use native fetch to talk to one Node authoritative server on this origin.
+      Each run checks optimistic edits, JSON checkpoint restore, and HTTP rejection recovery.
+      Synchronization is manual; this is an unauthenticated localhost example, not a production transport.</p>
+    <button id="run" type="button">Run again</button>
+    <p id="status" role="status" aria-atomic="true">Loading modules…</p>
+    <pre id="error" hidden></pre>
+    <ol id="results"></ol>
+  </main>
+  <script type="module">
+    const button = document.getElementById("run");
+    const status = document.getElementById("status");
+    const error = document.getElementById("error");
+    const results = document.getElementById("results");
+
+    async function run() {
+      if (button.disabled) return;
+      button.disabled = true;
+      status.textContent = "Running HTTP smoke checks…";
+      status.dataset.state = "running";
+      error.hidden = true;
+      error.textContent = "";
+      results.replaceChildren();
+      try {
+        const { runBrowserHttpSmoke } = await import("/browser-http-smoke/smoke.js");
+        const reports = await runBrowserHttpSmoke(location.origin);
+        for (const report of reports) {
+          const item = document.createElement("li");
+          const heading = document.createElement("h2");
+          const detail = document.createElement("pre");
+          heading.textContent = "PASS: " + report.name;
+          detail.textContent = report.stages.map((stage) => stage.label + "\n" +
+            JSON.stringify({ server: stage.server, a: stage.a, b: stage.b }, null, 2)).join("\n\n");
+          item.append(heading, detail);
+          results.append(item);
+        }
+        status.textContent = "PASS: all 3 HTTP scenarios completed";
+        status.dataset.state = "pass";
+      } catch (cause) {
+        status.textContent = "FAIL: module loading, HTTP or a smoke assertion failed";
+        status.dataset.state = "fail";
+        error.textContent = cause instanceof Error ? cause.message : String(cause);
+        error.hidden = false;
+      } finally {
+        button.disabled = false;
+      }
+    }
+    button.addEventListener("click", run);
+    void run();
+  </script>
+</body>
+</html>
