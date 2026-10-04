@@ -46,10 +46,13 @@ async function readBody(request: IncomingMessage): Promise<string | null> {
 export async function startHttpExampleServer(
   server: ServerDocument<Shape>,
   options: {
+    readonly port?: number;
     readonly saveServerCheckpoint?: (checkpoint: ServerCheckpoint<Shape>) => undefined;
     readonly serveAsset?: (request: IncomingMessage, response: ServerResponse) => boolean;
   } = {}
 ) {
+  const port = options.port ?? 0;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid HTTP port");
   options.saveServerCheckpoint?.(server.checkpoint()); // Bootstrap before opening a socket.
   let failed = false;
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -139,7 +142,7 @@ export async function startHttpExampleServer(
   });
   await new Promise<void>((resolve, reject) => {
     http.once("error", reject);
-    http.listen(0, "127.0.0.1", () => { http.off("error", reject); resolve(); });
+    http.listen(port, "127.0.0.1", () => { http.off("error", reject); resolve(); });
   });
   const address = http.address();
   assert.ok(address !== null && typeof address !== "string");

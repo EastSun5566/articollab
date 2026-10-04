@@ -32,7 +32,8 @@
     <h1>Articollab browser reload recovery</h1>
     <p>Add offline edits, reload this same tab using your browser, then sync. The entire checkpoint
       is saved in sessionStorage, including pending batches and client identity. No edits are sent automatically.</p>
-    <p>Keep the same server running. Do not duplicate this tab, copy its checkpoint to another writer,
+    <p>In-memory mode: keep the same server running. Persistent mode: restart with the same checkpoint
+      directory and port, then reload this same tab and sync. Do not duplicate this tab, copy its checkpoint to another writer,
       or restore it against a fresh server. This unauthenticated localhost example does not coordinate writers
       or promise recovery after closing the tab.</p>
     <div class="controls">

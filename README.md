@@ -529,16 +529,27 @@ node examples/browser-reload-recovery/server.ts
 
 Open the printed URL in Chrome and keep that server running. **Add offline mixed edit** saves a complete client checkpoint to sessionStorage without sending a batch. Reload the same tab: the original client identity, pending work, tombstones and allocation counters are restored without fetching a new snapshot or automatically syncing. **Sync** first catches up, then submits remaining pending batches. Deletions and later edits use the same sequence/ID progress.
 
+To also recover after a server process interruption, pass an **existing directory** and an explicit fixed port:
+
+```sh
+node examples/browser-reload-recovery/server.ts /existing/checkpoint-directory 3000
+```
+
+Stop and restart using exactly the same directory and port, then reload the original tab and manually sync. The host restores `server.json`, including authoritative state, tombstones, retry results and retained commit history. Client checkpoints remain in sessionStorage, not server-side files. Keeping the port preserves the browser origin; it does not verify document lineage or coordinate writers. With no arguments the host remains in-memory with an automatically assigned port. Persistent CLI mode requires both arguments and a decimal port from 1 to 65535; occupied ports fail rather than silently changing the origin. Example-only host helpers additionally accept `port: 0` for initial automatic allocation; callers must reuse the returned port on restart.
+
+Bootstrap loads and validates the checkpoint, saves it, then starts listening. Only a missing `server.json` creates a fresh server; malformed JSON, invalid checkpoints and filesystem errors stop startup without fresh fallback. Every new accepted or rejected batch is saved before HTTP success; retries do not write again. A server save failure returns an error and disables that host. Close it and build a new host from the last successfully saved file; the advanced in-memory state must not be reused. This uses the existing synchronous temporary-file replacement without fsync or power-loss durability guarantees.
+
 **Sync with lost POST response** consumes one real accepted POST response, then intentionally fails the connection. Reload and sync to confirm the saved server result through catch-up, not a duplicate submission. **Reject pending** confirms the original pending range through the existing HTTP endpoint; it is not undo. The page exposes current visible state, watermarks, pending sequences, conflict and full checkpoint JSON. There is no reset or clear-storage button.
 
 The example-only browser wrapper saves synchronously after creation, after local pending is added, and after each successful receive, including silent acknowledgements. The session store serializes completely before one `setItem()` and loads through the public checkpoint decoder. Only a missing key creates a fresh client; malformed data, denied storage or quota failures throw without clearing the old data or falling back to a snapshot. Storage or synchronization failure stops the connection without rolling back runtime changes. Preserve the displayed current checkpoint before leaving: reload restores only successfully saved work. An incoming listener failure prevents the subsequent receive save.
 
 ```sh
 node --unhandled-rejections=strict --test test/browser-reload-recovery.test.ts
+node --unhandled-rejections=strict --test test/browser-server-recovery.test.ts
 pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js examples/http-sync-controller.js examples/browser-http-smoke/smoke.js examples/browser-reload-recovery/recovery.js
 ```
 
-This is same-tab, same-origin, same-document-lineage reload recovery, not a production persistence adapter. sessionStorage is not a writer lock: an opener or duplicated tab can copy a checkpoint. Do not duplicate the writer, copy its checkpoint into another active writer, or restore against a fresh server. The server is in memory; restarting it is not covered. Closing the tab/browser, cross-tab coordination, server identity detection and power-loss durability are not promised. The unauthenticated host has no polling, automatic retry, server persistence or snapshot fallback. Native tests use an injectable storage double and real HTTP; manual Chrome reload checks remain required.
+This is same-tab, same-origin, same-document-lineage recovery, not a production persistence adapter. sessionStorage is not a writer lock: an opener or duplicated tab can copy a checkpoint. Do not duplicate the writer, copy its checkpoint into another active writer, or delete the server checkpoint and attach the browser checkpoint to a fresh server. Restart recovery requires persistent mode, the same checkpoint directory and port, and sufficient retained history. A history gap preserves pending work and returns `false`, never a replacement snapshot. Closing the tab/browser, cross-tab coordination, server identity detection and power-loss durability are not promised. The unauthenticated host has no polling, automatic retry or snapshot fallback. Native tests use an injectable storage double, real HTTP and an actual CLI process termination/restart; manual Chrome checks remain required for offline edits, deletions, lost POST response, cancellation and further editing across server restart.
 
 ## Development
 
