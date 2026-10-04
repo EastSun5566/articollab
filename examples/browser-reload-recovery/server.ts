@@ -20,11 +20,13 @@ export async function startBrowserReloadRecoveryServer(options: {
     ["/http-sync-controller.js", { file: join(directory, "../http-sync-controller.js"), type: "text/javascript; charset=utf-8" }],
   ]));
   const store = options.directory === undefined ? undefined : createCheckpointStore(options.directory);
-  const checkpoint = store?.loadServer() ?? null;
+  const record = store?.loadRecoveryServer() ?? null;
+  const documentId = record?.documentId ?? crypto.randomUUID();
+  const checkpoint = record?.checkpoint ?? null;
   const server = createServer(Board, checkpoint === null ? {} : { checkpoint });
-  return startHttpExampleServer(server, { serveAsset,
+  return startHttpExampleServer(server, { serveAsset, documentId,
     ...(options.port === undefined ? {} : { port: options.port }),
-    ...(store === undefined ? {} : { saveServerCheckpoint: store.saveServer }),
+    ...(store === undefined ? {} : { saveServerCheckpoint: (checkpoint) => store.saveRecoveryServer({ documentId, checkpoint }) }),
   });
 }
 

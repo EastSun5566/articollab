@@ -20,11 +20,12 @@ const browserUrl = new URL("../examples/browser-http-smoke/smoke.js", import.met
 const key = "articollab:browser-reload-recovery:checkpoint";
 type Shape = typeof Board.definition;
 type Checkpoint = ClientCheckpoint<Shape>;
+type Record = { documentId: string; checkpoint: Checkpoint };
 type Client = ClientDocument<Shape>;
 type Storage = { getItem(key: string): string | null; setItem(key: string, value: string): void };
-type Connection = { doc: Client; sync(): Promise<boolean>; rejectPending(): Promise<boolean> };
+type Connection = { doc: Client; documentId: string; sync(): Promise<boolean>; rejectPending(): Promise<boolean> };
 let recovery: {
-  createSessionCheckpointStore(storage: Storage): { load(): Checkpoint | null; save(checkpoint: Checkpoint): undefined };
+  createSessionCheckpointStore(storage: Storage): { load(): Record | null; save(record: Record): undefined };
   connectPersistentBrowserClient(url: string, options?: { storage?: Storage; fetch?: typeof globalThis.fetch }): Promise<Connection>;
 };
 let browser: { connectBrowserHttpClient(url: string, clientId: string, options?: {
@@ -43,7 +44,7 @@ function memory() {
 
 async function host(t: TestContext, options: CreateServerOptions<Shape> = {}) {
   const server = createServer(Board, options);
-  const http = await startHttpExampleServer(server);
+  const http = await startHttpExampleServer(server, { documentId: crypto.randomUUID() });
   t.after(() => http.close());
   return { server, url: http.url };
 }
@@ -84,7 +85,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
     mixed(a.doc);
     assert.deepEqual(paths, ["/snapshot"]);
     assert.equal(server.snapshot().serverSeq, 0);
-    const saved = recovery.createSessionCheckpointStore(storage).load()!;
+    const saved = recovery.createSessionCheckpointStore(storage).load()!.checkpoint;
     assert.deepEqual(saved, a.doc.checkpoint());
     assert.deepEqual(saved.pendingBatches.map((batch) => batch.seq), [1, 2]);
     assert.equal(a.doc.state.body.length, 6);
@@ -109,7 +110,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
     assert.equal(storage.writes.length, 3); // Initial, local, silent ack.
     a.doc.transact(() => { a.doc.state.items.delete(0); a.doc.state.body.delete(0, 3); });
     assert.equal(await a.sync(), true);
-    const saved = recovery.createSessionCheckpointStore(storage).load()!;
+    const saved = recovery.createSessionCheckpointStore(storage).load()!.checkpoint;
     assert.deepEqual(saved.snapshot, server.snapshot());
     assert.deepEqual(saved.snapshot.data.items.values, []);
     assert.equal(saved.snapshot.data.body.value, "");
@@ -122,7 +123,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
     assert.ok(a.doc.checkpoint().lastBunchSeqs.items > saved.lastBunchSeqs.items);
     assert.ok(a.doc.checkpoint().lastBunchSeqs.body > saved.lastBunchSeqs.body);
     assert.equal(await a.sync(), true);
-    assert.deepEqual(recovery.createSessionCheckpointStore(storage).load(), a.doc.checkpoint());
+    assert.deepEqual(recovery.createSessionCheckpointStore(storage).load()?.checkpoint, a.doc.checkpoint());
     assert.deepEqual(a.doc.checkpoint().snapshot, server.snapshot());
     assert.deepEqual(visible(a.doc), { count: 2, items: ["Draft 3"], body: "Hi😀" });
   });
@@ -142,7 +143,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
     await assert.rejects(a.sync(), (error: unknown) => error === failure);
     await assert.rejects(a.rejectPending(), (error: unknown) => error === failure);
     assert.equal(server.snapshot().serverSeq, 1);
-    assert.deepEqual(recovery.createSessionCheckpointStore(storage).load()!.pendingBatches.map((batch) => batch.seq), [1, 2]);
+    assert.deepEqual(recovery.createSessionCheckpointStore(storage).load()!.checkpoint.pendingBatches.map((batch) => batch.seq), [1, 2]);
     const posts: number[] = [];
     const b = await recovery.connectPersistentBrowserClient(url, { storage, fetch: async (input, init) => {
       if (init?.method === "POST") posts.push(JSON.parse(String(init.body)).seq);
@@ -154,7 +155,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
     assert.equal(server.snapshot().serverSeq, 2);
     assert.deepEqual(b.doc.checkpoint().snapshot, server.snapshot());
     assert.deepEqual(b.doc.checkpoint().pendingBatches, []);
-    assert.deepEqual(recovery.createSessionCheckpointStore(storage).load(), b.doc.checkpoint());
+    assert.deepEqual(recovery.createSessionCheckpointStore(storage).load()?.checkpoint, b.doc.checkpoint());
   });
 
   it("stops after local save failure and preserves the previous stored work without submitting", async (t) => {
@@ -221,7 +222,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
       assert.equal(await b.sync(), true);
       assert.equal(posts, 0);
       assert.deepEqual(b.doc.checkpoint().snapshot, server.snapshot());
-      assert.deepEqual(recovery.createSessionCheckpointStore(storage).load(), b.doc.checkpoint());
+      assert.deepEqual(recovery.createSessionCheckpointStore(storage).load()?.checkpoint, b.doc.checkpoint());
     }
   });
 
@@ -257,7 +258,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
     const serialized = new Error("Serialization failed");
     const stringify = t.mock.method(JSON, "stringify", () => { throw serialized; });
     try {
-      assert.throws(() => recovery.createSessionCheckpointStore(storage).save(restored.doc.checkpoint()),
+      assert.throws(() => recovery.createSessionCheckpointStore(storage).save({ documentId: restored.documentId, checkpoint: restored.doc.checkpoint() }),
         (error: unknown) => error === serialized);
       assert.equal(storage.writes.length, 1);
     } finally { stringify.mock.restore(); }
@@ -296,7 +297,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
       assert.equal(await a.rejectPending(), true);
       assert.equal(a.doc.replayConflict, null);
       assert.deepEqual(a.doc.checkpoint().pendingBatches, []);
-      assert.deepEqual(recovery.createSessionCheckpointStore(storage).load(), a.doc.checkpoint());
+      assert.deepEqual(recovery.createSessionCheckpointStore(storage).load()?.checkpoint, a.doc.checkpoint());
       mixed(a.doc);
       assert.equal(await a.sync(), true);
       assert.equal(a.doc.checkpoint().lastLocalSeq, 3);

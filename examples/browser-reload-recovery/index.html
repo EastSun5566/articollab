@@ -34,7 +34,8 @@
       is saved in sessionStorage, including pending batches and client identity. No edits are sent automatically.</p>
     <p>In-memory mode: keep the same server running. Persistent mode: restart with the same checkpoint
       directory and port, then reload this same tab and sync. Do not duplicate this tab, copy its checkpoint to another writer,
-      or restore it against a fresh server. This unauthenticated localhost example does not coordinate writers
+      or restore it against a fresh server. A document identity mismatch stops synchronization without discarding pending work.
+      This unauthenticated localhost example does not coordinate writers
       or promise recovery after closing the tab.</p>
     <div class="controls">
       <button id="add" type="button" disabled>Add offline mixed edit</button>
@@ -81,7 +82,7 @@
       const { doc } = connection;
       const saved = doc.checkpoint();
       const conflict = doc.replayConflict;
-      state.textContent = JSON.stringify({ mode, clientId: saved.clientId,
+      state.textContent = JSON.stringify({ mode, documentId: connection.documentId, clientId: saved.clientId,
         count: doc.state.count.value, items: doc.state.items.toArray(), body: doc.state.body.toString(),
         codePoints: doc.state.body.length, watermark: saved.snapshot.serverSeq,
         pending: saved.pendingBatches.map((batch) => batch.seq), lastLocalSeq: saved.lastLocalSeq,
@@ -89,7 +90,7 @@
         conflict: conflict === null ? null : { seq: conflict.batch.seq, operationIndex: conflict.operationIndex,
           message: conflict.message },
       }, null, 2);
-      checkpoint.textContent = JSON.stringify(saved, null, 2);
+      checkpoint.textContent = JSON.stringify({ documentId: connection.documentId, checkpoint: saved }, null, 2);
       if (doc.state.items.length === 0 && doc.state.body.length === 0) document.getElementById("delete").disabled = true;
       if (saved.pendingBatches.length === 0) {
         document.getElementById("lost").disabled = true;

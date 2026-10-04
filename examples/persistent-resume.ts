@@ -16,6 +16,11 @@ import { Board } from "./resume.ts";
 
 type Shape = typeof Board.definition;
 
+export interface RecoveryServerCheckpoint {
+  readonly documentId: string;
+  readonly checkpoint: ServerCheckpoint<Shape>;
+}
+
 /** Example-only synchronous JSON storage: one writer per file, trusted local directory. */
 export function createCheckpointStore(directory: string) {
   const root = resolve(directory);
@@ -34,7 +39,7 @@ export function createCheckpointStore(directory: string) {
     }
   }
 
-  function save(path: string, checkpoint: ClientCheckpoint<Shape> | ServerCheckpoint<Shape>): undefined {
+  function save(path: string, checkpoint: ClientCheckpoint<Shape> | ServerCheckpoint<Shape> | RecoveryServerCheckpoint): undefined {
     const message = JSON.stringify(checkpoint); // Finish serialization before touching files.
     const temporary = path + ".tmp";
     try {
@@ -49,6 +54,22 @@ export function createCheckpointStore(directory: string) {
   }
 
   return {
+    loadRecoveryServer(): RecoveryServerCheckpoint | null {
+      const message = load(join(root, "server.json"));
+      if (message === null) return null;
+      const input: unknown = JSON.parse(message);
+      if (input === null || typeof input !== "object" || Array.isArray(input) ||
+        Object.keys(input).sort().join(",") !== "checkpoint,documentId" ||
+        !("documentId" in input) || typeof input.documentId !== "string" || input.documentId.length !== 36 ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.documentId) ||
+        !("checkpoint" in input)) {
+        throw new Error("Invalid recovery server envelope; document ID and checkpoint are required");
+      }
+      return Object.freeze({ documentId: input.documentId, checkpoint: decodeServerCheckpoint(Board, input.checkpoint) });
+    },
+    saveRecoveryServer(record: RecoveryServerCheckpoint): undefined {
+      save(join(root, "server.json"), record);
+    },
     loadServer(): ServerCheckpoint<Shape> | null {
       const message = load(join(root, "server.json"));
       return message === null ? null : decodeServerCheckpoint(Board, JSON.parse(message));

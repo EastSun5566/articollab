@@ -527,7 +527,7 @@ pnpm build
 node examples/browser-reload-recovery/server.ts
 ```
 
-Open the printed URL in Chrome and keep that server running. **Add offline mixed edit** saves a complete client checkpoint to sessionStorage without sending a batch. Reload the same tab: the original client identity, pending work, tombstones and allocation counters are restored without fetching a new snapshot or automatically syncing. **Sync** first catches up, then submits remaining pending batches. Deletions and later edits use the same sequence/ID progress.
+Open the printed URL in a browser and keep that server running. **Add offline mixed edit** saves a complete client checkpoint to sessionStorage without sending a batch. Reload the same tab: the original client identity, pending work, tombstones and allocation counters are restored without fetching a new snapshot or automatically syncing. **Sync** first catches up, then submits remaining pending batches. Deletions and later edits use the same sequence/ID progress.
 
 To also recover after a server process interruption, pass an **existing directory** and an explicit fixed port:
 
@@ -535,7 +535,13 @@ To also recover after a server process interruption, pass an **existing director
 node examples/browser-reload-recovery/server.ts /existing/checkpoint-directory 3000
 ```
 
-Stop and restart using exactly the same directory and port, then reload the original tab and manually sync. The host restores `server.json`, including authoritative state, tombstones, retry results and retained commit history. Client checkpoints remain in sessionStorage, not server-side files. Keeping the port preserves the browser origin; it does not verify document lineage or coordinate writers. With no arguments the host remains in-memory with an automatically assigned port. Persistent CLI mode requires both arguments and a decimal port from 1 to 65535; occupied ports fail rather than silently changing the origin. Example-only host helpers additionally accept `port: 0` for initial automatic allocation; callers must reuse the returned port on restart.
+Stop and restart using exactly the same directory and port, then reload the original tab and manually sync. The host restores `server.json`, including authoritative state, tombstones, retry results and retained commit history. Client checkpoints remain in sessionStorage, not server-side files. Keeping the port preserves the browser origin; the recovery envelope separately identifies the document, but neither coordinates writers. With no arguments the host remains in-memory with an automatically assigned port. Persistent CLI mode requires both arguments and a decimal port from 1 to 65535; occupied ports fail rather than silently changing the origin. Example-only host helpers additionally accept `port: 0` for initial automatic allocation; callers must reuse the returned port on restart.
+
+This recovery example saves `{ documentId, checkpoint }` in both `server.json` and the existing sessionStorage key. `documentId` is a canonical lowercase UUID v4: a fresh host creates it once and a persistent restart keeps it. The ID and server checkpoint are replaced together in one file, not separate metadata files. The page displays the ID and complete client recovery envelope for export. Core checkpoint and wire formats are unchanged. The store's example-only `loadRecoveryServer()` / `saveRecoveryServer()` handle this envelope; the original `loadServer()` / `saveServer()` still handle raw checkpoints for other demos. Use separate directories for these incompatible example formats. Legacy raw recovery checkpoints, missing or invalid IDs, extra fields and corrupt data throw without migration, overwriting or fresh fallback; preserve old data separately rather than attaching it to a fresh document.
+
+The recovery host enables the HTTP helper's optional `documentId` guard. API responses carry `X-Articollab-Document-Id`; a fresh client learns it from `/snapshot`, and requests to `/commits`, `/batches` and `/rejections` must carry the same ID. Missing or mismatched request IDs return `409` before history access, resolver execution or batch processing. The recovery client's injected fetch wrapper checks response identity before decoding, including `204` responses; missing, invalid or different IDs stop the connection and preserve pending and stored work. Restore still makes no initialization request: identity is verified on the next manual sync or cancellation. Other HTTP demos remain unguarded and unchanged. The shared synchronization controller is not duplicated or modified.
+
+A fresh client has no expected ID: it trusts the first valid snapshot header as its initial identity. A different valid UUID substituted there cannot be identified at initialization; the next request to a correctly guarded host rejects the mismatch before pending submission. This is accidental-lineage protection, not protection against a malicious server or response rewriting.
 
 Bootstrap loads and validates the checkpoint, saves it, then starts listening. Only a missing `server.json` creates a fresh server; malformed JSON, invalid checkpoints and filesystem errors stop startup without fresh fallback. Every new accepted or rejected batch is saved before HTTP success; retries do not write again. A server save failure returns an error and disables that host. Close it and build a new host from the last successfully saved file; the advanced in-memory state must not be reused. This uses the existing synchronous temporary-file replacement without fsync or power-loss durability guarantees.
 
@@ -546,10 +552,26 @@ The example-only browser wrapper saves synchronously after creation, after local
 ```sh
 node --unhandled-rejections=strict --test test/browser-reload-recovery.test.ts
 node --unhandled-rejections=strict --test test/browser-server-recovery.test.ts
+node --unhandled-rejections=strict --test test/document-lineage.test.ts
 pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js examples/http-sync-controller.js examples/browser-http-smoke/smoke.js examples/browser-reload-recovery/recovery.js
 ```
 
-This is same-tab, same-origin, same-document-lineage recovery, not a production persistence adapter. sessionStorage is not a writer lock: an opener or duplicated tab can copy a checkpoint. Do not duplicate the writer, copy its checkpoint into another active writer, or delete the server checkpoint and attach the browser checkpoint to a fresh server. Restart recovery requires persistent mode, the same checkpoint directory and port, and sufficient retained history. A history gap preserves pending work and returns `false`, never a replacement snapshot. Closing the tab/browser, cross-tab coordination, server identity detection and power-loss durability are not promised. The unauthenticated host has no polling, automatic retry or snapshot fallback. Native tests use an injectable storage double, real HTTP and an actual CLI process termination/restart; manual Chrome checks remain required for offline edits, deletions, lost POST response, cancellation and further editing across server restart.
+This is same-tab, same-origin recovery for the same guarded document, not a production persistence adapter. Document IDs are lineage markers, not authentication, authorization, schema versions or writer locks. Copying an ID with an older or forked server checkpoint is not detected; all participating hosts must honor the guard. sessionStorage is not a writer lock: an opener or duplicated tab can copy a checkpoint. Do not duplicate the writer or copy its checkpoint into another active writer. Restart recovery requires persistent mode, the same checkpoint directory and port, and sufficient retained history. A different guarded document is rejected without discarding pending. A history gap preserves pending work and returns `false`, never a replacement snapshot. Closing the tab/browser, cross-tab coordination, rollback detection and power-loss durability are not promised. The unauthenticated host has no polling, automatic retry or snapshot fallback. Native tests use an injectable storage double, real HTTP and an actual CLI process termination/restart. Interactive verification uses the Codex built-in browser, not the user's Chrome; unsupported checks must be reported rather than silently replaced.
+
+### Core contract verification map
+
+These checks cover the intended minimal collaboration contract, not a proof of all possible interleavings or production transport guarantees.
+
+| Contract | Focused checks | Integration checks |
+| --- | --- | --- |
+| Value/List/Text, Unicode and stable-ID tombstones | `runtime.test.ts`, `list.test.ts`, `text.test.ts` | `interleaving.test.ts`, browser core smoke |
+| Transactions, rollback and reentrant change delivery | `runtime.test.ts`, collection tests | `resume.test.ts`, `async-resume.test.ts`, HTTP sync |
+| Atomic server policy, accept/reject/transform | `runtime.test.ts`, `server-reject.test.ts` | HTTP sync and pending rejection recovery |
+| Wire validation and owned JSON data | `wire.test.ts`, checkpoint decoder tests | HTTP sync, installed package consumer |
+| Snapshot, checkpoint and pending replay conflicts | `client-checkpoint.test.ts`, `replay-conflict.test.ts` | Browser reload and server recovery |
+| Retry deduplication and bounded catch-up | `retry.test.ts`, `history.test.ts` | Interleaving, HTTP sync and lost-ack recovery |
+| Save-before-send / save-before-success boundaries | `persistent-resume.test.ts`, `persistent-http-sync.test.ts` | Browser server recovery and document lineage checks |
+| Installed ESM and schema-specific declarations | `test/package-consumer/smoke.test.ts` | Native browser core / HTTP smoke |
 
 ## Development
 
@@ -612,6 +634,7 @@ Implemented:
 - Example-only native ESM browser core smoke with local assets, JSON restore and blocked recovery
 - Example-only same-origin browser HTTP smoke using built ESM and the shared manual sync controller
 - Example-only sessionStorage browser checkpoint persistence and manual same-tab reload recovery
+- Example-only browser/server checkpoint recovery with an HTTP document lineage guard
 - Last-batch retry deduplication and replay, including after restore
 - Bounded global commit catch-up, including after restore
 

@@ -47,15 +47,21 @@ export async function startHttpExampleServer(
   server: ServerDocument<Shape>,
   options: {
     readonly port?: number;
+    readonly documentId?: string;
     readonly saveServerCheckpoint?: (checkpoint: ServerCheckpoint<Shape>) => undefined;
     readonly serveAsset?: (request: IncomingMessage, response: ServerResponse) => boolean;
   } = {}
 ) {
   const port = options.port ?? 0;
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid HTTP port");
+  const documentId = options.documentId;
+  if (documentId !== undefined && (typeof documentId !== "string" || documentId.length !== 36 || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(documentId))) {
+    throw new Error("Invalid document ID");
+  }
   options.saveServerCheckpoint?.(server.checkpoint()); // Bootstrap before opening a socket.
   let failed = false;
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (documentId !== undefined) response.setHeader("X-Articollab-Document-Id", documentId);
     function reject(status: number, message: string): void {
       request.resume(); // Discard unread bodies without buffering them.
       json(response, status, { error: message });
@@ -77,6 +83,10 @@ export async function startHttpExampleServer(
     }
     if (url.pathname === "/snapshot") {
       json(response, 200, server.snapshot());
+      return;
+    }
+    if (documentId !== undefined && request.headers["x-articollab-document-id"] !== documentId) {
+      reject(409, "Document lineage mismatch");
       return;
     }
     if (url.pathname === "/commits") {
