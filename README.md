@@ -520,6 +520,26 @@ pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --
 
 The focused Node tests run the same browser-compatible module with built ESM and real localhost HTTP, but do not replace checking all three scenarios, **Run again** and reload in Chrome. Synchronization is manual: there is no polling, automatic retry, browser storage or production reconnect. The host is unauthenticated, including `/rejections`; client IDs are namespaces, not authorization. Checkpoint restore is in memory, cancellation is not undo, and module/HTTP/decode/listener failures are not automatically repaired.
 
+## Browser reload recovery example
+
+```sh
+pnpm build
+node examples/browser-reload-recovery/server.ts
+```
+
+Open the printed URL in Chrome and keep that server running. **Add offline mixed edit** saves a complete client checkpoint to sessionStorage without sending a batch. Reload the same tab: the original client identity, pending work, tombstones and allocation counters are restored without fetching a new snapshot or automatically syncing. **Sync** first catches up, then submits remaining pending batches. Deletions and later edits use the same sequence/ID progress.
+
+**Sync with lost POST response** consumes one real accepted POST response, then intentionally fails the connection. Reload and sync to confirm the saved server result through catch-up, not a duplicate submission. **Reject pending** confirms the original pending range through the existing HTTP endpoint; it is not undo. The page exposes current visible state, watermarks, pending sequences, conflict and full checkpoint JSON. There is no reset or clear-storage button.
+
+The example-only browser wrapper saves synchronously after creation, after local pending is added, and after each successful receive, including silent acknowledgements. The session store serializes completely before one `setItem()` and loads through the public checkpoint decoder. Only a missing key creates a fresh client; malformed data, denied storage or quota failures throw without clearing the old data or falling back to a snapshot. Storage or synchronization failure stops the connection without rolling back runtime changes. Preserve the displayed current checkpoint before leaving: reload restores only successfully saved work. An incoming listener failure prevents the subsequent receive save.
+
+```sh
+node --unhandled-rejections=strict --test test/browser-reload-recovery.test.ts
+pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js examples/http-sync-controller.js examples/browser-http-smoke/smoke.js examples/browser-reload-recovery/recovery.js
+```
+
+This is same-tab, same-origin, same-document-lineage reload recovery, not a production persistence adapter. sessionStorage is not a writer lock: an opener or duplicated tab can copy a checkpoint. Do not duplicate the writer, copy its checkpoint into another active writer, or restore against a fresh server. The server is in memory; restarting it is not covered. Closing the tab/browser, cross-tab coordination, server identity detection and power-loss durability are not promised. The unauthenticated host has no polling, automatic retry, server persistence or snapshot fallback. Native tests use an injectable storage double and real HTTP; manual Chrome reload checks remain required.
+
 ## Development
 
 Requires Node.js 24 or newer and pnpm 10.
@@ -580,6 +600,7 @@ Implemented:
 - Example-only file-backed HTTP checkpoint recovery and caller-initiated reconnect
 - Example-only native ESM browser core smoke with local assets, JSON restore and blocked recovery
 - Example-only same-origin browser HTTP smoke using built ESM and the shared manual sync controller
+- Example-only sessionStorage browser checkpoint persistence and manual same-tab reload recovery
 - Last-batch retry deduplication and replay, including after restore
 - Bounded global commit catch-up, including after restore
 

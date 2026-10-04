@@ -5,7 +5,7 @@ import {
 } from "articollab";
 import { createHttpSyncController, readHttpResponse } from "../http-sync-controller.js";
 
-const Board = defineDocument({
+export const Board = defineDocument({
   count: value(0),
   items: /** @type {import("articollab").ListSchema<string>} */ (list()),
   body: text(),
@@ -27,7 +27,8 @@ function same(actual, expected, message) { check(encoded(actual) === encoded(exp
 
 /** Browser-only initialization; the manual synchronization loop is shared with Node.
  * @param {string} url @param {string} clientId
- * @param {{fetch?: typeof globalThis.fetch, checkpoint?: Checkpoint}} [options]
+ * @param {{fetch?: typeof globalThis.fetch, checkpoint?: Checkpoint,
+ *   saveClientCheckpoint?: (checkpoint: Checkpoint) => undefined}} [options]
  */
 export async function connectBrowserHttpClient(url, clientId, options = {}) {
   const fetch = options.fetch ?? globalThis.fetch;
@@ -35,13 +36,19 @@ export async function connectBrowserHttpClient(url, clientId, options = {}) {
     ? { snapshot: decodeSnapshot(Board, JSON.parse(await readHttpResponse(url, fetch, "/snapshot", 200))) }
     : { checkpoint: options.checkpoint };
   const doc = createClient(Board, { clientId, ...initial,
-    onBatch() { controller.requireUsable(); }, // Offline pending only; no automatic submission.
+    onBatch() { saveClient(); }, // Save offline pending; no automatic submission.
   });
   const controller = createHttpSyncController({ url, fetch,
     checkpoint: () => doc.checkpoint(), receive: (commit) => doc.receive(commit),
     decodeCommit: (input) => decodeServerCommit(Board, input),
-    isBlocked: () => doc.replayConflict !== null, saveClient() {},
+    isBlocked: () => doc.replayConflict !== null, saveClient,
   });
+  function saveClient() {
+    controller.requireUsable();
+    try { options.saveClientCheckpoint?.(doc.checkpoint()); }
+    catch (error) { throw controller.stop(error); }
+  }
+  saveClient(); // Save fresh/restored state before returning the connection.
   return { doc, sync: controller.sync, rejectPending: controller.rejectPending };
 }
 

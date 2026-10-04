@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Browser reload recovery | Articollab</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.5; }
+    body { margin: 0; }
+    main { max-width: 72rem; margin: 2rem auto; padding: 0 1.25rem; }
+    h1 { font-size: 1.75rem; margin-bottom: .5rem; }
+    h2 { font-size: 1.2rem; }
+    p { max-width: 75ch; }
+    .controls { display: flex; flex-wrap: wrap; gap: .5rem; }
+    button { font: inherit; padding: .5rem 1rem; cursor: pointer; }
+    button:focus-visible { outline: 3px solid #326fb6; outline-offset: 3px; }
+    #status { font-weight: 600; }
+    #error { color: light-dark(#9f2535, #ffabb4); }
+    pre { font: .875rem/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+  <script type="importmap">
+    { "imports": {
+      "articollab": "/dist/index.js",
+      "articulated": "/vendor/articulated/index.js",
+      "sparse-array-rled": "/vendor/sparse-array-rled/index.js"
+    } }
+  </script>
+</head>
+<body>
+  <main>
+    <h1>Articollab browser reload recovery</h1>
+    <p>Add offline edits, reload this same tab using your browser, then sync. The entire checkpoint
+      is saved in sessionStorage, including pending batches and client identity. No edits are sent automatically.</p>
+    <p>Keep the same server running. Do not duplicate this tab, copy its checkpoint to another writer,
+      or restore it against a fresh server. This unauthenticated localhost example does not coordinate writers
+      or promise recovery after closing the tab.</p>
+    <div class="controls">
+      <button id="add" type="button" disabled>Add offline mixed edit</button>
+      <button id="delete" type="button" disabled>Delete last item and code point</button>
+      <button id="sync" type="button" disabled>Sync</button>
+      <button id="lost" type="button" disabled>Sync with lost POST response</button>
+      <button id="reject" type="button" disabled>Reject pending</button>
+    </div>
+    <p id="status" role="status" aria-atomic="true">Loading saved checkpoint…</p>
+    <pre id="error" role="alert" hidden></pre>
+    <h2>Client state</h2>
+    <pre id="state"></pre>
+    <h2>Current checkpoint</h2>
+    <p>After a failure, preserve this JSON before leaving. Reload restores only the last successfully saved
+      checkpoint; an unsaved mutation is not guaranteed to survive. Cancellation is not undo.</p>
+    <pre id="checkpoint"></pre>
+  </main>
+  <script type="module">
+    const buttons = [...document.querySelectorAll("button")];
+    const status = document.getElementById("status");
+    const error = document.getElementById("error");
+    const state = document.getElementById("state");
+    const checkpoint = document.getElementById("checkpoint");
+    const nativeFetch = globalThis.fetch;
+    let connection;
+    let mode;
+    let busy = true;
+    let stopped = false;
+    let loseResponse = false;
+
+    async function fetchWithLostResponse(input, init) {
+      const response = await nativeFetch(input, init);
+      if (loseResponse && init?.method === "POST") {
+        loseResponse = false;
+        await response.text();
+        throw new Error("POST accepted, but its response was intentionally lost. Reload this tab, then sync.");
+      }
+      return response;
+    }
+
+    function render() {
+      for (const button of buttons) button.disabled = busy || stopped || connection === undefined;
+      if (connection === undefined) return;
+      const { doc } = connection;
+      const saved = doc.checkpoint();
+      const conflict = doc.replayConflict;
+      state.textContent = JSON.stringify({ mode, clientId: saved.clientId,
+        count: doc.state.count.value, items: doc.state.items.toArray(), body: doc.state.body.toString(),
+        codePoints: doc.state.body.length, watermark: saved.snapshot.serverSeq,
+        pending: saved.pendingBatches.map((batch) => batch.seq), lastLocalSeq: saved.lastLocalSeq,
+        lastBunchSeqs: saved.lastBunchSeqs,
+        conflict: conflict === null ? null : { seq: conflict.batch.seq, operationIndex: conflict.operationIndex,
+          message: conflict.message },
+      }, null, 2);
+      checkpoint.textContent = JSON.stringify(saved, null, 2);
+      if (doc.state.items.length === 0 && doc.state.body.length === 0) document.getElementById("delete").disabled = true;
+      if (saved.pendingBatches.length === 0) {
+        document.getElementById("lost").disabled = true;
+        document.getElementById("reject").disabled = true;
+      }
+      if (conflict !== null) {
+        document.getElementById("add").disabled = true;
+        document.getElementById("delete").disabled = true;
+      }
+    }
+
+    function fail(cause) {
+      stopped = true;
+      status.textContent = connection === undefined
+        ? "Initialization failed; no connection, automatic submission or fresh fallback."
+        : "Failed connection: stopped. Current checkpoint remains available below.";
+      error.textContent = cause instanceof Error ? cause.message : String(cause);
+      error.hidden = false;
+    }
+
+    async function run(action, message) {
+      if (busy || stopped || connection === undefined) return;
+      busy = true;
+      render();
+      try {
+        const result = await action();
+        status.textContent = result === false ? "Sync/cancellation incomplete; pending work is preserved." : message;
+      } catch (cause) {
+        fail(cause);
+      } finally {
+        loseResponse = false;
+        busy = false;
+        render();
+      }
+    }
+
+    document.getElementById("add").addEventListener("click", () => run(() => {
+      const { doc } = connection;
+      const nextSeq = doc.checkpoint().lastLocalSeq + 1;
+      doc.transact(() => {
+        doc.state.count.value += 1;
+        doc.state.items.push("Draft " + nextSeq);
+        doc.state.body.insert(doc.state.body.length, "Hi😀");
+      });
+    }, "Offline mixed edit saved; not submitted."));
+    document.getElementById("delete").addEventListener("click", () => run(() => {
+      const { doc } = connection;
+      doc.transact(() => {
+        if (doc.state.items.length > 0) doc.state.items.delete(doc.state.items.length - 1);
+        if (doc.state.body.length > 0) doc.state.body.delete(doc.state.body.length - 1);
+      });
+    }, "Offline deletion saved; not submitted."));
+    document.getElementById("sync").addEventListener("click", () => run(() => connection.sync(),
+      "Sync completed; pending drained at the latest catch-up watermark."));
+    document.getElementById("lost").addEventListener("click", () => run(() => {
+      loseResponse = true;
+      return connection.sync();
+    }, "Sync completed without a POST; no response was lost."));
+    document.getElementById("reject").addEventListener("click", () => run(() => connection.rejectPending(),
+      "Original pending range confirmed; accepted effects were not undone."));
+
+    try {
+      const { createSessionCheckpointStore, connectPersistentBrowserClient } = await import("/browser-reload-recovery/recovery.js");
+      const storage = window.sessionStorage;
+      mode = createSessionCheckpointStore(storage).load() === null ? "fresh" : "restored";
+      connection = await connectPersistentBrowserClient(location.origin, { storage, fetch: fetchWithLostResponse });
+      status.textContent = mode === "fresh" ? "Fresh identity saved; manual sync only." : "Restored saved identity and pending; nothing submitted.";
+    } catch (cause) {
+      fail(cause);
+    } finally {
+      busy = false;
+      render();
+    }
+  </script>
+</body>
+</html>
