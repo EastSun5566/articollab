@@ -247,8 +247,11 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     const installedRoot = join(consumer, "node_modules/articollab");
     const installed = await json(join(installedRoot, "package.json"));
     assert.equal(installed.name, "articollab");
-    assert.equal(installed.version, "0.1.0");
-    assert.equal(installed.private, true);
+    assert.equal(installed.version, "0.1.0-beta.0");
+    assert.equal(installed.private, false);
+    assert.deepEqual(installed.publishConfig, {
+      registry: "https://registry.npmjs.org/", access: "public", tag: "beta",
+    });
     assert.deepEqual(installed.dependencies, { articulated: "^1.3.1" });
     assert.deepEqual(installed.exports, original.exports);
     const entry = record(record(installed.exports)["."]);

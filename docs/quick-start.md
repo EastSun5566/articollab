@@ -4,7 +4,7 @@ Use this example to see exactly when a local edit becomes authoritative. It buff
 
 ## Run from a local checkout
 
-Requires Node.js 24+, pnpm `10.34.5` and the repository's TypeScript 7 dependency. The package is private and unpublished; do not assume `npm install articollab` is available.
+Requires Node.js 24+, pnpm `10.34.5` and the repository's TypeScript 7 dependency. The first public beta, `0.1.0-beta.0`, is prepared but not yet published. After npm publication is confirmed, an independent ESM project can install it with `pnpm add articollab@beta`; until then, use a checkout or local tarball.
 
 ```sh
 pnpm install --frozen-lockfile

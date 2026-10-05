@@ -19,13 +19,13 @@ The complete runnable example is on the next page. Later pages introduce mixed c
 
 ## What is included?
 
-Version `0.1.0` includes Value/List/Text, synchronous transactions, optimistic reconciliation, policy/rejection, wire decoders, snapshots, checkpoints, last-batch retry and bounded catch-up.
+Version `0.1.0-beta.0` includes Value/List/Text, synchronous transactions, optimistic reconciliation, policy/rejection, wire decoders, snapshots, checkpoints, last-batch retry and bounded catch-up.
 
 The application owns transport, storage, authentication, writer coordination, document lineage and recovery orchestration. Examples demonstrate those responsibilities; they are not exported production adapters.
 
 ## Availability and compatibility
 
-The package has **not been published to npm**, and the source repository is private. If you have repository access, use a checkout or a locally packed tarball as described in the quick start.
+The first public beta is prepared but has **not been published to npm**. Until publication is confirmed, use a checkout or a locally packed tarball as described in the quick start. After confirmation, install with `pnpm add articollab@beta`. The source repository remains private; the npm package will be publicly downloadable.
 
 Within `0.1.x`, the [README core contracts](reference.md#v01-notes-and-compatibility) and existing wire/checkpoint formats are the compatibility baseline. Example helpers are not part of that guarantee.
 

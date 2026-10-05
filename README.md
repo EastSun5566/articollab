@@ -4,7 +4,7 @@ Articollab is a small TypeScript library for server-authoritative collaborative 
 
 The core provides typed Value/List/Text collections, synchronous transactions and server policies, strict wire decoders, snapshots, checkpoints, last-batch retry deduplication and bounded catch-up. Transport, storage, authentication and recovery orchestration belong to the application, not the package.
 
-Version `0.1.0` is private and has not been published to npm. Use a repository checkout or a locally packed tarball. Production transport is not included.
+Version `0.1.0-beta.0` is prepared for the first public npm beta but has not been published yet. Until publication is confirmed, use a repository checkout or a locally packed tarball. After confirmation, install with `pnpm add articollab@beta`. The source repository remains private; the npm tarball will be public. Production transport is not included.
 
 ## v0.1 notes and compatibility
 
@@ -240,10 +240,10 @@ Preview at `http://127.0.0.1:5566/articollab/` (or `pnpm docs:serve 0` for an au
 
 PRs only validate. Documentation artifact upload and the `deploy-docs` job are gated by repository variable `PAGES_ENABLED=true`, a main push/manual event, and successful checks. Only deployment gets `pages: write`/`id-token: write` and the `github-pages` environment; only validated `.docs-site/` is uploaded. Configure Pages uses `enablement: false`. With the variable unset, no upload/deploy occurs. Nothing in this setup enables Pages, changes repository visibility, or publishes npm.
 
-The source repository is private and the package is unpublished. Before enabling deployment, check [GitHub Pages support for private repositories](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages) and review the staged content. A private repository does not make its documentation site private. After deployment, check the workflow commit, site URL and browser behavior; CI checks alone do not verify the rendered site.
+The source repository is private and the first npm beta awaits manual publication. Before enabling deployment, check [GitHub Pages support for private repositories](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages) and review the staged content. A private repository does not make its documentation site private. After deployment, check the workflow commit, site URL and browser behavior; CI checks alone do not verify the rendered site.
 
 ## Boundaries
 
-The intended minimal core and private `0.1.0` baseline are established; publication remains a separate decision. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
+The intended minimal core and v0.1 compatibility baseline are established; the first public beta is prepared, not yet published. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
 
 There is no production transport or storage adapter, background sync, automatic retry/reconnect, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing, move, public stable positions or cursor API. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
