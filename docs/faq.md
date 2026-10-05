@@ -36,4 +36,8 @@ Transport, quotas, storage barriers, authentication/authorization, one-writer co
 
 There is no rich text, presence, undo, cursor, bulk List editing, move, automatic migration or background reconnect. Same-ID server rollback/forks and power-loss durability are not promised. See the [canonical boundaries](reference.md#boundaries).
 
+## How is the documentation deployed?
+
+The local preview does not need GitHub Pages. Deployment runs only after checks pass, on a main push or manual run with the repository variable `PAGES_ENABLED=true`. The workflow does not enable Pages automatically. Before enabling deployment, check your GitHub plan's support for private repositories and review the content that will be published.
+
 [Previous: Examples guide](examples.md) · [Back to Overview](README.md)

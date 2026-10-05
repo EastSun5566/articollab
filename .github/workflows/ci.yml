@@ -54,8 +54,46 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # Browser JS imports the built entrypoint; type-aware lint needs its declarations.
+      - name: Lint
+        run: pnpm lint
+
       - name: Check browser smoke JSDoc
         run: pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js examples/http-sync-controller.js examples/browser-http-smoke/smoke.js examples/browser-reload-recovery/recovery.js
 
       - name: Test installed package consumer
         run: pnpm test:package
+
+      - name: Stage documentation
+        run: pnpm docs:build
+
+      - name: Check documentation
+        run: pnpm docs:check
+
+      - name: Upload documentation artifact
+        if: vars.PAGES_ENABLED == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: .docs-site/
+          include-hidden-files: true # The validated allowlist includes only .nojekyll as a hidden file.
+
+  deploy-docs:
+    needs: checks
+    if: vars.PAGES_ENABLED == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages without enabling it
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+        with:
+          enablement: false
+
+      - name: Deploy validated documentation
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

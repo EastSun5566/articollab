@@ -202,7 +202,7 @@ Native Node tests run TypeScript directly; production builds emit only `src` int
 
 `pnpm lint` uses pinned Oxlint/tsgolint with type-aware TypeScript/Oxc rules, correctness/suspicious errors, explicit-any and unsafe-value checks. Warnings and unused disable directives fail. Pedantic/style/restriction/nursery are not enabled wholesale. Native `node:test` registration calls have a package- and test-source-limited known-safe exception; other promises remain checked. Local exceptions document verified decoder/type bridges, deliberate negative fixtures and Unicode code-point behavior. Build first so browser JS can resolve the production declarations. `tsc` and independent browser JSDoc checking remain separate gates.
 
-The read-only GitHub Actions `CI` workflow runs on main pushes, PRs targeting main and manual dispatch. One Ubuntu 24.04/Node 24 job uses the pinned pnpm, frozen install, check/test/build, complete browser JSDoc checking and package consumer smoke. It has no publishing/deployment steps or dependency cache. Local success is not proof of remote CI success.
+The GitHub Actions `CI` workflow runs on main pushes, PRs targeting main and manual dispatch. One Ubuntu 24.04/Node 24 checks job uses the pinned pnpm, frozen install, check/test/build/lint, complete browser JSDoc checking, package consumer smoke and docs build/check. There is no dependency cache. Local success is not proof of remote CI success.
 
 | Contract | Existing focused / integration checks |
 | --- | --- |
@@ -237,6 +237,10 @@ pnpm docs:serve
 ```
 
 Preview at `http://127.0.0.1:5566/articollab/` (or `pnpm docs:serve 0` for an automatic port). The prefix matches the intended Pages project site; hash routes support deep-link reload without server fallback. Preview snapshots the staged assets at startup; restart it after editing. `docs:check` verifies the staged allowlist, local navigation/anchors, pinned CDN assets, and typechecks/runs the exact Counter snippet against built public ESM/declarations. Docs/tooling are not included in the production tarball. CDN-based rendering needs network access.
+
+PRs only validate. Documentation artifact upload and the `deploy-docs` job are gated by repository variable `PAGES_ENABLED=true`, a main push/manual event, and successful checks. Only deployment gets `pages: write`/`id-token: write` and the `github-pages` environment; only validated `.docs-site/` is uploaded. Configure Pages uses `enablement: false`. With the variable unset, no upload/deploy occurs. Nothing in this setup enables Pages, changes repository visibility, or publishes npm.
+
+The source repository is private and the package is unpublished. Before enabling deployment, check [GitHub Pages support for private repositories](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages) and review the staged content. A private repository does not make its documentation site private. After deployment, check the workflow commit, site URL and browser behavior; CI checks alone do not verify the rendered site.
 
 ## Boundaries
 
