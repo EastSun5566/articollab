@@ -2,16 +2,20 @@
 
 Use this example to see exactly when a local edit becomes authoritative. It buffers one batch, submits it manually, then delivers the commit to the writer and a peer.
 
+## Install the beta
+
+In an ESM project (`"type": "module"`), install `articollab@beta` with `pnpm add articollab@beta`. Save the example below as `counter.ts` and run it with Node.js 24+: `node counter.ts`.
+
 ## Run from a local checkout
 
-Requires Node.js 24+, pnpm `10.34.5` and the repository's TypeScript 7 dependency. The first public beta, `0.1.0-beta.0`, is prepared but not yet published. After npm publication is confirmed, an independent ESM project can install it with `pnpm add articollab@beta`; until then, use a checkout or local tarball.
+With repository access, use Node.js 24+, pnpm `10.34.5` and the repository's TypeScript 7 dependency.
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
 ```
 
-Save the following complete snippet as `counter.ts` in the checkout root and run `node counter.ts`. The self-package import resolves the built ESM entrypoint. Outside the checkout, install a tarball made with `pnpm pack` into your own ESM project instead.
+Save the following complete snippet as `counter.ts` in the checkout root and run `node counter.ts`. The self-package import resolves the built ESM entrypoint. Outside the checkout, use the npm beta or a local tarball made with `pnpm pack`.
 
 <!-- checked-counter:start -->
 ```ts

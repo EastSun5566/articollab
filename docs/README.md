@@ -25,8 +25,8 @@ The application owns transport, storage, authentication, writer coordination, do
 
 ## Availability and compatibility
 
-The first public beta is prepared but has **not been published to npm**. Until publication is confirmed, use a checkout or a locally packed tarball as described in the quick start. After confirmation, install with `pnpm add articollab@beta`. The source repository remains private; the npm package will be publicly downloadable.
+The first public beta, `0.1.0-beta.0`, is available on npm. Install with `pnpm add articollab@beta`. The source repository remains private; repository access is needed for the development tools and examples.
 
-Within `0.1.x`, the [README core contracts](reference.md#v01-notes-and-compatibility) and existing wire/checkpoint formats are the compatibility baseline. Example helpers are not part of that guarantee.
+Within `0.1.x`, the [core reference](reference.md#v01-notes-and-compatibility) and existing wire/checkpoint formats are the compatibility baseline. Example helpers are not part of that guarantee.
 
 [Next: Counter quick start](quick-start.md)

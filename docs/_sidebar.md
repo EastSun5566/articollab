@@ -7,4 +7,5 @@
 - [Recovery](recovery.md)
 - [Core reference](reference.md)
 - [Examples guide](examples.md)
+- [Development](development.md)
 - [FAQ and limitations](faq.md)

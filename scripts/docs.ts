@@ -12,7 +12,7 @@ const source = join(root, "docs");
 const output = join(root, ".docs-site");
 const prefix = "/articollab/";
 const pages = ["README.md", "quick-start.md", "concepts.md", "collections.md",
-  "transactions.md", "server-wire.md", "recovery.md", "reference.md", "examples.md", "faq.md"];
+  "transactions.md", "server-wire.md", "recovery.md", "reference.md", "examples.md", "development.md", "faq.md"];
 const files = ["index.html", "_sidebar.md", ".nojekyll", ...pages];
 const execute = promisify(execFile);
 
@@ -29,18 +29,14 @@ export async function buildDocs(): Promise<void> {
     assert.ok(files.includes(name), `Unexpected staging asset: ${name}`);
     await requireRegular(join(output, name));
   }
-  const sourceFiles = files.filter((name) => !["reference.md", "examples.md", ".nojekyll"].includes(name));
+  const sourceFiles = files.filter((name) => !["examples.md", ".nojekyll"].includes(name));
   assert.deepEqual((await readdir(source)).sort(), [...sourceFiles].sort(), "Keep docs assets on the allowlist");
   for (const name of sourceFiles) {
     await requireRegular(join(source, name));
     await copyFile(join(source, name), join(output, name));
   }
-  const reference = (await readFile(join(root, "README.md"), "utf8"))
-    .replaceAll("https://github.com/EastSun5566/articollab/blob/main/examples/README.md", "examples.md")
-    .replace("That guide is repository-only and requires access while the repository is private;", "This staged guide is available here without private repository access;");
   const examples = (await readFile(join(root, "examples/README.md"), "utf8"))
-    .replaceAll("../README.md", "reference.md");
-  await writeFile(join(output, "reference.md"), reference);
+    .replaceAll("../docs/reference.md", "reference.md");
   await writeFile(join(output, "examples.md"), examples);
   await writeFile(join(output, ".nojekyll"), "");
   console.log("Staged docs in .docs-site/");

@@ -8,7 +8,7 @@ No. The server orders every new authoritative batch. Clients edit optimistically
 
 ## Can I install it from npm?
 
-Not yet. `articollab@0.1.0-beta.0` is prepared for public beta publication. Until registry publication is confirmed, use a built checkout or local tarball. After confirmation, use `pnpm add articollab@beta`. The source repository remains private; a public npm package does not grant repository access.
+Yes. The first beta, `articollab@0.1.0-beta.0`, is available with `pnpm add articollab@beta`. The source repository remains private; a public npm package does not grant repository access.
 
 ## Why do nested object edits not synchronize?
 
@@ -40,4 +40,4 @@ There is no rich text, presence, undo, cursor, bulk List editing, move, automati
 
 The local preview does not need GitHub Pages. Deployment runs only after checks pass, on a main push or manual run with the repository variable `PAGES_ENABLED=true`. The workflow does not enable Pages automatically. Before enabling deployment, check your GitHub plan's support for private repositories and review the content that will be published.
 
-[Previous: Examples guide](examples.md) · [Back to Overview](README.md)
+[Previous: Development](development.md) · [Back to Overview](README.md)
