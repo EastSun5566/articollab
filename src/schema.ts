@@ -48,7 +48,7 @@ export function value<T extends JsonValue>(initialValue: T): ValueSchema<T> {
 
 /** Defines an initially empty list of immutable JSON-compatible values. */
 export function list<T extends JsonValue>(): ListSchema<T> {
-  return Object.freeze({ kind: "list" }) as ListSchema<T>;
+  return Object.freeze({ kind: "list" });
 }
 
 /** Defines an initially empty collaborative plain-text string. */

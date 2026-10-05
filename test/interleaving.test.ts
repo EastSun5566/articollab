@@ -26,6 +26,7 @@ function transformed(batch: Batch): readonly DocumentOperation<Shape>[] {
     switch (operation.type) {
       case "value/set": return { ...operation, value: -operation.value - 1000 };
       case "list/insert": return { ...operation, value: "server:" + operation.value };
+      // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
       case "text/insert": return { ...operation, value: [...operation.value].map((cp) => cp === "a" ? "A" : cp).join("") };
       default: return operation;
     }
@@ -66,6 +67,7 @@ function setup(historyLimit = 1000) {
           assert.equal(owned.seq, emitted.length + 1);
           for (const operation of owned.operations) {
             if (operation.type !== "list/insert" && operation.type !== "text/insert") continue;
+            // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
             const count = operation.type === "list/insert" ? 1 : [...operation.value].length;
             for (let offset = 0; offset < count; offset++) {
               const key = JSON.stringify([operation.path, operation.id.bunchId, operation.id.counter + offset]);
@@ -218,6 +220,7 @@ function setup(historyLimit = 1000) {
       assert.equal(target.doc.state.count.value, optimisticCount);
       assert.equal(target.doc.state.items.length, target.doc.state.items.toArray().length);
       assert.deepEqual([...target.doc.state.items], target.doc.state.items.toArray());
+      // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
       assert.equal(target.doc.state.body.length, [...target.doc.state.body.toString()].length);
       assert.equal([...target.doc.state.body].join(""), target.doc.state.body.toString());
     }

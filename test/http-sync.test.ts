@@ -1,3 +1,5 @@
+import { decodeClientBatch } from "../src/index.ts";
+import { decodeServerCommit } from "../src/index.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { request as httpRequest } from "node:http";
@@ -10,6 +12,8 @@ import {
   type ClientCheckpoint, type ServerDocument,
 } from "../src/index.ts";
 
+type Mutable<T> = T extends object ? { -readonly [K in keyof T]: Mutable<T[K]> } : T;
+
 type Shape = typeof Board.definition;
 const exampleUrl = new URL("../examples/http-sync.ts", import.meta.url).href;
 
@@ -19,7 +23,7 @@ async function host(t: TestContext, server: ServerDocument<Shape> = createServer
   return result;
 }
 
-function batch(clientId = "a", seq = 1, value = 1) {
+function makeBatch(clientId = "a", seq = 1, value = 1) {
   return { clientId, seq, operations: [{ type: "value/set", path: "count", value }] };
 }
 
@@ -106,7 +110,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     const peer = await connectHttpExampleClient(url, "peer");
     const client = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
       const response = await fetch(input, init);
-      if (!String(input).endsWith("/snapshot")) return response;
+      if (!(input instanceof Request ? input.url : input.toString()).endsWith("/snapshot")) return response;
       const message = await response.text();
       peer.doc.state.items.push("After snapshot");
       assert.equal(await peer.sync(), true);
@@ -235,7 +239,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     } });
     a.doc.state.count.value = 1;
     const before = a.doc.checkpoint();
-    assert.equal(await post(url, batch("b")), 204);
+    assert.equal(await post(url, makeBatch("b")), 204);
     assert.equal(await a.sync(), false);
     assert.equal(await a.sync(), false);
     assert.equal(requests, 2); // Snapshot and one catch-up only.
@@ -254,8 +258,8 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       ["/batches", { method: "POST", body: "{}" }, 415],
       ["/batches", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{" }, 400],
       ["/batches", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, 400],
-      ["/batches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...batch(), operations: [] }) }, 400],
-      ["/batches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...batch(), operations: [{ type: "value/set", path: "body", value: 1 }] }) }, 400],
+      ["/batches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...makeBatch(), operations: [] }) }, 400],
+      ["/batches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...makeBatch(), operations: [{ type: "value/set", path: "body", value: 1 }] }) }, 400],
     ];
     for (const since of ["", "?since=", "?since=-1", "?since=1.5", "?since=x", "?since=1e2", "?since=01",
       "?since=9007199254740992", "?since=1", "?since=0&since=0"]) {
@@ -270,19 +274,19 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       assert.equal(typeof error.error, "string");
       assert.equal(server.snapshot().serverSeq, 0);
     }
-    assert.equal(await post(url, batch("a", 2)), 409);
-    assert.equal(await post(url, { ...batch(), operations: [{ type: "list/delete", path: "items", id: { bunchId: "unknown", counter: 0 } }] }), 409);
-    assert.equal(await post(url, batch()), 204);
-    assert.equal(await post(url, batch("a", 1, 99)), 409);
-    assert.equal(await post(url, batch("a", 3)), 409);
-    assert.equal(await post(url, batch("a", 2, 2)), 204);
+    assert.equal(await post(url, makeBatch("a", 2)), 409);
+    assert.equal(await post(url, { ...makeBatch(), operations: [{ type: "list/delete", path: "items", id: { bunchId: "unknown", counter: 0 } }] }), 409);
+    assert.equal(await post(url, makeBatch()), 204);
+    assert.equal(await post(url, makeBatch("a", 1, 99)), 409);
+    assert.equal(await post(url, makeBatch("a", 3)), 409);
+    assert.equal(await post(url, makeBatch("a", 2, 2)), 204);
     assert.equal(server.snapshot().serverSeq, 2);
   });
 
   it("counts actual chunked UTF-8 bytes, completes 413 and accepts the exact 1 MiB boundary", async (t) => {
     const server = createServer(Board);
     const { url } = await host(t, server);
-    const oversized = JSON.stringify(batch("a", 1, 1)).replace('"value":1', '"value":"' + "😀".repeat(270_000) + '"');
+    const oversized = JSON.stringify(makeBatch("a", 1, 1)).replace('"value":1', '"value":"' + "😀".repeat(270_000) + '"');
     assert.ok(oversized.length < 1024 * 1024);
     assert.ok(Buffer.byteLength(oversized) > 1024 * 1024);
     const bytes = Buffer.from(oversized);
@@ -299,9 +303,11 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       request.end(bytes.subarray(600_000));
     });
     assert.equal(result.status, 413);
-    assert.equal(typeof JSON.parse(result.message).error, "string");
+    const errorBody: unknown = JSON.parse(result.message);
+    assert.ok(errorBody !== null && typeof errorBody === "object" && "error" in errorBody);
+    assert.equal(typeof errorBody.error, "string");
     assert.equal(server.snapshot().serverSeq, 0);
-    const message = JSON.stringify(batch());
+    const message = JSON.stringify(makeBatch());
     const response = await fetch(url + "/batches", {
       method: "POST", headers: { "Content-Type": "application/json; charset=utf-8" },
       body: message.padEnd(1024 * 1024, " "),
@@ -318,7 +324,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       return incoming.operations;
     } });
     const { url } = await host(t, server);
-    const message = JSON.stringify(batch("a", 1, 2));
+    const message = JSON.stringify(makeBatch("a", 1, 2));
     let request!: ReturnType<typeof httpRequest>;
     const response = new Promise<number>((resolve, reject) => {
       request = httpRequest(url + "/batches", { method: "POST", headers: { "Content-Type": "application/json" } }, (incoming) => {
@@ -335,7 +341,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     }));
     request.write(message.slice(0, 10));
     await connected;
-    assert.equal(await post(url, batch("b")), 204);
+    assert.equal(await post(url, makeBatch("b")), 204);
     request.end(message.slice(10));
     assert.equal(await response, 204);
     assert.deepEqual(seen, ["b", "a"]);
@@ -349,16 +355,16 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       return incoming.operations;
     } });
     const { url } = await host(t, server);
-    assert.equal(await post(url, batch()), 409);
+    assert.equal(await post(url, makeBatch()), 409);
     assert.equal(server.snapshot().serverSeq, 0);
     fail = false;
-    assert.equal(await post(url, batch()), 204);
+    assert.equal(await post(url, makeBatch()), 204);
     const snapshot = t.mock.method(server, "snapshot", () => { throw new Error("Private handler details"); });
     const response = await fetch(url + "/snapshot");
     assert.equal(response.status, 500);
     assert.deepEqual(await response.json(), { error: "Internal server error" });
     snapshot.mock.restore();
-    assert.equal(await post(url, batch("a", 2)), 204);
+    assert.equal(await post(url, makeBatch("a", 2)), 204);
   });
 
   it("retains pending after a lost POST response and lets the server replay the original batch", async (t) => {
@@ -423,8 +429,10 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
         requests++;
         const response = await fetch(input, init);
-        if (!String(input).includes("/commits?")) return response;
-        const commits = await response.json();
+        if (!(input instanceof Request ? input.url : input.toString()).includes("/commits?")) return response;
+        const raw: unknown = await response.json();
+        assert.ok(Array.isArray(raw));
+        const commits = raw.map((entry) => decodeServerCommit(Board, entry));
         let changed: unknown = commits;
         if (mode === "container") changed = {};
         if (mode === "wire") changed = [commits[0], { ...commits[1], extra: true }];
@@ -481,7 +489,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     t.after(() => release.resolve());
     let paused = false;
     const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
-      if (!paused && String(input).includes("/commits?")) {
+      if (!paused && (input instanceof Request ? input.url : input.toString()).includes("/commits?")) {
         paused = true;
         entered.resolve();
         await release.promise;
@@ -522,7 +530,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
         const response = await fetch(input, init);
         if (init?.method === "POST") { submitted = true; posts++; }
-        if (mode === "missing-ack" && submitted && String(input).includes("/commits?")) {
+        if (mode === "missing-ack" && submitted && (input instanceof Request ? input.url : input.toString()).includes("/commits?")) {
           await response.text();
           return new Response("[]", { status: 200 });
         }
@@ -574,8 +582,8 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     const requests: string[] = [];
     const posts: number[] = [];
     const restored = await connectHttpExampleClient(url, "a", { checkpoint, fetch: (input, init) => {
-      requests.push(String(input));
-      if (init?.method === "POST") posts.push(JSON.parse(String(init.body)).seq);
+      requests.push((input instanceof Request ? input.url : input.toString()));
+      if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
       return fetch(input, init);
     } });
     assert.deepEqual(requests, []);
@@ -591,7 +599,8 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     assert.equal(next.seq, 5);
     for (const operation of next.operations) {
       assert.ok(operation.type === "list/insert" || operation.type === "text/insert");
-      assert.equal(JSON.parse(operation.id.bunchId)[2], checkpoint.lastBunchSeqs[operation.path] + 1);
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
+      assert.equal((JSON.parse(operation.id.bunchId) as unknown[])[2], checkpoint.lastBunchSeqs[operation.path] + 1);
     }
     let serverChanges = 0;
     restored.doc.on("change", (event) => { if (event.origin === "server") serverChanges++; });
@@ -631,7 +640,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     assert.deepEqual(checkpoint.pendingBatches.map((batch) => batch.seq), [1, 2]);
     const posts: number[] = [];
     const restored = await connectHttpExampleClient(url, "a", { checkpoint, fetch: (input, init) => {
-      if (init?.method === "POST") posts.push(JSON.parse(String(init.body)).seq);
+      if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
       return fetch(input, init);
     } });
     assert.equal(await restored.sync(), true);
@@ -665,7 +674,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       for (const batch of checkpoint.pendingBatches.slice(0, 2)) assert.equal(await post(url, batch), 204);
       const posts: number[] = [];
       const restored = await connectHttpExampleClient(url, "a", { checkpoint, fetch: (input, init) => {
-        if (init?.method === "POST") posts.push(JSON.parse(String(init.body)).seq);
+        if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
         return fetch(input, init);
       } });
       assert.equal(await restored.sync(), true);
@@ -703,7 +712,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       });
     });
     // A pending write to count hides the first transform. A remote visible update triggers catch-up's listener.
-    assert.equal(await post(url, { ...batch("peer"), operations: [{ type: "list/insert", path: "items",
+    assert.equal(await post(url, { ...makeBatch("peer"), operations: [{ type: "list/insert", path: "items",
       before: null, id: { bunchId: "remote", counter: 0 }, value: "Remote" }] }), 204);
     assert.equal(await restored.sync(), true);
     assert.deepEqual(resolved, [1, 1, 2, 3, 4]);
@@ -728,11 +737,14 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     await assert.rejects(connectHttpExampleClient(url, "a", {
       checkpoint: { ...checkpoint, lastLocalSeq: -1 }, fetch: neverFetch,
     }), WireDecodeError);
-    const input = JSON.parse(JSON.stringify(checkpoint));
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
+    const input = JSON.parse(JSON.stringify(checkpoint)) as Mutable<ClientCheckpoint<Shape>>;
     const restored = await connectHttpExampleClient(url, "a", { checkpoint: input, fetch: neverFetch });
     input.snapshot.data.count = 99;
-    input.pendingBatches[0].operations[0].value = 99;
-    input.pendingBatches[0].operations[1].id.counter = 99;
+    assert.ok(input.pendingBatches[0]!.operations[0]!.type === "value/set");
+    assert.ok(input.pendingBatches[0]!.operations[1]!.type === "list/insert");
+    input.pendingBatches[0]!.operations[0]!.value = 99;
+    input.pendingBatches[0]!.operations[1]!.id.counter = 99;
     input.lastBunchSeqs.items = 99;
     input.pendingBatches.length = 0;
     assert.deepEqual(restored.doc.checkpoint(), checkpoint);
@@ -747,7 +759,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     const original = await connectHttpExampleClient(url, "a");
     original.doc.state.items.push("Keep pending");
     const checkpoint = roundTrip(original.doc.checkpoint());
-    assert.equal(await post(url, batch("peer")), 204);
+    assert.equal(await post(url, makeBatch("peer")), 204);
     let requests = 0;
     const restored = await connectHttpExampleClient(url, "a", { checkpoint, fetch: (input, init) => {
       requests++;
@@ -810,7 +822,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     const second = await host(t, restoredServer);
     const posts: number[] = [];
     const restored = await connectHttpExampleClient(second.url, "a", { checkpoint, fetch: (input, init) => {
-      if (init?.method === "POST") posts.push(JSON.parse(String(init.body)).seq);
+      if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
       return fetch(input, init);
     } });
     assert.equal(await restored.sync(), true);
@@ -832,7 +844,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       "if (!(await client.sync())) throw new Error('Unexpected history gap')",
       "console.log(JSON.stringify(client.doc.checkpoint()))",
     ].join(";\n");
-    const saved = JSON.parse(await child(t, code));
+    const saved = decodeClientCheckpoint(Board, JSON.parse(await child(t, code)));
     assert.deepEqual(saved.pendingBatches, []);
     assert.deepEqual(saved.snapshot, server.snapshot());
     assert.equal(await peer.sync(), true);
@@ -866,7 +878,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       "if (!(await client.sync())) throw new Error('Unexpected history gap')",
       "console.log(JSON.stringify(client.doc.checkpoint()))",
     ].join(";\n");
-    const saved = JSON.parse(await child(t, code));
+    const saved = decodeClientCheckpoint(Board, JSON.parse(await child(t, code)));
     assert.equal(saved.lastLocalSeq, 3);
     assert.deepEqual(saved.pendingBatches, []);
     assert.deepEqual(saved.snapshot, server.snapshot());

@@ -74,7 +74,7 @@ export function createCheckpointStore(directory: string) {
       const message = load(join(root, "server.json"));
       return message === null ? null : decodeServerCheckpoint(Board, JSON.parse(message));
     },
-    saveServer(checkpoint: ServerCheckpoint<Shape>): undefined {
+    saveServer(this: void, checkpoint: ServerCheckpoint<Shape>): undefined {
       save(join(root, "server.json"), checkpoint);
     },
     loadClient(clientId: string): ClientCheckpoint<Shape> | null {
@@ -84,7 +84,7 @@ export function createCheckpointStore(directory: string) {
       if (checkpoint.clientId !== clientId) throw new Error("Stored clientId does not match the requested client");
       return checkpoint;
     },
-    saveClient(checkpoint: ClientCheckpoint<Shape>): undefined {
+    saveClient(this: void, checkpoint: ClientCheckpoint<Shape>): undefined {
       save(clientPath(checkpoint.clientId), checkpoint);
     },
   };

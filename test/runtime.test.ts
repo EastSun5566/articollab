@@ -6,7 +6,7 @@ import {
   createServer,
   defineDocument,
   list,
-  value,
+  value as valueSchema,
   type ChangeEvent,
   type ClientBatch,
   type DocumentOperation,
@@ -17,7 +17,7 @@ import {
 } from "../src/index.ts";
 
 const Counter = defineDocument({
-  count: value(0),
+  count: valueSchema(0),
 });
 
 const Items = defineDocument({
@@ -36,9 +36,11 @@ function setup() {
   return { batches, doc };
 }
 
+// oxlint-disable-next-line eslint/no-constant-condition -- Compile-only negative type assertions must never execute.
 if (false) {
   const { doc } = setup();
   // @ts-expect-error Transactions must not continue after an await.
+  // oxlint-disable-next-line typescript/no-floating-promises -- Compile-only @ts-expect-error verifies async transactions are rejected; this block never executes.
   doc.transact(async () => {});
 
   createServer(Counter, {
@@ -522,7 +524,7 @@ describe("client runtime", () => {
           id: { bunchId: "invalid", counter: 0 },
         },
       ],
-    } as unknown as CounterCommit;
+    } as unknown as CounterCommit; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
 
     assert.throws(() => doc.receive(invalidCommit), /Unknown operation type: bogus/);
     assert.equal(doc.state.count.value, 0);
@@ -709,7 +711,7 @@ describe("server runtime", () => {
       clientId: "client-2",
       seq: 1,
       operations: [{ type: "value/set", path: "missing", value: 2 }],
-    } as unknown as ClientBatch<CounterOperation>;
+    } as unknown as ClientBatch<CounterOperation>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
     assert.throws(
       () => server.receive(unknownPathBatch),
       /Unknown document path: missing/
@@ -840,16 +842,18 @@ describe("server policy", () => {
     let mode: Mode = "throw";
     let server: ServerDocument<typeof Counter.definition>;
     server = createServer(Counter, {
+      // oxlint-disable-next-line typescript/consistent-return -- Exhaustive test-mode switch intentionally injects a non-array undefined result.
       resolve: ({ batch }) => {
         switch (mode) {
           case "throw":
             throw new Error("policy failed");
           case "non-array":
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
             return undefined as unknown as readonly CounterOperation[];
           case "invalid-path":
             return [
               { type: "value/set", path: "missing", value: 9 },
-            ] as unknown as readonly CounterOperation[];
+            ] as unknown as readonly CounterOperation[]; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
           case "unknown-type":
             return [
               {
@@ -857,7 +861,7 @@ describe("server policy", () => {
                 path: "count",
                 id: { bunchId: "invalid", counter: 0 },
               },
-            ] as unknown as readonly CounterOperation[];
+            ] as unknown as readonly CounterOperation[]; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
           case "reentrant":
             server.receive({
               clientId: "nested",
@@ -971,7 +975,7 @@ describe("snapshot hydration", () => {
     lateClient.state.count.value = 2;
 
     assert.equal(lateBatch?.seq, 1);
-    const secondCommit = server.receive(lateBatch!).commit;
+    const secondCommit = server.receive(lateBatch).commit;
     firstClient.receive(secondCommit);
     lateClient.receive(secondCommit);
 
@@ -1008,6 +1012,7 @@ describe("snapshot hydration", () => {
       () =>
         createFrom({
           serverSeq: 0,
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
           data: {} as { readonly count: number },
         }),
       /Missing snapshot path: count/
@@ -1017,7 +1022,7 @@ describe("snapshot hydration", () => {
         createFrom({
           serverSeq: 0,
           data: { count: 0, extra: true },
-        } as unknown as DocumentSnapshot<typeof Counter.definition>),
+        } as unknown as DocumentSnapshot<typeof Counter.definition>), // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
       /Unknown snapshot path: extra/
     );
   });

@@ -69,7 +69,7 @@ function decodeRecord(
     fail(path, `${name} must be a plain object`);
   }
 
-  const prototype = Object.getPrototypeOf(input);
+  const prototype: unknown = Object.getPrototypeOf(input);
   if (prototype !== Object.prototype && prototype !== null) {
     fail(path, `${name} must be a plain object`);
   }
@@ -87,6 +87,7 @@ function decodeRecord(
       fail([...path, key], `${name} fields must be enumerable data properties`);
     }
   }
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Plain enumerable data properties were checked above; values stay unknown.
   return input as WireRecord;
 }
 
@@ -226,7 +227,7 @@ function decodeJsonValue(
         array.map((value, index) =>
           decodeJsonValue(value, [...path, index], ancestors)
         )
-      ) as unknown as JsonValue;
+      ) as unknown as JsonValue; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Recursive JSON validation completed; freezing a JSON array preserves its payload type.
     }
 
     const record = decodeRecord(input, path, "JSON object");
@@ -334,7 +335,7 @@ function decodeOperation<S extends SchemaShape>(
         type,
         path: descriptor.path,
         value: decodeJsonValue(record.value, [...path, "value"]),
-      }) as DocumentOperation<S>;
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; business payload T remains the caller’s responsibility.
     }
     case "list/insert": {
       requireExactFields(record, path, [
@@ -351,7 +352,7 @@ function decodeOperation<S extends SchemaShape>(
         before: decodeOptionalElementId(record.before, [...path, "before"]),
         id: decodeElementId(record.id, [...path, "id"]),
         value: decodeJsonValue(record.value, [...path, "value"]),
-      }) as DocumentOperation<S>;
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; business payload T remains the caller’s responsibility.
     }
     case "list/delete": {
       requireExactFields(record, path, ["type", "path", "id"]);
@@ -360,7 +361,7 @@ function decodeOperation<S extends SchemaShape>(
         type,
         path: descriptor.path,
         id: decodeElementId(record.id, [...path, "id"]),
-      }) as DocumentOperation<S>;
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; business payload T remains the caller’s responsibility.
     }
     case "text/insert": {
       requireExactFields(record, path, [
@@ -380,6 +381,7 @@ function decodeOperation<S extends SchemaShape>(
       );
       assertSafeRangeEnd(
         id.counter,
+        // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
         [...value].length,
         [...path, "id", "counter"]
       );
@@ -389,7 +391,7 @@ function decodeOperation<S extends SchemaShape>(
         before: decodeOptionalElementId(record.before, [...path, "before"]),
         id,
         value,
-      }) as DocumentOperation<S>;
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; business payload T remains the caller’s responsibility.
     }
     case "text/delete": {
       requireExactFields(record, path, ["type", "path", "ranges"]);
@@ -411,10 +413,10 @@ function decodeOperation<S extends SchemaShape>(
         type,
         path: descriptor.path,
         ranges,
-      }) as DocumentOperation<S>;
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; business payload T remains the caller’s responsibility.
     }
     default:
-      fail([...path, "type"], `unknown operation type: ${type}`);
+      return fail([...path, "type"], `unknown operation type: ${type}`);
   }
 }
 
@@ -536,13 +538,15 @@ function decodeSavedIdList(
 
 function validateSnapshotCollection(
   kind: "list" | "text",
-  snapshot: ListSnapshotData<JsonValue> | TextSnapshotData,
+  snapshot: ListSnapshotData | TextSnapshotData,
   path: readonly PathSegment[]
 ): void {
   try {
     if (kind === "list") {
-      ListState.load(snapshot as ListSnapshotData<JsonValue>);
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The caller constructs this snapshot for the selected collection kind, then hydration validates it.
+      ListState.load(snapshot as ListSnapshotData);
     } else {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The caller constructs this snapshot for the selected collection kind, then hydration validates it.
       TextState.load(snapshot as TextSnapshotData);
     }
   } catch (error) {
@@ -554,7 +558,7 @@ function decodeSnapshotCollection(
   kind: "value" | "list" | "text",
   input: unknown,
   path: readonly PathSegment[]
-): JsonValue | ListSnapshotData<JsonValue> | TextSnapshotData {
+): JsonValue | ListSnapshotData | TextSnapshotData {
   if (kind === "value") return decodeJsonValue(input, path);
 
   const record = decodeRecord(input, path, `${kind} snapshot`);
@@ -565,7 +569,7 @@ function decodeSnapshotCollection(
       [...path, "values"],
       "List snapshot values"
     );
-    const snapshot: ListSnapshotData<JsonValue> = Object.freeze({
+    const snapshot: ListSnapshotData = Object.freeze({
       idList: decodeSavedIdList(record.idList, [...path, "idList"]),
       values: Object.freeze(
         inputValues.map((value, index) =>
@@ -674,7 +678,7 @@ function decodeSnapshotAt<S extends SchemaShape>(
         ),
       ])
     )
-  ) as DocumentSnapshotData<S>;
+  ) as DocumentSnapshotData<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Every schema path and collection payload has been decoded before restoring the mapped type.
 
   return Object.freeze({
     serverSeq,
@@ -713,6 +717,7 @@ function localBunchSeq(
   ) {
     return undefined;
   }
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Number.isSafeInteger and bounds above validate this parsed allocation counter.
   return parts[2] as number;
 }
 
@@ -774,6 +779,7 @@ export function decodeClientCheckpoint<S extends SchemaShape>(
     )
   );
   for (const path of allocationPaths) {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Allocation paths contain only List/Text descriptors in this validated snapshot.
     const data = snapshot.data[path] as ListSnapshotData | TextSnapshotData;
     for (const range of data.idList) {
       const seq = localBunchSeq(range.bunchId, clientId, path);
@@ -821,6 +827,7 @@ export function decodeClientCheckpoint<S extends SchemaShape>(
         }
         const key = JSON.stringify([operation.path, operation.id.bunchId]);
         const ranges = insertedRanges.get(key) ?? [];
+        // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
         const count = operation.type === "list/insert" ? 1 : [...operation.value].length;
         ranges.push({ start: operation.id.counter,
           end: operation.id.counter + count - 1, path: operationPath });
@@ -851,6 +858,7 @@ export function decodeClientCheckpoint<S extends SchemaShape>(
     snapshot,
     lastLocalSeq,
     pendingBatches,
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The validated allocation paths and safe counters match the schema’s List/Text keys.
     lastBunchSeqs: allocations as ClientCheckpoint<S>["lastBunchSeqs"],
   });
 }

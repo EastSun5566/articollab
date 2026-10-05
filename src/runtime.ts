@@ -310,6 +310,7 @@ function freezeOperations<TOperation extends Operation>(
   operations: readonly TOperation[]
 ): readonly TOperation[] {
   return Object.freeze(
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Copying/freezing preserves the input operation discriminator, path and payload.
     operations.map((operation) => freezeOperation(operation) as TOperation)
   );
 }
@@ -386,6 +387,7 @@ export class ClientDocument<S extends SchemaShape> {
     const publicState: Partial<
       Record<keyof S, Value<JsonValue> | List<JsonValue> | Text>
     > = {};
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The fixed schema’s own keys are the document paths.
     for (const path of Object.keys(schema.definition) as Array<
       Extract<keyof S, string>
     >) {
@@ -437,6 +439,7 @@ export class ClientDocument<S extends SchemaShape> {
       this.collections.set(path, runtime);
       publicState[path] = runtime;
     }
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The loop builds one matching runtime collection for every schema descriptor.
     this.state = Object.freeze(publicState) as DocumentState<S>;
   }
 
@@ -457,7 +460,7 @@ export class ClientDocument<S extends SchemaShape> {
             : []
         )
       )
-    ) as ClientCheckpoint<S>["lastBunchSeqs"];
+    ) as ClientCheckpoint<S>["lastBunchSeqs"]; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Only List/Text runtimes contribute their allocation counters.
     return Object.freeze({
       clientId: this.clientId,
       snapshot: saveSnapshot<S>(this.authoritativeStates, this.lastServerSeq),
@@ -601,7 +604,7 @@ export class ClientDocument<S extends SchemaShape> {
 
     const operations = Object.freeze(
       this.operations.splice(0)
-    ) as readonly DocumentOperation<S>[];
+    ) as readonly DocumentOperation<S>[]; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Operations originate from this schema’s collection runtimes; copying preserves their wire types.
     const batch: ClientBatch<DocumentOperation<S>> = Object.freeze({
       clientId: this.clientId,
       seq: this.nextSeq++,
@@ -656,7 +659,7 @@ export class ServerDocument<S extends SchemaShape> {
         : restoreServerCheckpoint(schema, options.checkpoint);
     this.authoritativeStates =
       restored?.states ?? initialStates(schema, undefined);
-    this.replays = restored?.replays ?? new Map();
+    this.replays = restored?.replays ?? new Map<string, ServerReplayEntry<DocumentOperation<S>>>();
     this.history =
       historyLimit === 0 ? [] : (restored?.history ?? []).slice(-historyLimit);
     this.nextServerSeq = restored?.nextServerSeq ?? 1;
@@ -757,7 +760,7 @@ export class ServerDocument<S extends SchemaShape> {
         throw new Error("Server resolver must return an array of operations");
       }
 
-      const operations = freezeOperations(resolvedOperations);
+      const operations = freezeOperations<DocumentOperation<S>>(resolvedOperations);
       const nextAuthoritativeStates = new Map(this.authoritativeStates);
       applyOperations(nextAuthoritativeStates, operations);
 

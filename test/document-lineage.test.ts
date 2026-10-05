@@ -1,10 +1,11 @@
+import { decodeClientBatch } from "../src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { before, describe, it, type TestContext } from "node:test";
+import { before as setup, describe, it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -16,7 +17,7 @@ import { Board } from "../examples/resume.ts";
 
 type Shape = typeof Board.definition;
 type Record = { documentId: string; checkpoint: ClientCheckpoint<Shape> };
-type Storage = { getItem(key: string): string | null; setItem(key: string, value: string): void };
+type Storage = { getItem(this: void, key: string): string | null; setItem(key: string, value: string): void };
 type Connection = { doc: ClientDocument<Shape>; documentId: string; sync(): Promise<boolean>; rejectPending(): Promise<boolean> };
 const key = "articollab:browser-reload-recovery:checkpoint";
 const header = "X-Articollab-Document-Id";
@@ -55,10 +56,11 @@ async function host(t: TestContext, port = 0) {
 }
 
 describe("browser recovery document lineage", { timeout: 30_000 }, () => {
-  before(async () => {
+  setup(async () => {
     const compiler = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
     await execute(process.execPath, [compiler, "-p", "tsconfig.build.json"], { cwd: root, timeout: 15_000 });
-    recovery = await import(new URL("../examples/browser-reload-recovery/recovery.js", import.meta.url).href);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.
+    recovery = (await import(new URL("../examples/browser-reload-recovery/recovery.js", import.meta.url).href)) as typeof recovery;
   });
 
   it("rejects missing and wrong request identities before runtime, while preserving cross-entry retry", async (t) => {
@@ -137,7 +139,7 @@ describe("browser recovery document lineage", { timeout: 30_000 }, () => {
         const injected: typeof fetch = async (input, init) => {
           const response = await fetch(input, init);
           if (init?.method === "POST") posts++;
-          const path = new URL(String(input)).pathname;
+          const path = new URL((input instanceof Request ? input.url : input.toString())).pathname;
           if ((stage === "snapshot" && path === "/snapshot") || (stage === "catch-up" && path === "/commits") ||
             (stage === "POST" && init?.method === "POST")) {
             const headers = new Headers(response.headers);
@@ -237,7 +239,7 @@ describe("browser recovery document lineage", { timeout: 30_000 }, () => {
     http = await startBrowserReloadRecoveryServer({ directory: path, port: Number(new URL(origin).port) });
     const posts: number[] = [];
     const b = await recovery.connectPersistentBrowserClient(origin, { storage, fetch: async (input, init) => {
-      if (init?.method === "POST") posts.push(JSON.parse(String(init.body)).seq);
+      if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
       return fetch(input, init);
     } });
     assert.equal(b.documentId, a.documentId);
@@ -261,7 +263,7 @@ describe("browser recovery document lineage", { timeout: 30_000 }, () => {
       getItem: storage.getItem, setItem(name, value) { if (fail) throw failure; storage.setItem(name, value); },
     }, fetch: async (input, init) => {
       const response = await fetch(input, init);
-      if (new URL(String(input)).pathname === "/commits") {
+      if (new URL((input instanceof Request ? input.url : input.toString())).pathname === "/commits") {
         reached(); await gate;
         const headers = new Headers(response.headers); headers.delete(header);
         return new Response(response.body, { status: response.status, headers });

@@ -27,7 +27,8 @@ describe("browser core smoke example", { timeout: 30_000 }, () => {
     // Build once before the dynamic import so pnpm test also works without an existing dist.
     const compiler = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
     await execute(process.execPath, [compiler, "-p", "tsconfig.build.json"], { cwd: root, timeout: 15_000 });
-    smoke = await import(smokeUrl);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.
+    smoke = (await import(smokeUrl)) as typeof smoke;
   });
 
   it("checks optimistic delivery, JSON restore and blocked recovery through built ESM", () => {
@@ -66,7 +67,8 @@ describe("browser core smoke example", { timeout: 30_000 }, () => {
     const html = readFileSync(cases[0][1], "utf8");
     const map = html.match(/<script type="importmap">\s*([\s\S]*?)\s*<\/script>/);
     assert.ok(map);
-    assert.deepEqual(JSON.parse(map[1]!).imports, { articollab: "/dist/index.js",
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
+    assert.deepEqual((JSON.parse(map[1]!) as { imports: unknown }).imports, { articollab: "/dist/index.js",
       articulated: "/vendor/articulated/index.js", "sparse-array-rled": "/vendor/sparse-array-rled/index.js" });
     assert.ok(html.indexOf('type="importmap"') < html.indexOf('type="module"'));
   });

@@ -22,8 +22,8 @@ export async function startBrowserReloadRecoveryServer(options: {
   const store = options.directory === undefined ? undefined : createCheckpointStore(options.directory);
   const record = store?.loadRecoveryServer() ?? null;
   const documentId = record?.documentId ?? crypto.randomUUID();
-  const checkpoint = record?.checkpoint ?? null;
-  const server = createServer(Board, checkpoint === null ? {} : { checkpoint });
+  const restoredCheckpoint = record?.checkpoint ?? null;
+  const server = createServer(Board, restoredCheckpoint === null ? {} : { checkpoint: restoredCheckpoint });
   return startHttpExampleServer(server, { serveAsset, documentId,
     ...(options.port === undefined ? {} : { port: options.port }),
     ...(store === undefined ? {} : { saveServerCheckpoint: (checkpoint) => store.saveRecoveryServer({ documentId, checkpoint }) }),

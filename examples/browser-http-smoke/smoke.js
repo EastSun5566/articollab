@@ -7,6 +7,7 @@ import { createHttpSyncController, readHttpResponse } from "../http-sync-control
 
 export const Board = defineDocument({
   count: value(0),
+  // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- Pins string elements for independent tsc --checkJs; lint inference is not the contract.
   items: /** @type {import("articollab").ListSchema<string>} */ (list()),
   body: text(),
 });
@@ -19,7 +20,7 @@ export const Board = defineDocument({
 function check(condition, message) { if (!condition) throw new Error(message); }
 /** @param {unknown} input */
 function encoded(input) {
-  return JSON.stringify(input, (_key, entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry)
+  return JSON.stringify(input, (_key, /** @type {unknown} */ entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry)
     ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : entry);
 }
 /** @param {unknown} actual @param {unknown} expected @param {string} message */
@@ -49,7 +50,7 @@ export async function connectBrowserHttpClient(url, clientId, options = {}) {
     catch (error) { throw controller.stop(error); }
   }
   saveClient(); // Save fresh/restored state before returning the connection.
-  return { doc, sync: controller.sync, rejectPending: controller.rejectPending };
+  return { doc, sync: () => controller.sync(), rejectPending: () => controller.rejectPending() };
 }
 
 /** @param {Client} doc */
@@ -125,6 +126,7 @@ export async function runBrowserHttpSmoke(url, options = {}) {
     });
     check(a.doc.state.count.value === baseline.data.count + 1 && b.doc.state.count.value === baseline.data.count + 2,
       "local mixed values were not optimistic");
+    // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
     check(a.doc.state.body.length === [...baseline.data.body.value].length + 2, "emoji was not one code point");
     same(await snapshot(), baseline, "local edits submitted automatically");
     await record(mixed, "Both clients optimistic; server unchanged", a.doc, b.doc);
@@ -136,6 +138,7 @@ export async function runBrowserHttpSmoke(url, options = {}) {
     const final = await converged([a.doc, b.doc]);
     check(final.data.count === baseline.data.count + 2, "server order did not select the peer value");
     check(final.data.items.values.length === baseline.data.items.values.length + 2, "concurrent list insert was lost");
+    // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
     check([...final.data.body.value].length === [...baseline.data.body.value].length + 3, "concurrent text insert was lost");
     await record(mixed, "Converged through ordered HTTP acknowledgements", a.doc, b.doc);
   }
@@ -152,6 +155,7 @@ export async function runBrowserHttpSmoke(url, options = {}) {
     check(await a.sync() && await b.sync(), "tombstone setup failed");
     a.doc.transact(() => {
       a.doc.state.items.delete(baseline.data.items.values.length);
+      // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
       a.doc.state.body.delete([...baseline.data.body.value].length, 2);
     });
     check(await a.sync() && await b.sync(), "tombstone deletion failed");
@@ -221,6 +225,7 @@ export async function runBrowserHttpSmoke(url, options = {}) {
     const final = await converged([a.doc, b.doc]);
     check(final.data.count === baseline.data.count + 6, "recovered edit was lost");
     check(final.data.items.values.length === baseline.data.items.values.length + 2, "cancelled list effects survived");
+    // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
     check([...final.data.body.value].length === [...baseline.data.body.value].length + 7, "cancelled text effects survived");
     await record(rejected, "Recovered writer and peer converged", a.doc, b.doc);
   }

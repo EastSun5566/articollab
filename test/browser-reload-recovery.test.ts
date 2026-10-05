@@ -1,9 +1,11 @@
+import { decodeSnapshot } from "../src/index.ts";
+import { decodeClientBatch } from "../src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { before, describe, it, type TestContext } from "node:test";
+import { before as setup, describe, it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -22,7 +24,7 @@ type Shape = typeof Board.definition;
 type Checkpoint = ClientCheckpoint<Shape>;
 type Record = { documentId: string; checkpoint: Checkpoint };
 type Client = ClientDocument<Shape>;
-type Storage = { getItem(key: string): string | null; setItem(key: string, value: string): void };
+type Storage = { getItem(this: void, key: string): string | null; setItem(key: string, value: string): void };
 type Connection = { doc: Client; documentId: string; sync(): Promise<boolean>; rejectPending(): Promise<boolean> };
 let recovery: {
   createSessionCheckpointStore(storage: Storage): { load(): Record | null; save(record: Record): undefined };
@@ -36,7 +38,7 @@ function memory() {
   let message: string | null = null;
   const writes: string[] = [];
   return {
-    getItem(name: string) { assert.equal(name, key); return message; },
+    getItem(this: void, name: string) { assert.equal(name, key); return message; },
     setItem(name: string, value: string) { assert.equal(name, key); message = value; writes.push(value); },
     writes,
   };
@@ -63,11 +65,13 @@ function visible(doc: Client) {
 }
 
 describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
-  before(async () => {
+  setup(async () => {
     const compiler = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
     await execute(process.execPath, [compiler, "-p", "tsconfig.build.json"], { cwd: root, timeout: 15_000 });
-    recovery = await import(recoveryUrl);
-    browser = await import(browserUrl);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.
+    recovery = (await import(new URL("../examples/browser-reload-recovery/recovery.js", import.meta.url).href)) as typeof recovery;
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.
+    browser = (await import(browserUrl)) as typeof browser;
   });
 
   it("saves fresh and offline mixed checkpoints, then restores without requests or submissions", async (t) => {
@@ -75,7 +79,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
     const storage = memory();
     const paths: string[] = [];
     const a = await recovery.connectPersistentBrowserClient(url, { storage, fetch: async (input, init) => {
-      paths.push(new URL(String(input)).pathname);
+      paths.push(new URL((input instanceof Request ? input.url : input.toString())).pathname);
       return fetch(input, init);
     } });
     assert.deepEqual(paths, ["/snapshot"]);
@@ -146,7 +150,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
     assert.deepEqual(recovery.createSessionCheckpointStore(storage).load()!.checkpoint.pendingBatches.map((batch) => batch.seq), [1, 2]);
     const posts: number[] = [];
     const b = await recovery.connectPersistentBrowserClient(url, { storage, fetch: async (input, init) => {
-      if (init?.method === "POST") posts.push(JSON.parse(String(init.body)).seq);
+      if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
       return fetch(input, init);
     } });
     assert.equal(await b.sync(), true);
@@ -246,7 +250,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
     const paths: string[] = [];
     await assert.rejects(recovery.connectPersistentBrowserClient(url, { storage: {
       getItem: () => null, setItem() { throw writeFailure; },
-    }, fetch: async (input, init) => { paths.push(new URL(String(input)).pathname); return fetch(input, init); } }),
+    }, fetch: async (input, init) => { paths.push(new URL((input instanceof Request ? input.url : input.toString())).pathname); return fetch(input, init); } }),
     (error: unknown) => error === writeFailure);
     assert.deepEqual(paths, ["/snapshot"]);
     assert.equal(server.snapshot().serverSeq, 0);
@@ -322,7 +326,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
       assert.equal(await response.text(), readFileSync(join(root, file), "utf8"));
     }
     const response = await fetch(http.url + "/snapshot");
-    assert.equal((await response.json()).serverSeq, 0);
+    assert.equal(decodeSnapshot(Board, await response.json()).serverSeq, 0);
     for (const path of ["/src/index.ts", "/package.json", "/dist/index.d.ts", "/unknown"]) {
       const missing = await fetch(http.url + path);
       assert.equal(missing.status, 404);

@@ -1,3 +1,5 @@
+import { decodeSnapshot } from "../src/index.ts";
+import { Board } from "../examples/resume.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -45,7 +47,8 @@ describe("browser HTTP smoke example", { timeout: 30_000 }, () => {
   before(async () => {
     const compiler = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
     await execute(process.execPath, [compiler, "-p", "tsconfig.build.json"], { cwd: root, timeout: 15_000 });
-    smoke = await import(smokeUrl);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.
+    smoke = (await import(smokeUrl)) as typeof smoke;
   });
 
   it("runs three mixed scenarios through HTTP and converges the built clients", async (t) => {
@@ -61,7 +64,7 @@ describe("browser HTTP smoke example", { timeout: 30_000 }, () => {
     assert.deepEqual(blocked.a.pending, [2, 3]);
     assert.ok(blocked.a.conflict);
     const response = await fetch(url + "/snapshot");
-    const snapshot = await response.json();
+    const snapshot = decodeSnapshot(Board, await response.json());
     assert.equal(snapshot.serverSeq, reports[2]!.stages.at(-1)!.server.serverSeq);
   });
 
@@ -85,7 +88,7 @@ describe("browser HTTP smoke example", { timeout: 30_000 }, () => {
     checkReports(await smoke.runBrowserHttpSmoke(url, { fetch: async function(this: void, input, init) {
       assert.equal(this, undefined); // Match native browser fetch's receiver contract.
       const response = await fetch(input, init);
-      requests.push({ path: new URL(String(input)).pathname, method: init?.method ?? "GET", status: response.status });
+      requests.push({ path: new URL((input instanceof Request ? input.url : input.toString())).pathname, method: init?.method ?? "GET", status: response.status });
       return response;
     } }));
     assert.deepEqual(new Set(requests.map((entry) => entry.path)), new Set(["/snapshot", "/commits", "/batches", "/rejections"]));
@@ -117,7 +120,8 @@ describe("browser HTTP smoke example", { timeout: 30_000 }, () => {
     const html = readFileSync(cases[0][1], "utf8");
     const map = html.match(/<script type="importmap">\s*([\s\S]*?)\s*<\/script>/);
     assert.ok(map);
-    assert.deepEqual(JSON.parse(map[1]!).imports, { articollab: "/dist/index.js",
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
+    assert.deepEqual((JSON.parse(map[1]!) as { imports: unknown }).imports, { articollab: "/dist/index.js",
       articulated: "/vendor/articulated/index.js", "sparse-array-rled": "/vendor/sparse-array-rled/index.js" });
     assert.ok(html.indexOf('type="importmap"') < html.indexOf('type="module"'));
     for (const path of ["/src/index.ts", "/package.json", "/dist/index.d.ts", "/dist/index.js.map",
@@ -132,7 +136,7 @@ describe("browser HTTP smoke example", { timeout: 30_000 }, () => {
     await wrong.text();
     const next = await fetch(url + "/snapshot");
     assert.equal(next.status, 200);
-    assert.equal((await next.json()).serverSeq, 0);
+    assert.equal(decodeSnapshot(Board, await next.json()).serverSeq, 0);
   });
 
   it("propagates the first response failure and does not run later scenarios", async (t) => {
@@ -150,7 +154,7 @@ describe("browser HTTP smoke example", { timeout: 30_000 }, () => {
     } }), (error: unknown) => error === failure);
     assert.equal(posts, 1);
     const response = await fetch(url + "/snapshot");
-    assert.equal((await response.json()).serverSeq, 1); // Completed server work is not rolled back.
+    assert.equal(decodeSnapshot(Board, await response.json()).serverSeq, 1); // Completed server work is not rolled back.
   });
 
   it("imports without DOM access, HTTP requests, listening or smoke side effects", async () => {

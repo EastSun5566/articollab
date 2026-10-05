@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { decodeClientBatch, decodeServerCommit } from "../src/index.ts";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -52,6 +53,7 @@ describe("file-backed checkpoint recovery example", () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "");
     assert.equal(result.stderr, "");
+    // oxlint-disable-next-line eslint/no-constant-condition -- Compile-only negative type assertions must never execute.
     if (false) {
       createAsyncExampleNetwork(createServer(Board), {
         // @ts-expect-error Saving callbacks must finish synchronously.
@@ -258,10 +260,10 @@ describe("file-backed checkpoint recovery example", () => {
         },
         transfer: async (direction, id, message) => {
           if (direction === "client-to-server") {
-            const batch = JSON.parse(message);
+            const batch = decodeClientBatch(Board, JSON.parse(message));
             assert.ok(store.loadClient(id)!.pendingBatches.some((pending) => pending.seq === batch.seq));
           } else {
-            assert.ok(store.loadServer()!.snapshot.serverSeq >= JSON.parse(message).serverSeq);
+            assert.ok(store.loadServer()!.snapshot.serverSeq >= decodeServerCommit(Board, JSON.parse(message)).serverSeq);
           }
           return message;
         },

@@ -1,3 +1,4 @@
+import { decodeClientBatch } from "../src/index.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -19,7 +20,7 @@ async function host(t: TestContext, server: ServerDocument<Shape>, options: Host
   return result;
 }
 
-function batch(clientId = "a", seq = 1, value = 1) {
+function makeBatch(clientId = "a", seq = 1, value = 1) {
   return { clientId, seq, operations: [{ type: "value/set", path: "count", value }] };
 }
 
@@ -106,8 +107,8 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
     const { url } = await host(t, server);
     const rejected: number[] = [];
     const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
-      if (String(input).endsWith("/rejections")) {
-        rejected.push(JSON.parse(String(init!.body)).seq);
+      if ((input instanceof Request ? input.url : input.toString()).endsWith("/rejections")) {
+        rejected.push(decodeClientBatch(Board, JSON.parse(typeof init?.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
         // A remote commit races the rejection after the initial catch-up response.
         assert.equal(await post(url, "/batches", { clientId: "peer", seq: 1, operations: [
           { type: "list/insert", path: "items", before: null, id: { bunchId: "peer-list", counter: 0 }, value: "Peer" },
@@ -154,7 +155,7 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
     const { url } = await host(t, server);
     const a = await connectHttpExampleClient(url, "a");
     a.doc.state.items.push("A");
-    assert.equal(await post(url, "/batches", batch("peer")), 204);
+    assert.equal(await post(url, "/batches", makeBatch("peer")), 204);
     const guards: Promise<void>[] = [];
     a.doc.on("change", (event) => {
       if (event.origin !== "server" || event.commit.source.clientId !== "peer") return;
@@ -180,7 +181,7 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
       t.after(() => release.resolve());
       let hold = true;
       const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
-        if (hold && String(input).includes("/commits?")) {
+        if (hold && (input instanceof Request ? input.url : input.toString()).includes("/commits?")) {
           hold = false;
           entered.resolve();
           await release.promise;
@@ -228,7 +229,7 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
     } });
     a.doc.state.count.value = 2;
     const saved = a.doc.checkpoint();
-    assert.equal(await post(url, "/batches", batch("peer")), 204);
+    assert.equal(await post(url, "/batches", makeBatch("peer")), 204);
     assert.equal(await a.rejectPending(), false);
     assert.equal(await a.sync(), false);
     assert.equal(await a.rejectPending(), false);
@@ -250,10 +251,11 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
     ] as const) {
       const response = await fetch(url + "/rejections", init);
       assert.equal(response.status, status);
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Test checks the error envelope from this fixture host; no data enters document runtime.
       assert.equal(typeof (await response.json() as { error: string }).error, "string");
     }
-    assert.equal(await post(url, "/rejections", { ...batch(), operations: [{ type: "value/set", path: "items", value: 1 }] }), 400);
-    assert.equal(await post(url, "/rejections", batch("a", 2)), 409);
+    assert.equal(await post(url, "/rejections", { ...makeBatch(), operations: [{ type: "value/set", path: "items", value: 1 }] }), 400);
+    assert.equal(await post(url, "/rejections", makeBatch("a", 2)), 409);
     assert.equal(server.snapshot().serverSeq, 0);
     const invalidState = { clientId: "a", seq: 1, operations: [
       { type: "list/insert", path: "items", before: { bunchId: "unknown", counter: 0 },
@@ -264,9 +266,9 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
     assert.equal(await post(url, "/rejections", invalidState), 204);
     assert.equal(await post(url, "/batches", invalidState), 204);
     assert.equal(await post(url, "/rejections", invalidState), 204);
-    assert.equal(await post(url, "/rejections", batch()), 409); // Same sequence, different original payload.
-    assert.equal(await post(url, "/batches", batch("b")), 204);
-    assert.equal(await post(url, "/rejections", batch("b")), 204);
+    assert.equal(await post(url, "/rejections", makeBatch()), 409); // Same sequence, different original payload.
+    assert.equal(await post(url, "/batches", makeBatch("b")), 204);
+    assert.equal(await post(url, "/rejections", makeBatch("b")), 204);
     assert.deepEqual(saves, [0, 1, 2]);
     assert.equal(resolves, 2); // Failed stateful receive + the accepted b batch; reject/retry skip it.
     assert.equal(server.snapshot().data.count, 1);
@@ -281,7 +283,7 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
       const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
         if (init?.method === "POST") posts++;
         const response = await fetch(input, init);
-        if (!String(input).includes("/commits?") || fault === "listener") return response;
+        if (!(input instanceof Request ? input.url : input.toString()).includes("/commits?") || fault === "listener") return response;
         await response.text();
         return new Response(fault === "malformed" ? "{" : fault === "no-ack" ? "[]" : JSON.stringify([
           { serverSeq: 2, source: { clientId: "peer", seq: 1 }, operations: [] },
@@ -330,7 +332,7 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
         },
         fetch: async (input, init) => {
           const response = await fetch(input, init);
-          if (fault === "lost-response" && String(input).endsWith("/rejections")) {
+          if (fault === "lost-response" && (input instanceof Request ? input.url : input.toString()).endsWith("/rejections")) {
             await response.text();
             throw failure;
           }

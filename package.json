@@ -22,6 +22,7 @@
     "LICENSE"
   ],
   "scripts": {
+    "lint": "oxlint --deny-warnings --report-unused-disable-directives",
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json",
     "test": "node --test test/*.test.ts",
@@ -33,6 +34,8 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "oxlint": "1.87.0",
+    "oxlint-tsgolint": "7.0.2003",
     "typescript": "^7.0.2"
   }
 }

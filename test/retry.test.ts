@@ -9,21 +9,21 @@ import {
   defineDocument,
   list,
   text,
-  value,
+  value as valueSchema,
   type ClientBatch,
   type DocumentOperation,
   type ServerReceipt,
 } from "../src/index.ts";
 
 const Board = defineDocument({
-  count: value(0),
+  count: valueSchema(0),
   items: list<string>(),
   body: text(),
 });
 type BoardOperation = DocumentOperation<typeof Board.definition>;
 type BoardBatch = ClientBatch<BoardOperation>;
 
-const batch = (clientId: string, seq: number, count: number): BoardBatch => ({
+const makeBatch = (clientId: string, seq: number, count: number): BoardBatch => ({
   clientId,
   seq,
   operations: [{ type: "value/set", path: "count", value: count }],
@@ -124,25 +124,25 @@ describe("server retry", () => {
 
   it("retains only the last batch per client and rejects stale or conflicting retries", () => {
     const server = createServer(Board);
-    const first = server.receive(batch("a", 1, 1));
-    server.receive(batch("b", 1, 2));
-    assert.strictEqual(server.receive(batch("a", 1, 1)).commit, first.commit);
+    const first = server.receive(makeBatch("a", 1, 1));
+    server.receive(makeBatch("b", 1, 2));
+    assert.strictEqual(server.receive(makeBatch("a", 1, 1)).commit, first.commit);
     const checkpoint = server.checkpoint();
-    for (const invalid of [batch("a", 1, 9), batch("a", 3, 3), batch("new", 2, 4)]) {
+    for (const invalid of [makeBatch("a", 1, 9), makeBatch("a", 3, 3), makeBatch("new", 2, 4)]) {
       assert.throws(() => server.receive(invalid));
       assert.deepEqual(server.checkpoint(), checkpoint);
     }
-    const second = server.receive(batch("a", 2, 3));
+    const second = server.receive(makeBatch("a", 2, 3));
     assert.equal(second.commit.serverSeq, 3);
     assert.equal(server.checkpoint().replays.length, 2);
-    assert.throws(() => server.receive(batch("a", 1, 1)), /Expected client sequence 3/);
-    assert.strictEqual(server.receive(batch("a", 2, 3)).commit, second.commit);
+    assert.throws(() => server.receive(makeBatch("a", 1, 1)), /Expected client sequence 3/);
+    assert.strictEqual(server.receive(makeBatch("a", 2, 3)).commit, second.commit);
     assert.deepEqual(checkpoint.snapshot.data.count, 2); // Previous checkpoint stays unchanged.
     assert.equal(checkpoint.replays.find((entry) => entry.batch.clientId === "a")!.batch.seq, 1);
-    assert.equal(server.receive(batch("new", 1, 4)).commit.serverSeq, 4);
+    assert.equal(server.receive(makeBatch("new", 1, 4)).commit.serverSeq, 4);
     const ordered = {
-      ...batch("ordered", 1, 1),
-      operations: [...batch("ordered", 1, 1).operations, ...batch("ordered", 1, 2).operations],
+      ...makeBatch("ordered", 1, 1),
+      operations: [...makeBatch("ordered", 1, 1).operations, ...makeBatch("ordered", 1, 2).operations],
     };
     server.receive(ordered);
     assert.throws(
@@ -153,11 +153,12 @@ describe("server retry", () => {
 
   it("keeps the previous replay when policy, application, or reentrancy fails", () => {
     let mode: "accept" | "throw" | "invalid" | "reentrant" = "accept";
-    const firstBatch = batch("a", 1, 1);
+    const firstBatch = makeBatch("a", 1, 1);
     const server = createServer(Board, {
       resolve: ({ batch }) => {
         if (mode === "throw") throw new Error("policy failed");
         if (mode === "invalid") {
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
           return [{ type: "value/set", path: "missing", value: 2 }] as unknown as BoardOperation[];
         }
         if (mode === "reentrant") server.receive(firstBatch);
@@ -168,17 +169,17 @@ describe("server retry", () => {
     const checkpoint = server.checkpoint();
     for (const failure of ["throw", "invalid", "reentrant"] as const) {
       mode = failure;
-      assert.throws(() => server.receive(batch("a", 2, 2)));
+      assert.throws(() => server.receive(makeBatch("a", 2, 2)));
       assert.deepEqual(server.checkpoint(), checkpoint);
       assert.strictEqual(server.receive(firstBatch).commit, first.commit);
     }
     mode = "accept";
-    assert.equal(server.receive(batch("a", 2, 2)).commit.serverSeq, 2);
+    assert.equal(server.receive(makeBatch("a", 2, 2)).commit.serverSeq, 2);
   });
 
   it("compares nested JSON without depending on object key order", () => {
     const Data = defineDocument({
-      data: value<{ a: number[]; b: { enabled: boolean } }>({
+      data: valueSchema<{ a: number[]; b: { enabled: boolean } }>({
         a: [1, 2], b: { enabled: true },
       }),
     });
@@ -247,7 +248,7 @@ describe("server retry", () => {
 
   it("rejects new batches at sequence exhaustion while retaining safe retries", () => {
     const max = Number.MAX_SAFE_INTEGER;
-    const previous = batch("a", max - 1, 0);
+    const previous = makeBatch("a", max - 1, 0);
     let calls = 0;
     const server = createServer(Board, {
       checkpoint: {
@@ -263,7 +264,7 @@ describe("server retry", () => {
         return batch.operations;
       },
     });
-    const last = batch("a", max, 1);
+    const last = makeBatch("a", max, 1);
     const receipt = server.receive(last);
     assert.equal(receipt.commit.serverSeq, max);
     const checkpoint = server.checkpoint();
@@ -271,7 +272,7 @@ describe("server retry", () => {
     for (const document of [server, restored]) {
       assert.deepEqual(document.commitsSince(max - 1), [receipt.commit]);
       assert.deepEqual(document.commitsSince(max), []);
-      assert.throws(() => document.receive(batch("new", 1, 2)), /Server sequence exhausted/);
+      assert.throws(() => document.receive(makeBatch("new", 1, 2)), /Server sequence exhausted/);
       assert.deepEqual(document.checkpoint(), checkpoint);
       const retry = document.receive(last);
       assert.equal(retry.replayed, true);

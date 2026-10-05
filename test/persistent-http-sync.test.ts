@@ -38,7 +38,7 @@ async function connect(url: string, clientId: string, store: Store) {
   });
 }
 
-function batch(clientId = "peer", seq = 1) {
+function makeBatch(clientId = "peer", seq = 1) {
   return { clientId, seq, operations: [{ type: "value/set", path: "count", value: seq }] };
 }
 
@@ -89,6 +89,7 @@ describe("file-backed HTTP recovery example", { timeout: 15_000 }, () => {
   it("imports without demo side effects and disallows asynchronous saving callbacks", async (t) => {
     const url = new URL("../examples/persistent-http-sync.ts", import.meta.url).href;
     await child(t, "await import(" + JSON.stringify(url) + ")");
+    // oxlint-disable-next-line eslint/no-constant-condition -- Compile-only negative type assertions must never execute.
     if (false) {
       await startHttpExampleServer(createServer(Board), {
         // @ts-expect-error Saving must complete synchronously before serving the state.
@@ -135,7 +136,8 @@ describe("file-backed HTTP recovery example", { timeout: 15_000 }, () => {
     assert.equal(next.seq, 5);
     for (const operation of next.operations) {
       assert.ok(operation.type === "list/insert" || operation.type === "text/insert");
-      assert.equal(JSON.parse(operation.id.bunchId)[2], saved.lastBunchSeqs[operation.path] + 1);
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
+      assert.equal((JSON.parse(operation.id.bunchId) as unknown[])[2], saved.lastBunchSeqs[operation.path] + 1);
     }
     assert.equal(await source.sync(), true);
     assert.equal(await peer.sync(), true);
@@ -273,7 +275,7 @@ describe("file-backed HTTP recovery example", { timeout: 15_000 }, () => {
     for (const mode of ["response", "fetch-error"] as const) {
       const store = createCheckpointStore(directory(t));
       const { server, host } = await boot(t, store);
-      const remote = await post(host.url, batch());
+      const remote = await post(host.url, makeBatch());
       await remote.text();
       const entered = gate();
       const release = gate();
@@ -365,7 +367,7 @@ describe("file-backed HTTP recovery example", { timeout: 15_000 }, () => {
     } });
     const a = await connect(host.url, "a", store);
     a.doc.state.count.value = 1;
-    const message = JSON.stringify(batch("slow"));
+    const message = JSON.stringify(makeBatch("slow"));
     let request!: ReturnType<typeof httpRequest>;
     const result = new Promise<number>((resolve, reject) => {
       request = httpRequest(host.url + "/batches", { method: "POST", headers: {
@@ -393,7 +395,7 @@ describe("file-backed HTTP recovery example", { timeout: 15_000 }, () => {
       assert.equal(response.status, 503);
       assert.deepEqual(await response.json(), { error: "Checkpoint storage failed; restart this host" });
     }
-    const later = await post(host.url, batch("later"));
+    const later = await post(host.url, makeBatch("later"));
     await later.text();
     assert.equal(later.status, 503);
     assert.equal(saves, 2);
@@ -414,15 +416,15 @@ describe("file-backed HTTP recovery example", { timeout: 15_000 }, () => {
       if (reject) throw new Error("Resolver failed");
       return batch.operations;
     } }, { saveServerCheckpoint: (checkpoint) => { saves++; store.saveServer(checkpoint); } });
-    const first = await post(host.url, batch());
+    const first = await post(host.url, makeBatch());
     await first.text();
     assert.equal(first.status, 409);
     reject = false;
-    const invalid = await post(host.url, batch("peer", 2));
+    const invalid = await post(host.url, makeBatch("peer", 2));
     await invalid.text();
     assert.equal(invalid.status, 409);
     assert.equal(saves, 1);
-    const accepted = await post(host.url, batch());
+    const accepted = await post(host.url, makeBatch());
     await accepted.text();
     assert.equal(accepted.status, 204);
     assert.equal(saves, 2);
@@ -509,7 +511,7 @@ describe("file-backed HTTP recovery example", { timeout: 15_000 }, () => {
     const a = await connect(host.url, "a", store);
     a.doc.state.items.push("Pending");
     const before = store.loadClient("a");
-    const remote = await post(host.url, batch());
+    const remote = await post(host.url, makeBatch());
     await remote.text();
     assert.equal(await a.sync(), false);
     assert.equal(await a.sync(), false);

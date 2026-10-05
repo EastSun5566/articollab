@@ -67,9 +67,9 @@ export async function connectPersistentBrowserClient(url, options = {}) {
   const connection = await connectBrowserHttpClient(url, checkpoint?.clientId ?? "browser-recovery-" + crypto.randomUUID(), {
     fetch: guardedFetch,
     ...(checkpoint === null ? {} : { checkpoint }),
-    saveClientCheckpoint(checkpoint) {
+    saveClientCheckpoint(nextCheckpoint) {
       if (documentId === undefined) throw new Error("Missing document ID");
-      store.save({ documentId, checkpoint });
+      store.save({ documentId, checkpoint: nextCheckpoint });
     },
   });
   if (documentId === undefined) throw new Error("Missing document ID");

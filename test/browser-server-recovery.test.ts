@@ -1,10 +1,12 @@
+import { decodeSnapshot } from "../src/index.ts";
+import { decodeClientBatch } from "../src/index.ts";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { before, describe, it, type TestContext } from "node:test";
+import { before as setup, describe, it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -23,7 +25,7 @@ const key = "articollab:browser-reload-recovery:checkpoint";
 type Shape = typeof Board.definition;
 type Client = ClientDocument<Shape>;
 type Batch = ClientBatch<DocumentOperation<Shape>>;
-type Storage = { getItem(key: string): string | null; setItem(key: string, value: string): void };
+type Storage = { getItem(this: void, key: string): string | null; setItem(key: string, value: string): void };
 type Connection = { doc: Client; documentId: string; sync(): Promise<boolean>; rejectPending(): Promise<boolean> };
 type BrowserOptions = { storage: Storage; fetch?: typeof globalThis.fetch };
 let connectBrowser: (url: string, options: BrowserOptions) => Promise<Connection>;
@@ -53,7 +55,7 @@ function mixed(doc: Client): void {
   });
 }
 
-function port(url: string): number { return Number(new URL(url).port); }
+function portFromUrl(url: string): number { return Number(new URL(url).port); }
 
 async function post(url: string, path: string, batch: Batch, documentId: string): Promise<number> {
   const response = await fetch(url + path, { method: "POST", headers: { "Content-Type": "application/json", "X-Articollab-Document-Id": documentId }, body: JSON.stringify(batch) });
@@ -71,12 +73,12 @@ function resources(t: TestContext) {
   return {
     directory,
     store: createCheckpointStore(directory),
-    async start(port?: number) {
+    async start(this: void, port?: number) {
       const host = await startBrowserReloadRecoveryServer({ directory, ...(port === undefined ? {} : { port }) });
       closers.push(() => host.close());
       return host;
     },
-    async child(args: string[]) {
+    async child(this: void, args: string[]) {
       const child = spawn(process.execPath, [cli, ...args], { cwd: root, timeout: 15_000 });
       let stdout = "";
       let stderr = "";
@@ -106,10 +108,11 @@ function resources(t: TestContext) {
 }
 
 describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
-  before(async () => {
+  setup(async () => {
     const compiler = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
     await execute(process.execPath, [compiler, "-p", "tsconfig.build.json"], { cwd: root, timeout: 15_000 });
-    ({ connectPersistentBrowserClient: connectBrowser } = await import(recoveryUrl));
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.
+    ({ connectPersistentBrowserClient: connectBrowser } = (await import(recoveryUrl)) as { connectPersistentBrowserClient: typeof connectBrowser });
   });
 
   it("preserves default hosting and validates ports before saving, without falling back on a busy port", async (t) => {
@@ -124,13 +127,13 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     const host = await startBrowserReloadRecoveryServer();
     try {
       assert.equal(new URL(host.url).hostname, "127.0.0.1");
-      assert.ok(port(host.url) > 0);
+      assert.ok(portFromUrl(host.url) > 0);
       const page = await fetch(host.url);
       assert.equal(page.status, 200);
       assert.match(await page.text(), /Persistent mode: restart with the same checkpoint/);
       const snapshot = await fetch(host.url + "/snapshot");
-      assert.equal((await snapshot.json()).serverSeq, 0);
-      await assert.rejects(startBrowserReloadRecoveryServer({ port: port(host.url) }), { code: "EADDRINUSE" });
+      assert.equal(decodeSnapshot(Board, await snapshot.json()).serverSeq, 0);
+      await assert.rejects(startBrowserReloadRecoveryServer({ port: portFromUrl(host.url) }), { code: "EADDRINUSE" });
       assert.deepEqual(readdirSync(directory), []);
     } finally { await host.close(); }
   });
@@ -148,7 +151,7 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     assert.equal(changes, 0); // Silent own ack still saves both checkpoints.
     a.doc.transact(() => { a.doc.state.items.delete(0); a.doc.state.body.delete(0, 3); });
     assert.equal(await a.sync(), true);
-    const authoritative = store.loadRecoveryServer()?.checkpoint!;
+    const authoritative = store.loadRecoveryServer()!.checkpoint;
     assert.deepEqual(authoritative.snapshot.data.items.values, []);
     assert.equal(authoritative.snapshot.data.body.value, "");
     assert.ok(authoritative.snapshot.data.items.idList.length > 0);
@@ -158,12 +161,12 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     const saved = a.doc.checkpoint();
     const origin = host.url;
     await host.close();
-    host = await start(port(origin));
+    host = await start(portFromUrl(origin));
     assert.equal(host.url, origin);
     assert.deepEqual(store.loadRecoveryServer()?.checkpoint, authoritative);
     const requests: string[] = [];
     a = await connect(origin, { storage, fetch: async (input, init) => {
-      requests.push(init?.method === "POST" ? "POST" : new URL(String(input)).pathname);
+      requests.push(init?.method === "POST" ? "POST" : new URL((input instanceof Request ? input.url : input.toString())).pathname);
       return fetch(input, init);
     } });
     assert.deepEqual(requests, []);
@@ -209,7 +212,7 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     assert.deepEqual(store.loadRecoveryServer()?.checkpoint, before);
     const origin = host.url;
     await host.close();
-    host = await start(port(origin));
+    host = await start(portFromUrl(origin));
     a = await connect(origin, { storage });
     assert.deepEqual(a.doc.checkpoint(), saved);
     assert.equal(a.doc.replayConflict?.batch.seq, 2);
@@ -234,7 +237,7 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     const initial = await start();
     const origin = initial.url;
     await initial.close();
-    let host = await child([directory, String(port(origin))]);
+    let host = await child([directory, String(portFromUrl(origin))]);
     assert.equal(host.url, origin);
     const storage = memory();
     const lost = new Error("Accepted POST response lost");
@@ -250,12 +253,12 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     const saved = a.doc.checkpoint();
     assert.deepEqual(saved.pendingBatches.map((batch) => batch.seq), [1, 2]);
     assert.deepEqual(await host.stop("SIGKILL"), { code: null, signal: "SIGKILL" });
-    host = await child([directory, String(port(origin))]);
+    host = await child([directory, String(portFromUrl(origin))]);
     assert.equal(host.url, origin);
     const posts: number[] = [];
     let gets = 0;
     a = await connect(origin, { storage, fetch: async (input, init) => {
-      if (init?.method === "POST") posts.push((JSON.parse(String(init.body)) as Batch).seq);
+      if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
       else gets++;
       return fetch(input, init);
     } });
@@ -294,7 +297,7 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     await stopped.text();
     await host.close();
     rmSync(temporary, { recursive: true });
-    host = await start(port(origin));
+    host = await start(portFromUrl(origin));
     a = await connect(origin, { storage });
     assert.equal(await a.sync(), true);
     assert.deepEqual(a.doc.checkpoint().snapshot, store.loadRecoveryServer()!.checkpoint.snapshot);
@@ -312,25 +315,25 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     const host = await start();
     const origin = host.url;
     await host.close();
-    const valid = store.loadRecoveryServer()?.checkpoint!;
+    const valid = store.loadRecoveryServer()!.checkpoint;
     const documentId = store.loadRecoveryServer()!.documentId;
     const path = join(directory, "server.json");
     for (const message of ["{broken", "{}", JSON.stringify({ ...valid, snapshot: { ...valid.snapshot, serverSeq: 1 } })]) {
       writeFileSync(path, message);
-      await assert.rejects(start(port(origin)));
+      await assert.rejects(start(portFromUrl(origin)));
       assert.equal(readFileSync(path, "utf8"), message);
     }
     await assert.rejects(startBrowserReloadRecoveryServer({ directory: join(directory, "missing") }), { code: "ENOENT" });
     await assert.rejects(startBrowserReloadRecoveryServer({ directory: path }), /must be a directory/);
     store.saveRecoveryServer({ documentId, checkpoint: valid });
     writeFileSync(path + ".tmp", "orphan, not a checkpoint");
-    const recovered = await start(port(origin));
+    const recovered = await start(portFromUrl(origin));
     assert.deepEqual(store.loadRecoveryServer()?.checkpoint, valid);
     await recovered.close();
     mkdirSync(path + ".tmp");
-    await assert.rejects(start(port(origin)), { code: "EISDIR" });
+    await assert.rejects(start(portFromUrl(origin)), { code: "EISDIR" });
     assert.deepEqual(store.loadRecoveryServer()?.checkpoint, valid);
-    const available = await startBrowserReloadRecoveryServer({ port: port(origin) });
+    const available = await startBrowserReloadRecoveryServer({ port: portFromUrl(origin) });
     await available.close(); // Bootstrap saving failure did not open a socket.
   });
 
@@ -345,7 +348,7 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     const server = createServer(Board, { historyLimit: 0 });
     server.receive({ clientId: "peer", seq: 1, operations: [{ type: "value/set", path: "count", value: 10 }] });
     store.saveRecoveryServer({ documentId: a.documentId, checkpoint: server.checkpoint() }); // Same lineage; deliberately retained no catch-up history.
-    host = await start(port(origin));
+    host = await start(portFromUrl(origin));
     let posts = 0;
     a = await connect(origin, { storage, fetch: async (input, init) => {
       if (init?.method === "POST") posts++;
@@ -371,7 +374,7 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     assert.deepEqual(readdirSync(directory), []);
     const host = await child([]);
     const response = await fetch(host.url + "/snapshot");
-    assert.equal((await response.json()).serverSeq, 0);
+    assert.equal(decodeSnapshot(Board, await response.json()).serverSeq, 0);
     assert.deepEqual(readdirSync(directory), []);
     assert.deepEqual(await host.stop("SIGTERM"), { code: 0, signal: null });
   });

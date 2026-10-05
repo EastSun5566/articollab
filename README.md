@@ -194,10 +194,13 @@ pnpm install --frozen-lockfile
 pnpm check
 pnpm test
 pnpm build
+pnpm lint
 pnpm test:package
 ```
 
 Native Node tests run TypeScript directly; production builds emit only `src` into `dist`. `test:package` is separate from `test`: it builds/packs a local tarball and installs it in a fresh temporary ESM consumer, checking package contents, runtime and independent strict NodeNext declarations (`skipLibCheck: false`). Consumer installation uses the checkout's exact installed TypeScript/Node types versions, disables install scripts and may need registry access. Nothing is published; temporary consumers are cleaned up.
+
+`pnpm lint` uses pinned Oxlint/tsgolint with type-aware TypeScript/Oxc rules, correctness/suspicious errors, explicit-any and unsafe-value checks. Warnings and unused disable directives fail. Pedantic/style/restriction/nursery are not enabled wholesale. Native `node:test` registration calls have a package- and test-source-limited known-safe exception; other promises remain checked. Local exceptions document verified decoder/type bridges, deliberate negative fixtures and Unicode code-point behavior. Build first so browser JS can resolve the production declarations. `tsc` and independent browser JSDoc checking remain separate gates.
 
 The read-only GitHub Actions `CI` workflow runs on main pushes, PRs targeting main and manual dispatch. One Ubuntu 24.04/Node 24 job uses the pinned pnpm, frozen install, check/test/build, complete browser JSDoc checking and package consumer smoke. It has no publishing/deployment steps or dependency cache. Local success is not proof of remote CI success.
 

@@ -15,6 +15,8 @@ import { createAsyncExampleNetwork } from "../examples/async-resume.ts";
 import { connectHttpExampleClient, startHttpExampleServer } from "../examples/http-sync.ts";
 import { createCheckpointStore } from "../examples/persistent-resume.ts";
 
+type Mutable<T> = T extends object ? { -readonly [K in keyof T]: Mutable<T[K]> } : T;
+
 type Shape = typeof Board.definition;
 type Batch = ClientBatch<DocumentOperation<Shape>>;
 type Checkpoint = ClientCheckpoint<Shape>;
@@ -39,6 +41,7 @@ function frozen(input: unknown): void {
 function invalid(input: unknown, path: string): void {
   const matches = (error: unknown) => error instanceof WireDecodeError && error.path === path;
   assert.throws(() => decodeClientCheckpoint(Board, input), matches);
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
   assert.throws(() => createClient(Board, { clientId: "a", checkpoint: input as Checkpoint, onBatch() {} }), matches);
 }
 
@@ -161,10 +164,10 @@ describe("pending replay conflict", () => {
       local.doc.receive({ serverSeq: 1, source: { clientId: "peer", seq: 1 },
         operations: local.batches[0]!.operations });
       assert.match(local.doc.replayConflict!.message, /Duplicate/);
-      const before = local.doc.checkpoint();
+      const localBefore = local.doc.checkpoint();
       assert.throws(() => kind === "list" ? local.doc.state.items.delete(0) : local.doc.state.body.delete(0),
         /replay is blocked/);
-      assert.deepEqual(local.doc.checkpoint(), before);
+      assert.deepEqual(local.doc.checkpoint(), localBefore);
       const cp = decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(local.doc.checkpoint())));
       const restored = createClient(Board, { clientId: "a", checkpoint: cp, onBatch() {} });
       assert.deepEqual(restored.replayConflict, local.doc.replayConflict);
@@ -209,6 +212,7 @@ describe("pending replay conflict", () => {
       { serverSeq: 2, source: { clientId: "peer", seq: 1 }, operations: [{ type: "bad", path: "count" }] },
       { serverSeq: 2, source: { clientId: "peer", seq: 1 }, operations: batches[1]!.operations },
     ]) {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
       assert.throws(() => doc.receive(commit as Parameters<typeof doc.receive>[0]));
       assert.deepEqual(doc.checkpoint(), before);
       assert.equal(doc.replayConflict, conflict);
@@ -240,22 +244,26 @@ describe("pending replay conflict", () => {
     doc.state.count.value = 3;
     const server = createServer(Board, { resolve: () => [] });
     doc.receive(server.receive(batches[0]!).commit);
-    const input = JSON.parse(JSON.stringify(doc.checkpoint()));
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
+    const input = JSON.parse(JSON.stringify(doc.checkpoint())) as Mutable<Checkpoint>;
     const cp = decodeClientCheckpoint(Board, input); frozen(cp);
     const restored = createClient(Board, { clientId: "a", checkpoint: cp,
       onBatch: () => assert.fail("restore cannot send") });
     assert.deepEqual(restored.replayConflict, doc.replayConflict);
     assert.equal(restored.state.count.value, 0);
-    input.pendingBatches[0].operations[0].value = "changed";
-    input.pendingBatches[1].operations[0].value = 99;
+    assert.ok(input.pendingBatches[0]!.operations[0]!.type === "list/insert");
+    assert.ok(input.pendingBatches[1]!.operations[0]!.type === "value/set");
+    input.pendingBatches[0]!.operations[0]!.value = "changed";
+    input.pendingBatches[1]!.operations[0]!.value = 99;
     input.snapshot.data.count = 99;
     assert.deepEqual(restored.checkpoint(), cp);
     for (const mutate of [
-      (parsed: typeof input) => { parsed.pendingBatches[1].operations[0].extra = true; },
-      (parsed: typeof input) => { parsed.pendingBatches[1].seq = 99; },
+      (parsed: typeof input) => { Object.assign(parsed.pendingBatches[1]!.operations[0]!, { extra: true }); },
+      (parsed: typeof input) => { parsed.pendingBatches[1]!.seq = 99; },
     ]) {
-      const parsed = JSON.parse(JSON.stringify(cp)); mutate(parsed);
-      invalid(parsed, "extra" in parsed.pendingBatches[1].operations[0]
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
+      const parsed = JSON.parse(JSON.stringify(cp)) as Mutable<Checkpoint>; mutate(parsed);
+      invalid(parsed, "extra" in parsed.pendingBatches[1]!.operations[0]!
         ? "/pendingBatches/1/operations/0/extra" : "/pendingBatches/1/seq");
     }
     restored.receive(server.receive(batches[1]!).commit);

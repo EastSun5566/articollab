@@ -1,3 +1,4 @@
+import { decodeServerCommit } from "../src/index.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
@@ -342,7 +343,7 @@ describe("asynchronous wire/resume example", () => {
     let pause = true;
     const network = createAsyncExampleNetwork(server, { transfer: async (direction, id, message) => {
       if (direction === "server-to-client" && id === "a") {
-        incomingA.push(JSON.parse(message).serverSeq);
+        incomingA.push(decodeServerCommit(Board, JSON.parse(message)).serverSeq);
         if (pause) { pause = false; entered.resolve(); await release.promise; }
       }
       return message;
@@ -564,9 +565,9 @@ describe("asynchronous wire/resume example", () => {
       await network.submit(checkpoint.pendingBatches[0]!);
       await network.idle();
       const restored = network.connect("a", checkpoint);
-      const resumed = restored.resume().then(() => assert.fail("resume should reject"), (error) => error);
+      const resumed = restored.resume().then(() => assert.fail("resume should reject"), (error: unknown) => error);
       await entered.promise;
-      const drained = network.idle().then(() => assert.fail("idle should reject"), (error) => error);
+      const drained = network.idle().then(() => assert.fail("idle should reject"), (error: unknown) => error);
       peer.doc.state.count.value = 8;
       assert.equal(await resumed, expected);
       assert.equal(await drained, expected);

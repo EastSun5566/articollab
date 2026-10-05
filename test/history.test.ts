@@ -9,7 +9,7 @@ import {
   defineDocument,
   list,
   text,
-  value,
+  value as valueSchema,
   WireDecodeError,
   type ClientBatch,
   type DocumentOperation,
@@ -17,13 +17,13 @@ import {
   type ServerCommit,
 } from "../src/index.ts";
 
-const Board = defineDocument({ count: value(0), items: list<string>(), body: text() });
+const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
 type BoardOperation = DocumentOperation<typeof Board.definition>;
 type BoardBatch = ClientBatch<BoardOperation>;
 type BoardCommit = ServerCommit<BoardOperation>;
 type BoardCheckpoint = ServerCheckpoint<typeof Board.definition>;
 
-function batch(clientId: string, seq: number, count = seq): BoardBatch {
+function makeBatch(clientId: string, seq: number, count = seq): BoardBatch {
   return { clientId, seq, operations: [{ type: "value/set", path: "count", value: count }] };
 }
 
@@ -38,6 +38,7 @@ function assertCheckpointError(input: unknown, path: string): void {
     return true;
   });
   assert.throws(
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
     () => createServer(Board, { checkpoint: input as BoardCheckpoint, historyLimit: 0 }),
     WireDecodeError
   );
@@ -48,7 +49,7 @@ describe("server history", () => {
     const server = createServer(Board, { historyLimit: 3 });
     assert.deepEqual(server.commitsSince(0), []);
     assert.ok(Object.isFrozen(server.commitsSince(0)));
-    for (let seq = 1; seq <= 4; seq++) server.receive(batch("a", seq));
+    for (let seq = 1; seq <= 4; seq++) server.receive(makeBatch("a", seq));
     assert.equal(server.commitsSince(0), null);
     assert.deepEqual(sequences(server.commitsSince(1)), [2, 3, 4]);
     assert.deepEqual(sequences(server.commitsSince(2)), [3, 4]);
@@ -65,22 +66,23 @@ describe("server history", () => {
 
   it("defaults to 1000 commits, supports capacity one and disables history at zero", () => {
     const server = createServer(Board);
-    for (let seq = 1; seq <= 1001; seq++) server.receive(batch("a", seq));
+    for (let seq = 1; seq <= 1001; seq++) server.receive(makeBatch("a", seq));
     assert.equal(server.checkpoint().history.length, 1000);
     assert.equal(server.commitsSince(0), null);
     assert.equal(server.commitsSince(1)!.length, 1000);
     for (const historyLimit of [0, 1]) {
       const document = createServer(Board, { historyLimit });
-      const first = document.receive(batch("a", 1));
-      document.receive(batch("b", 1));
+      const first = document.receive(makeBatch("a", 1));
+      document.receive(makeBatch("b", 1));
       assert.equal(document.checkpoint().history.length, historyLimit);
       assert.equal(document.commitsSince(0), null);
       assert.deepEqual(sequences(document.commitsSince(1)), historyLimit === 0 ? null : [2]);
       assert.deepEqual(document.commitsSince(2), []);
-      assert.strictEqual(document.receive(batch("a", 1)).commit, first.commit);
+      assert.strictEqual(document.receive(makeBatch("a", 1)).commit, first.commit);
     }
     for (const historyLimit of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null, "2"]) {
       assert.throws(
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
         () => createServer(Board, { historyLimit: historyLimit as number }),
         /historyLimit/
       );
@@ -100,6 +102,7 @@ describe("server history", () => {
         assert.deepEqual(server.commitsSince(Math.max(0, snapshot.serverSeq - 2)), checkpoint.history);
         observed.push(checkpoint);
         if (mode === "throw") throw new Error("policy failed");
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
         if (mode === "non-array") return null as unknown as BoardOperation[];
         if (mode === "reentrant") server.receive(batch);
         if (mode === "invalid") {
@@ -110,29 +113,29 @@ describe("server history", () => {
         return batch.operations;
       },
     });
-    server.receive(batch("a", 1));
+    server.receive(makeBatch("a", 1));
     mode = "reject";
-    const rejected = server.receive(batch("a", 2));
+    const rejected = server.receive(makeBatch("a", 2));
     mode = "transform";
-    const transformed = server.receive(batch("a", 3));
+    const transformed = server.receive(makeBatch("a", 3));
     assert.deepEqual(server.commitsSince(1), [rejected.commit, transformed.commit]);
     assert.deepEqual(rejected.commit.operations, []);
     assert.equal(server.snapshot().data.count, 5);
     const checkpoint = server.checkpoint();
-    assert.equal(server.receive(batch("a", 3)).replayed, true);
+    assert.equal(server.receive(makeBatch("a", 3)).replayed, true);
     assert.equal(calls, 3);
     assert.deepEqual(server.checkpoint(), checkpoint);
     assert.deepEqual(observed.map((entry) => entry.snapshot.serverSeq), [0, 1, 2]);
     for (const failure of ["throw", "invalid", "non-array", "reentrant"] as const) {
       mode = failure;
-      assert.throws(() => server.receive(batch("a", 4)));
+      assert.throws(() => server.receive(makeBatch("a", 4)));
       assert.deepEqual(server.checkpoint(), checkpoint);
     }
-    assert.throws(() => server.receive(batch("a", 5)), /Expected client sequence/);
-    assert.throws(() => server.receive(batch("a", 3, 99)), /Retry batch differs/);
+    assert.throws(() => server.receive(makeBatch("a", 5)), /Expected client sequence/);
+    assert.throws(() => server.receive(makeBatch("a", 3, 99)), /Retry batch differs/);
     assert.deepEqual(server.checkpoint(), checkpoint);
     mode = "accept";
-    assert.equal(server.receive(batch("a", 4)).commit.serverSeq, 4);
+    assert.equal(server.receive(makeBatch("a", 4)).commit.serverSeq, 4);
     assert.deepEqual(sequences(server.commitsSince(2)), [3, 4]);
   });
 
@@ -176,15 +179,15 @@ describe("server history", () => {
 
   it("keeps returned history and checkpoints point-in-time", () => {
     const server = createServer(Board, { historyLimit: 2 });
-    const first = server.receive(batch("a", 1)).commit;
+    const first = server.receive(makeBatch("a", 1)).commit;
     const history = server.commitsSince(0)!;
     const checkpoint = server.checkpoint();
     assert.ok(Object.isFrozen(checkpoint.history));
     assert.ok(Object.isFrozen(history));
     assert.notStrictEqual(history, checkpoint.history);
     assert.strictEqual(history[0], first);
-    server.receive(batch("a", 2));
-    server.receive(batch("a", 3));
+    server.receive(makeBatch("a", 2));
+    server.receive(makeBatch("a", 3));
     assert.deepEqual(history, [first]);
     assert.deepEqual(checkpoint.history, [first]);
     assert.equal(checkpoint.snapshot.serverSeq, 1);
@@ -193,7 +196,7 @@ describe("server history", () => {
 
   it("restores and resizes only retained history without changing retry results", () => {
     const server = createServer(Board, { historyLimit: 3 });
-    for (let seq = 1; seq <= 5; seq++) server.receive(batch("a", seq));
+    for (let seq = 1; seq <= 5; seq++) server.receive(makeBatch("a", seq));
     const checkpoint = decodeServerCheckpoint(Board, JSON.parse(JSON.stringify(server.checkpoint())));
     assert.deepEqual(sequences(checkpoint.history), [3, 4, 5]);
     for (const historyLimit of [undefined, 0, 1, 10]) {
@@ -204,16 +207,16 @@ describe("server history", () => {
       const expected = historyLimit === 0 ? [] : historyLimit === 1 ? [5] : [3, 4, 5];
       assert.deepEqual(sequences(restored.checkpoint().history), expected);
       assert.deepEqual(restored.snapshot(), checkpoint.snapshot);
-      assert.equal(restored.receive(batch("a", 5)).replayed, true);
+      assert.equal(restored.receive(makeBatch("a", 5)).replayed, true);
       assert.deepEqual(sequences(restored.checkpoint().history), expected);
       assert.equal(restored.commitsSince(1), null);
-      assert.equal(restored.receive(batch("a", 6)).commit.serverSeq, 6);
+      assert.equal(restored.receive(makeBatch("a", 6)).commit.serverSeq, 6);
     }
     const withoutHistory = { ...checkpoint, history: [] };
     const restored = createServer(Board, { checkpoint: withoutHistory });
     assert.equal(restored.commitsSince(4), null);
     assert.deepEqual(restored.commitsSince(5), []);
-    restored.receive(batch("a", 6));
+    restored.receive(makeBatch("a", 6));
     assert.deepEqual(sequences(restored.commitsSince(5)), [6]);
     assert.equal(restored.commitsSince(4), null);
     assert.deepEqual(createServer(Board).checkpoint().history, []);
@@ -223,10 +226,10 @@ describe("server history", () => {
 describe("history checkpoint decoding", () => {
   it("rejects invalid containers, discontinuous history, and inconsistent replay sources", () => {
     const server = createServer(Board);
-    const a1 = server.receive(batch("a", 1)).commit;
-    const b1 = server.receive(batch("b", 1)).commit;
-    const a2 = server.receive(batch("a", 2)).commit;
-    const b2 = server.receive(batch("b", 2)).commit;
+    const a1 = server.receive(makeBatch("a", 1)).commit;
+    const b1 = server.receive(makeBatch("b", 1)).commit;
+    const a2 = server.receive(makeBatch("a", 2)).commit;
+    const b2 = server.receive(makeBatch("b", 2)).commit;
     const checkpoint = server.checkpoint();
     const withHistory = (history: unknown) => ({ ...checkpoint, history });
     const cases: Array<[unknown, string]> = [
@@ -257,7 +260,7 @@ describe("history checkpoint decoding", () => {
 
   it("accepts equivalent JSON key order and deeply owns historical payloads, IDs, and ranges", () => {
     const Data = defineDocument({
-      payload: value<{ a: number[]; b: { enabled: boolean } }>({ a: [], b: { enabled: false } }),
+      payload: valueSchema<{ a: number[]; b: { enabled: boolean } }>({ a: [], b: { enabled: false } }),
       items: list<{ label: string }>(),
       body: text(),
     });
@@ -277,6 +280,7 @@ describe("history checkpoint decoding", () => {
       doc.state.body.delete(0, 1);
     });
     server.receive(batches[1]!);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
     const input = JSON.parse(JSON.stringify(server.checkpoint())) as {
       history: Array<{ operations: Array<{
         value?: { a?: number[]; b?: { enabled: boolean }; label?: string };

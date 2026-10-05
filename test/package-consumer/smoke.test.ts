@@ -19,8 +19,9 @@ async function run(command: string, args: string[], cwd: string, timeout = 15_00
   try {
     return await execute(command, args, { cwd, env, timeout, maxBuffer: 1024 * 1024 });
   } catch (cause) {
-    const output = cause as Error & { stdout?: string; stderr?: string };
-    throw new Error(`${command} ${args.join(" ")} failed in ${cwd}\n${output.stdout ?? ""}\n${output.stderr ?? ""}`,
+    const stdout = cause instanceof Error && "stdout" in cause && typeof cause.stdout === "string" ? cause.stdout : "";
+    const stderr = cause instanceof Error && "stderr" in cause && typeof cause.stderr === "string" ? cause.stderr : "";
+    throw new Error(`${command} ${args.join(" ")} failed in ${cwd}\n${stdout}\n${stderr}`,
       { cause });
   }
 }
@@ -30,8 +31,14 @@ function pnpm(args: string[], cwd: string, timeout?: number) {
   return cli ? run(process.execPath, [cli, ...args], cwd, timeout) : run("pnpm", args, cwd, timeout);
 }
 
-async function json(path: string) {
-  return JSON.parse(await readFile(path, "utf8"));
+function record(input: unknown): Record<string, unknown> {
+  assert.ok(input !== null && typeof input === "object" && !Array.isArray(input));
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Container checked above; every field remains unknown.
+  return input as Record<string, unknown>;
+}
+
+async function json(path: string): Promise<Record<string, unknown>> {
+  return record(JSON.parse(await readFile(path, "utf8")));
 }
 
 const runtimeFixture = `
@@ -210,9 +217,16 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     const compiler = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
     await run(process.execPath, [compiler, "-p", "tsconfig.build.json"], root);
     const result = await pnpm(["pack", "--json", "--pack-destination", consumer], root);
-    packed = JSON.parse(result.stdout);
+    const pack = record(JSON.parse(result.stdout));
+    assert.ok(typeof pack.filename === "string" && Array.isArray(pack.files));
+    packed = { filename: pack.filename, files: pack.files.map((entry: unknown) => {
+      const file = record(entry);
+      assert.ok(typeof file.path === "string");
+      return { path: file.path };
+    }) };
     const typescript = await json(require.resolve("typescript/package.json"));
     const nodeTypes = await json(require.resolve("@types/node/package.json"));
+    assert.ok(typeof typescript.version === "string" && typeof nodeTypes.version === "string");
     await writeFile(join(consumer, "package.json"), JSON.stringify({
       name: "articollab-package-consumer", private: true, type: "module", packageManager: "pnpm@10.34.5",
       dependencies: { articollab: `file:./${basename(packed.filename)}` },
@@ -237,7 +251,9 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     assert.equal(installed.private, true);
     assert.deepEqual(installed.dependencies, { articulated: "^1.3.1" });
     assert.deepEqual(installed.exports, original.exports);
-    for (const path of [installed.exports["."].import, installed.exports["."].types]) {
+    const entry = record(record(installed.exports)["."]);
+    for (const path of [entry.import, entry.types]) {
+      assert.ok(typeof path === "string");
       assert.ok(paths.includes(path.replace(/^\.\//, "")), path);
       await readFile(join(installedRoot, path));
     }

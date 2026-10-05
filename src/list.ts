@@ -78,10 +78,8 @@ export function loadIdList(
     Array<{ readonly start: number; readonly end: number }>
   >();
   const saved = ranges.map((range, index) => {
-    const object = requireObject(
-      range,
-      `${name} entry ${index}`
-    ) as SavedIdRange;
+    requireObject(range, `${name} entry ${index}`);
+    const object = range;
     if (typeof object.bunchId !== "string" || object.bunchId.length === 0) {
       throw new Error(`${name} entry ${index} bunchId must not be empty`);
     }
@@ -133,7 +131,7 @@ export class ListState<T extends JsonValue> {
   }
 
   static empty<T extends JsonValue>(): ListState<T> {
-    return new ListState(IdList.new(), new Map());
+    return new ListState<T>(IdList.new(), new Map<string, T>());
   }
 
   static load<T extends JsonValue>(snapshot: ListSnapshotData<T>): ListState<T> {
@@ -157,7 +155,7 @@ export class ListState<T extends JsonValue> {
     const valuesById = new Map<string, T>();
     let index = 0;
     for (const id of idList) {
-      valuesById.set(idKey(id), data.values[index++]!);
+      valuesById.set(idKey(id), snapshot.values[index++]!);
     }
     return new ListState(idList, valuesById);
   }

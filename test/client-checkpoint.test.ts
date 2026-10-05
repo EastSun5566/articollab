@@ -23,6 +23,7 @@ function assertInvalid(input: unknown, path: string): void {
   };
   assert.throws(() => decodeClientCheckpoint(Board, input), matches);
   assert.throws(() => createClient(Board, {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
     clientId: "a", checkpoint: input as BoardCheckpoint,
     onBatch: () => assert.fail("restore must not send"),
   }), matches);
@@ -200,7 +201,8 @@ describe("client checkpoint", () => {
     assert.equal(next.seq, 2);
     for (const operation of next.operations) {
       assert.ok(operation.type === "list/insert" || operation.type === "text/insert");
-      assert.equal(JSON.parse(operation.id.bunchId)[2], 3);
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
+      assert.equal((JSON.parse(operation.id.bunchId) as unknown[])[2], 3);
     }
     reject = false;
     restored.receive(server.receive(next).commit);
@@ -468,6 +470,7 @@ describe("client checkpoint decoding", () => {
       doc.state.items.push({ label: "pending" });
       doc.state.body.delete(0);
     });
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
     const input = JSON.parse(JSON.stringify(doc.checkpoint())) as {
       snapshot: { data: {
         meta: { flags: { enabled: boolean }; tags: string[] };

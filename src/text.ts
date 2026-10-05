@@ -114,6 +114,7 @@ export class TextState {
     }
 
     const idList = loadIdList(data.idList, "Text snapshot idList");
+    // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
     const values = [...data.value];
     if (idList.length !== values.length) {
       throw new Error(
@@ -156,6 +157,7 @@ export class TextState {
       );
     }
 
+    // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
     const values = [...operation.value];
     const ids = [...idsInRange(operation.id, values.length)];
     for (const id of ids) {
@@ -177,11 +179,12 @@ export class TextState {
   }
 
   delete(operation: TextDeleteOperation): TextState {
+    const ranges: readonly TextIdRange[] = operation.ranges;
     if (!Array.isArray(operation.ranges) || operation.ranges.length === 0) {
       throw new Error("Text delete ranges must not be empty");
     }
 
-    for (const range of operation.ranges) {
+    for (const range of ranges) {
       for (const id of idsInRange(range.start, range.count)) {
         if (!this.idList.isKnown(id)) {
           throw new CollectionConflictError(`Unknown text element id: ${idKey(id)}`);
@@ -191,7 +194,7 @@ export class TextState {
 
     let nextIdList = this.idList;
     const nextValues = new Map(this.valuesById);
-    for (const range of operation.ranges) {
+    for (const range of ranges) {
       nextIdList = nextIdList.delete(range.start, range.count);
       for (const id of idsInRange(range.start, range.count)) {
         nextValues.delete(idKey(id));
@@ -298,13 +301,13 @@ function compressIds(ids: readonly ElementId[]): TextIdRange[] {
 export class RuntimeText implements Text {
   private current: TextState;
   private readonly path: string;
-  private readonly mutate: (operation: TextOperation<string>) => void;
+  private readonly mutate: (operation: TextOperation) => void;
   private readonly idGenerator: ElementIdGenerator;
   private readonly beforeMutation: () => void;
   private bunchSeq: number;
 
   constructor(
-    mutate: (operation: TextOperation<string>) => void,
+    mutate: (operation: TextOperation) => void,
     clientId: string,
     path: string,
     initialState: TextState,
@@ -349,6 +352,7 @@ export class RuntimeText implements Text {
       type: "text/insert",
       path: this.path,
       before,
+      // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
       id: this.idGenerator.generateAfter(before, [...value].length),
       value,
     });

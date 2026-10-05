@@ -17,7 +17,9 @@ export function jsonEquals(left: unknown, right: unknown): boolean {
       left.every((value, index) => jsonEquals(value, right[index]))
     );
   }
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Both operands are non-null non-array objects; indexed values remain unknown.
   const leftRecord = left as Record<string, unknown>;
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Both operands are non-null non-array objects; indexed values remain unknown.
   const rightRecord = right as Record<string, unknown>;
   const keys = Object.keys(leftRecord);
   return (

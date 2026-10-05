@@ -9,6 +9,8 @@ import {
 import { Board } from "../examples/resume.ts";
 import { rejectPending } from "../examples/reject-pending.ts";
 
+type Mutable<T> = T extends object ? { -readonly [K in keyof T]: Mutable<T[K]> } : T;
+
 type Shape = typeof Board.definition;
 type Batch = ClientBatch<DocumentOperation<Shape>>;
 
@@ -121,6 +123,7 @@ describe("explicit server rejection", () => {
     const before = server.checkpoint();
     for (const batch of [
       countBatch("a", 1, 99), countBatch("a", 3), countBatch("new", 2),
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
       { ...countBatch("a", 2), operations: [{ type: "bad", path: "count" }] } as unknown as Batch,
     ]) {
       assert.throws(() => server.reject(batch));
@@ -142,7 +145,7 @@ describe("explicit server rejection", () => {
     doc.state.body.delete(0, 2);
     const input = JSON.parse(JSON.stringify({ ...batches[0], operations: [
       ...batches[0]!.operations, ...batches[3]!.operations,
-    ] }));
+    ] })) as Mutable<Batch>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
     const original = decodeClientBatch(Board, input);
     const server = createServer(Board);
     const receipt = server.reject(input);
@@ -152,15 +155,17 @@ describe("explicit server rejection", () => {
     const insert = saved.operations[1]!, deletion = saved.operations[3]!;
     assert.equal(insert.type, "list/insert"); assert.equal(deletion.type, "text/delete");
     if (insert.type !== "list/insert" || deletion.type !== "text/delete") return;
-    assert.notEqual(insert.id, input.operations[1].id);
+    assert.ok(input.operations[1]!.type === "list/insert");
+    assert.ok(input.operations[3]!.type === "text/delete");
+    assert.notEqual(insert.id, input.operations[1]!.id);
     assert.ok(Object.isFrozen(insert.id));
     assert.ok(Object.isFrozen(deletion.ranges));
     assert.ok(Object.isFrozen(deletion.ranges[0]));
     assert.ok(Object.isFrozen(deletion.ranges[0]!.start));
     input.clientId = "changed"; input.seq = 99;
-    input.operations[1].id.counter = 99;
-    input.operations[3].ranges[0].start.counter = 99;
-    input.operations[3].ranges[0].count = 99;
+    input.operations[1]!.id.counter = 99;
+    input.operations[3]!.ranges[0]!.start.counter = 99;
+    input.operations[3]!.ranges[0]!.count = 99;
     input.operations.length = 0;
     assert.deepEqual(saved, original);
     assert.equal(server.receive(original).commit, receipt.commit);

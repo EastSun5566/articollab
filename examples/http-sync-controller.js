@@ -106,7 +106,7 @@ export function createHttpSyncController(options) {
   }
 
   return { requireUsable, stop,
-    sync() { return synchronize(false); },
-    rejectPending() { return synchronize(true); },
+    sync: () => synchronize(false),
+    rejectPending: () => synchronize(true),
   };
 }

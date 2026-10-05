@@ -17,6 +17,7 @@ export function wrongCollectionKind(path: string): Error {
 }
 
 export function unknownOperationType(operation: unknown): Error {
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Diagnostic access only; invalid operation behavior is intentionally preserved.
   const type = (operation as { readonly type?: unknown }).type;
   return new Error(`Unknown operation type: ${String(type)}`);
 }
@@ -142,6 +143,7 @@ export function initialStates<S extends SchemaShape>(
     snapshot === undefined ? undefined : validateSnapshot(schema, snapshot);
   const states = new Map<string, CollectionState>();
 
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The fixed schema’s own keys are the document paths.
   for (const path of Object.keys(schema.definition) as Array<
     Extract<keyof S, string>
   >) {
@@ -154,19 +156,22 @@ export function initialStates<S extends SchemaShape>(
       if (value === undefined) {
         throw new Error(`Missing document path: ${path}`);
       }
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Typed snapshot boundary supplies the matching payload; collection loaders retain their runtime checks.
       states.set(path, value as JsonValue);
     } else if (descriptor.kind === "list") {
       states.set(
         path,
         snapshotData === undefined
           ? ListState.empty()
-          : ListState.load(snapshotData[path] as ListSnapshotData<JsonValue>)
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Typed snapshot boundary supplies the matching payload; collection loaders retain their runtime checks.
+          : ListState.load(snapshotData[path] as ListSnapshotData)
       );
     } else {
       states.set(
         path,
         snapshotData === undefined
           ? TextState.empty()
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Typed snapshot boundary supplies the matching payload; collection loaders retain their runtime checks.
           : TextState.load(snapshotData[path] as TextSnapshotData)
       );
     }
@@ -188,6 +193,6 @@ export function saveSnapshot<S extends SchemaShape>(
           : state,
       ])
     )
-  ) as DocumentSnapshotData<S>;
+  ) as DocumentSnapshotData<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Each state was created for the corresponding schema descriptor before serialization.
   return Object.freeze({ serverSeq, data });
 }

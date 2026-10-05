@@ -232,7 +232,7 @@ describe("list runtime", () => {
       before: null,
       id: id1,
       value: "x",
-    } as unknown as BoardOperation;
+    } as unknown as BoardOperation; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
     assert.throws(
       () => receive("wrong-kind", 1, [wrongKind]),
       /does not match document path/
@@ -377,7 +377,7 @@ describe("list runtime", () => {
             id: { bunchId: "policy", counter: 0 },
             value: "invalid",
           },
-        ] as unknown as readonly BoardOperation[];
+        ] as unknown as readonly BoardOperation[]; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
       },
     });
     const batch: BoardBatch = {

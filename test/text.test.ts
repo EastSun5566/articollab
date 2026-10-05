@@ -124,6 +124,7 @@ describe("text runtime", () => {
     assert.equal(firstInsert?.type, "text/insert");
     if (firstInsert?.type === "text/insert") {
       assert.equal(firstInsert.id.counter, 0);
+      // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
       assert.equal([...firstInsert.value].length, 2);
     }
 
@@ -349,7 +350,7 @@ describe("text runtime", () => {
       before: null,
       id: id2,
       value: "x",
-    } as unknown as NoteOperation;
+    } as unknown as NoteOperation; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
     assert.throws(
       () => receive("client-2", 1, [wrongKind]),
       /does not match document path/
@@ -358,7 +359,7 @@ describe("text runtime", () => {
       type: "value/set",
       path: "body",
       value: "invalid",
-    } as unknown as NoteOperation;
+    } as unknown as NoteOperation; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
     assert.throws(
       () => receive("client-2", 1, [valueOnText]),
       /does not match document path/

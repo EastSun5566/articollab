@@ -7,6 +7,7 @@ import {
 
 const Board = defineDocument({
   count: value(0),
+  // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- Pins string elements for independent tsc --checkJs; lint inference is not the contract.
   items: /** @type {import("articollab").ListSchema<string>} */ (list()),
   body: text(),
 });
@@ -23,7 +24,7 @@ function check(condition, message) { if (!condition) throw new Error(message); }
 
 /** @param {unknown} input */
 function encoded(input) {
-  return JSON.stringify(input, (_key, entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry)
+  return JSON.stringify(input, (_key, /** @type {unknown} */ entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry)
     ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : entry);
 }
 /** @param {unknown} actual @param {unknown} expected @param {string} message */

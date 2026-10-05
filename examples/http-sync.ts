@@ -34,7 +34,8 @@ async function readBody(request: IncomingMessage): Promise<string | null> {
   let size = 0;
   // Keep the socket alive on early exit so the caller can finish a 413 response.
   for await (const chunk of request.iterator({ destroyOnReturn: false })) {
-    const bytes: Buffer = chunk;
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- IncomingMessage emits Buffers here: no string encoding is configured.
+    const bytes: Buffer = chunk as Buffer;
     size += bytes.length;
     if (size > BODY_LIMIT) return null;
     chunks.push(bytes);
@@ -202,8 +203,8 @@ export async function connectHttpExampleClient(
 
   return {
     doc,
-    sync: controller.sync,
-    rejectPending: controller.rejectPending,
+    sync: () => controller.sync(),
+    rejectPending: () => controller.rejectPending(),
   };
 }
 

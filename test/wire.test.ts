@@ -11,7 +11,7 @@ import {
   defineDocument,
   list,
   text,
-  value,
+  value as valueSchema,
   WireDecodeError,
   type ClientBatch,
   type DocumentOperation,
@@ -19,7 +19,7 @@ import {
 } from "../src/index.ts";
 
 const Board = defineDocument({
-  meta: value<{
+  meta: valueSchema<{
     status: string;
     nested: { enabled: boolean };
     tags: JsonValue[];
@@ -209,6 +209,7 @@ describe("wire decoding", () => {
     client1.doc.receive(deleteCommit);
     client2.doc.receive(deleteCommit);
 
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
     const input = jsonRoundTrip(server.checkpoint()) as {
       snapshot: {
         data: {
@@ -829,6 +830,7 @@ describe("wire decoding", () => {
     for (const [path, input] of cases) {
       assertWireError(() => decodeServerCheckpoint(Board, input), path);
       assert.throws(
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
         () => createServer(Board, { checkpoint: input as typeof valid }),
         WireDecodeError
       );
@@ -876,7 +878,7 @@ describe("wire decoding", () => {
   });
 
   it("rejects replay sequences that cannot form an ordered commit history", () => {
-    const entry = (clientId: string, seq: number, serverSeq: number) => ({
+    const replayEntry = (clientId: string, seq: number, serverSeq: number) => ({
       batch: {
         clientId,
         seq,
@@ -890,9 +892,9 @@ describe("wire decoding", () => {
     });
     const cases = [
       // A second batch cannot have been accepted at the first global commit.
-      { serverSeq: 3, replays: [entry("a", 2, 1), entry("b", 1, 3)], path: "/replays/0/commit/serverSeq" },
+      { serverSeq: 3, replays: [replayEntry("a", 2, 1), replayEntry("b", 1, 3)], path: "/replays/0/commit/serverSeq" },
       // By commit 3, a and b cannot already have completed four batches.
-      { serverSeq: 5, replays: [entry("a", 2, 2), entry("b", 2, 3), entry("c", 1, 5)], path: "/replays/1/commit/serverSeq" },
+      { serverSeq: 5, replays: [replayEntry("a", 2, 2), replayEntry("b", 2, 3), replayEntry("c", 1, 5)], path: "/replays/1/commit/serverSeq" },
     ];
     for (const { serverSeq, replays, path } of cases) {
       const input = { snapshot: { ...createServer(Board).snapshot(), serverSeq }, replays, history: [] };
@@ -907,7 +909,7 @@ describe("wire decoding", () => {
     const input = {
       snapshot: { ...createServer(Board).snapshot(), serverSeq: 5 },
       history: [],
-      replays: [entry("c", 1, 5), entry("b", 2, 4), entry("a", 2, 2)],
+      replays: [replayEntry("c", 1, 5), replayEntry("b", 2, 4), replayEntry("a", 2, 2)],
     };
     const checkpoint = decodeServerCheckpoint(Board, input);
     assert.deepEqual(checkpoint.replays.map((entry) => entry.batch.clientId), ["c", "b", "a"]);
