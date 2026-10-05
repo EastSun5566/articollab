@@ -233,7 +233,7 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     const installedRoot = join(consumer, "node_modules/articollab");
     const installed = await json(join(installedRoot, "package.json"));
     assert.equal(installed.name, "articollab");
-    assert.equal(installed.version, "0.0.0");
+    assert.equal(installed.version, "0.1.0");
     assert.equal(installed.private, true);
     assert.deepEqual(installed.dependencies, { articulated: "^1.3.1" });
     assert.deepEqual(installed.exports, original.exports);

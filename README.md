@@ -4,7 +4,19 @@ Articollab is a small TypeScript library for server-authoritative collaborative 
 
 The core provides typed Value/List/Text collections, synchronous transactions and server policies, strict wire decoders, snapshots, checkpoints, last-batch retry deduplication and bounded catch-up. Transport, storage, authentication and recovery orchestration belong to the application, not the package.
 
-The project is private and unpublished at `0.0.0`. This documentation consolidates the candidate v0.1 contract; it is not a release announcement or a promise of production transport support. Use the checkout or a locally packed tarball, not an assumed npm release.
+The project has established its `0.1.0` baseline and remains private and unpublished. This is not an npm release announcement or a promise of production transport support. Use the checkout or a locally packed tarball, not an assumed npm release.
+
+## v0.1 notes and compatibility
+
+The baseline includes:
+
+- Typed Value/List/Text collections, optimistic reconciliation, synchronous transactions and retained pending replay conflicts.
+- Synchronous server policy and explicit rejection, last-batch retry deduplication and bounded commit catch-up.
+- Strict wire decoders, snapshots, and client/server checkpoint restore with sequence and ID allocation progress.
+
+The `0.1.x` line preserves the public API behavior documented in this README and the existing wire/checkpoint formats. Under the same schema and document lineage, upgrading within `0.1.x` must preserve the ability to restore existing valid checkpoints. Incompatible changes require `0.2.0` and explicit change notes; automatic migration across schemas or incompatible versions is not promised.
+
+Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` retains its documented `name`, JSON Pointer `path` and readable message contract, not exact message wording. Transport, storage, authentication, writer coordination, lineage checks and production reconnect orchestration remain application responsibilities.
 
 ## Quick start
 
@@ -212,6 +224,6 @@ Browser JSDoc and Node integration tests do not replace interactive verification
 
 ## Boundaries
 
-The intended minimal core is implemented; v0.1 packaging/version/publication remains a separate decision. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
+The intended minimal core and private `0.1.0` baseline are established; publication remains a separate decision. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
 
 There is no production transport or storage adapter, background sync, automatic retry/reconnect, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing, move, public stable positions or cursor API. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
