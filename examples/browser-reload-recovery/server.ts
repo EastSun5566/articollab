@@ -36,7 +36,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
     throw new Error("Usage: node examples/browser-reload-recovery/server.ts [<existing-directory> <port:1-65535>]");
   }
   const host = await startBrowserReloadRecoveryServer(args.length === 0 ? {} : { directory: args[0]!, port: Number(args[1]) });
-  console.log("Open " + host.url + " in Chrome. " + (args.length === 0
+  console.log("Open " + host.url + " in your browser. " + (args.length === 0
     ? "In-memory mode: keep this server running across reloads."
     : "Persistent mode: restart with the same directory and port, then reload the same tab.") + " Press Ctrl+C to close.");
   function stop(): void {

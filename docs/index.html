@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Learn Articollab's server-authoritative collaborative collections, from a Counter to recovery.">
+  <title>Articollab documentation</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify@5.0.0/dist/themes/core.min.css">
+</head>
+<body>
+  <div id="app">Loading Articollab documentation…</div>
+  <noscript>This documentation site needs JavaScript. The repository README also contains the complete core contracts.</noscript>
+  <script>
+    window.$docsify = {
+      name: 'Articollab',
+      loadSidebar: true,
+      subMaxLevel: 2,
+      routerMode: 'hash',
+      auto2top: true,
+      executeScript: false,
+      search: {
+        paths: 'auto',
+        placeholder: 'Search documentation',
+        noData: 'No matching sections',
+        namespace: 'articollab-v0.1',
+        depth: 3,
+      },
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify@5.0.0/dist/docsify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-typescript.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify@5.0.0/dist/plugins/search.min.js"></script>
+</body>
+</html>

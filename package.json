@@ -23,6 +23,9 @@
   ],
   "scripts": {
     "lint": "oxlint --deny-warnings --report-unused-disable-directives",
+    "docs:build": "node scripts/docs.ts build",
+    "docs:check": "node scripts/docs.ts check",
+    "docs:serve": "node scripts/docs.ts serve",
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json",
     "test": "node --test test/*.test.ts",

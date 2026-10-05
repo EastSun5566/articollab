@@ -98,7 +98,7 @@ function resources(t: TestContext) {
         child.stderr.on("data", (data: Buffer) => { stderr += data.toString(); });
         child.stdout.on("data", (data: Buffer) => {
           stdout += data.toString();
-          const match = /^Open (http:\/\/127\.0\.0\.1:\d+) in Chrome\./m.exec(stdout);
+          const match = /^Open (http:\/\/127\.0\.0\.1:\d+) in your browser\./m.exec(stdout);
           if (match !== null) { clearTimeout(timer); resolve(match[1]!); }
         });
       });

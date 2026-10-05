@@ -100,7 +100,7 @@ export async function startBrowserSmokeServer() {
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const host = await startBrowserSmokeServer();
-  console.log("Open " + host.url + " in Chrome. Press Ctrl+C to close.");
+  console.log("Open " + host.url + " in your browser. Press Ctrl+C to close.");
   function stop(): void {
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);

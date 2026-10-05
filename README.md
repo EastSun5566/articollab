@@ -4,7 +4,7 @@ Articollab is a small TypeScript library for server-authoritative collaborative 
 
 The core provides typed Value/List/Text collections, synchronous transactions and server policies, strict wire decoders, snapshots, checkpoints, last-batch retry deduplication and bounded catch-up. Transport, storage, authentication and recovery orchestration belong to the application, not the package.
 
-The project has established its `0.1.0` baseline and remains private and unpublished. This is not an npm release announcement or a promise of production transport support. Use the checkout or a locally packed tarball, not an assumed npm release.
+Version `0.1.0` is private and has not been published to npm. Use a repository checkout or a locally packed tarball. Production transport is not included.
 
 ## v0.1 notes and compatibility
 
@@ -115,7 +115,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `List<T>` | `.length`, `.get(index)`, `.values()`, `.toArray()`, iteration | `.insert(index, value)`, `.push(value)`, `.delete(index)`; single element, no in-place replacement. |
 | `Text` | `.length`, `.values()`, `.toString()`, iteration | `.insert(index, string)`, `.delete(index, count = 1)`; Unicode code points. |
 
-Values and List elements must be JSON-compatible and immutable after being supplied. Nested object/array edits are not intercepted: replace a Value rather than editing its fields; replace a List element using delete + insert in a transaction. The public state container, operation/ID containers and library-owned wire arrays are frozen, but user payloads are not generally deep-cloned or deep-frozen. A `toArray()` result is a new array, not permission to mutate its shared elements.
+Values and List elements must be JSON-compatible and immutable after being supplied. Nested object/array edits are not intercepted: replace a Value rather than editing its fields; replace a List element using delete + insert in a transaction. The public state container, operation/ID containers and library-owned wire arrays are frozen, but user payloads are not generally deep-cloned or deep-frozen. `toArray()` copies the array, but its shared elements must still remain immutable.
 
 Schema paths are fixed, nonempty strings when created with `defineDocument()`; there is no nested collection schema, schema migration or application-shape validator. For example, `value(0)` infers `Value<number>`, not a literal-only zero. TypeScript payload types do not validate arbitrary incoming JSON at runtime.
 
@@ -223,7 +223,20 @@ node --unhandled-rejections=strict --test test/interleaving.test.ts
 node --test --test-name-pattern="seed=42" test/interleaving.test.ts
 ```
 
-Browser JSDoc and Node integration tests do not replace interactive verification. Existing smoke/recovery instructions and the full JSDoc command are in the repository examples guide. Use the **Codex built-in browser**, not the user's Chrome; report unsupported checks. Documentation-only changes do not require repeating manual browser checks, and previous results must not be reported as new runs.
+Browser JSDoc and Node integration tests do not replace interactive verification. Existing smoke/recovery instructions and the full JSDoc command are in the repository examples guide.
+
+## English documentation site
+
+The Docsify tutorial proceeds from a complete Counter example through concepts, collections, transactions/events, policy/wire and recovery. This README remains the package's canonical core contract; staging generates the reference and examples pages from this file and `examples/README.md`, without private GitHub raw fetches or a second maintained contract.
+
+```sh
+pnpm build
+pnpm docs:build
+pnpm docs:check
+pnpm docs:serve
+```
+
+Preview at `http://127.0.0.1:5566/articollab/` (or `pnpm docs:serve 0` for an automatic port). The prefix matches the intended Pages project site; hash routes support deep-link reload without server fallback. Preview snapshots the staged assets at startup; restart it after editing. `docs:check` verifies the staged allowlist, local navigation/anchors, pinned CDN assets, and typechecks/runs the exact Counter snippet against built public ESM/declarations. Docs/tooling are not included in the production tarball. CDN-based rendering needs network access.
 
 ## Boundaries
 
