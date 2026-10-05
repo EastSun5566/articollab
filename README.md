@@ -192,14 +192,14 @@ The read-only GitHub Actions `CI` workflow runs on main pushes, PRs targeting ma
 | Contract | Existing focused / integration checks |
 | --- | --- |
 | Collection reads/mutations, Unicode, stable IDs and tombstones | `runtime.test.ts`, `list.test.ts`, `text.test.ts`; browser core smoke |
-| Transaction batching, rollback and reentrant delivery | Runtime/collection tests; `resume.test.ts`, `async-resume.test.ts`, HTTP sync |
+| Transaction batching, nested/no-savepoint behavior, rollback, local callback failures and reentrant delivery | `runtime.test.ts`, collection tests; `resume.test.ts`, `async-resume.test.ts`, HTTP sync |
 | Atomic policy, explicit rejection and original-result retry | Runtime policy tests, `server-reject.test.ts`, `retry.test.ts`; HTTP rejection recovery |
 | Owned wire JSON and restore metadata | `wire.test.ts`, `client-checkpoint.test.ts`, `history.test.ts` |
 | Pending prefix/conflicts, restore and catch-up | `replay-conflict.test.ts`, `client-checkpoint.test.ts`, `interleaving.test.ts`; HTTP/browser recovery |
 | Save-before-send/success and lineage boundaries (application examples) | `persistent-resume.test.ts`, `persistent-http-sync.test.ts`, browser recovery tests, `document-lineage.test.ts` |
 | Installed entrypoint and schema-specific declarations | `test/package-consumer/smoke.test.ts`; browser ESM smoke |
 
-These are coverage pointers, not proof of every observable edge case. Nested transaction/no-savepoint behavior and the precise local callback-exception notification order are source-defined here; dedicated core regression cases for those combinations are not currently present. Existing persistence/recovery tests cover callback failures at application boundaries. Do not infer missing cases from the number of passing tests.
+These are coverage pointers, not proof of every observable edge case. Dedicated core regression cases in `runtime.test.ts` cover nested transaction batching, escaping-error rollback, caught inner errors without savepoints, and the pending/sequence/notification behavior when local callbacks throw. Existing persistence/recovery tests separately cover callback failures at application boundaries. Do not infer complete coverage from the number of passing tests.
 
 The deterministic interleaving suite uses three clients, five seeds, 200 scheduling steps and repeat-trace comparison, checking protocol invariants, a Value oracle, restore equivalence and convergence—not an independent List/Text model. Reproduce one seed with:
 

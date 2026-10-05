@@ -90,6 +90,208 @@ describe("client runtime", () => {
     assert.equal(changes, 1);
   });
 
+  it("joins nested transactions until the outer callback returns", () => {
+    const { batches, doc } = setup();
+    const changes: ChangeEvent<CounterOperation>[] = [];
+    doc.on("change", (event) => changes.push(event));
+
+    const result = doc.transact(() => {
+      doc.state.count.value = 1;
+      const innerResult = doc.transact(() => {
+        doc.state.count.value = 2;
+        assert.deepEqual(batches, []);
+        assert.deepEqual(changes, []);
+        return "inner";
+      });
+      assert.equal(innerResult, "inner");
+      assert.equal(doc.state.count.value, 2);
+      assert.deepEqual(batches, []);
+      assert.deepEqual(changes, []);
+      doc.state.count.value = 3;
+      return "outer";
+    });
+
+    assert.equal(result, "outer");
+    assert.equal(doc.state.count.value, 3);
+    assert.deepEqual(batches, [{
+      clientId: "client-1",
+      seq: 1,
+      operations: [
+        { type: "value/set", path: "count", value: 1 },
+        { type: "value/set", path: "count", value: 2 },
+        { type: "value/set", path: "count", value: 3 },
+      ],
+    }]);
+    assert.deepEqual(changes, [{ origin: "local", batch: batches[0] }]);
+    assert.deepEqual(doc.checkpoint().pendingBatches, batches);
+    assert.equal(doc.checkpoint().lastLocalSeq, 1);
+  });
+
+  it("rolls back an escaping nested exception without consuming a sequence", () => {
+    const { batches, doc } = setup();
+    const changes: ChangeEvent<CounterOperation>[] = [];
+    doc.on("change", (event) => changes.push(event));
+    const before = doc.checkpoint();
+    const failure = new Error("inner callback failed");
+
+    assert.throws(() => doc.transact(() => {
+      doc.state.count.value = 1;
+      doc.transact(() => {
+        doc.state.count.value = 2;
+        throw failure;
+      });
+    }), (error) => error === failure);
+
+    assert.equal(doc.state.count.value, 0);
+    assert.deepEqual(doc.checkpoint(), before);
+    assert.deepEqual(batches, []);
+    assert.deepEqual(changes, []);
+
+    doc.state.count.value = 3;
+
+    assert.equal(doc.state.count.value, 3);
+    assert.deepEqual(batches, [{
+      clientId: "client-1",
+      seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 3 }],
+    }]);
+    assert.deepEqual(doc.checkpoint().pendingBatches, batches);
+    assert.equal(doc.checkpoint().lastLocalSeq, 1);
+    assert.deepEqual(changes, [{ origin: "local", batch: batches[0] }]);
+  });
+
+  it("keeps inner mutations when the outer callback catches their exception", () => {
+    const { batches, doc } = setup();
+    const changes: ChangeEvent<CounterOperation>[] = [];
+    doc.on("change", (event) => changes.push(event));
+    const failure = new Error("caught inner failure");
+
+    doc.transact(() => {
+      doc.state.count.value = 1;
+      assert.throws(() => doc.transact(() => {
+        doc.state.count.value = 2;
+        throw failure;
+      }), (error) => error === failure);
+      assert.equal(doc.state.count.value, 2);
+      assert.deepEqual(batches, []);
+      assert.deepEqual(changes, []);
+      doc.state.count.value = 3;
+    });
+
+    assert.equal(doc.state.count.value, 3);
+    assert.deepEqual(batches, [{
+      clientId: "client-1",
+      seq: 1,
+      operations: [
+        { type: "value/set", path: "count", value: 1 },
+        { type: "value/set", path: "count", value: 2 },
+        { type: "value/set", path: "count", value: 3 },
+      ],
+    }]);
+    assert.deepEqual(doc.checkpoint().pendingBatches, batches);
+    assert.equal(doc.checkpoint().lastLocalSeq, 1);
+    assert.deepEqual(changes, [{ origin: "local", batch: batches[0] }]);
+  });
+
+  it("keeps a completed transaction pending when onBatch throws", () => {
+    const batches: ClientBatch<CounterOperation>[] = [];
+    const changes: ChangeEvent<CounterOperation>[] = [];
+    const failure = new Error("onBatch failed");
+    let failOnBatch = true;
+    const doc = createClient(Counter, {
+      clientId: "client-1",
+      onBatch: (batch) => {
+        batches.push(batch);
+        const checkpoint = doc.checkpoint();
+        assert.equal(doc.state.count.value, batch.seq);
+        assert.equal(checkpoint.lastLocalSeq, batch.seq);
+        assert.deepEqual(checkpoint.pendingBatches, batches);
+        assert.equal(checkpoint.pendingBatches.at(-1), batch);
+        assert.equal(changes.length, 0);
+        if (failOnBatch) throw failure;
+      },
+    });
+    doc.on("change", (event) => changes.push(event));
+
+    assert.throws(() => doc.transact(() => {
+      doc.state.count.value = 1;
+    }), (error) => error === failure);
+
+    assert.equal(doc.state.count.value, 1);
+    const firstPending = doc.checkpoint();
+    assert.equal(firstPending.lastLocalSeq, 1);
+    assert.deepEqual(firstPending.pendingBatches, [{
+      clientId: "client-1",
+      seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 1 }],
+    }]);
+    assert.deepEqual(changes, []);
+
+    failOnBatch = false;
+    doc.state.count.value = 2;
+
+    assert.equal(doc.state.count.value, 2);
+    assert.equal(doc.checkpoint().lastLocalSeq, 2);
+    assert.deepEqual(batches.map((batch) => batch.seq), [1, 2]);
+    assert.deepEqual(doc.checkpoint().pendingBatches, batches);
+    assert.equal(doc.checkpoint().pendingBatches[0], firstPending.pendingBatches[0]);
+    assert.deepEqual(firstPending.pendingBatches, [batches[0]]);
+    assert.deepEqual(batches[1]?.operations, [
+      { type: "value/set", path: "count", value: 2 },
+    ]);
+    assert.deepEqual(changes, [{ origin: "local", batch: batches[1] }]);
+  });
+
+  it("keeps the batch and stops later notifications when a local listener throws", () => {
+    const batches: ClientBatch<CounterOperation>[] = [];
+    const changes: ChangeEvent<CounterOperation>[] = [];
+    const trace: string[] = [];
+    const failure = new Error("local listener failed");
+    const doc = createClient(Counter, {
+      clientId: "client-1",
+      onBatch: (batch) => {
+        batches.push(batch);
+        trace.push(`batch:${batch.seq}`);
+      },
+    });
+    const unsubscribe = doc.on("change", (event) => {
+      assert.equal(event.origin, "local");
+      trace.push("first listener");
+      throw failure;
+    });
+    doc.on("change", (event) => {
+      trace.push("second listener");
+      changes.push(event);
+    });
+
+    assert.throws(() => {
+      doc.state.count.value = 1;
+    }, (error) => error === failure);
+
+    assert.deepEqual(trace, ["batch:1", "first listener"]);
+    assert.deepEqual(changes, []);
+    assert.equal(doc.state.count.value, 1);
+    assert.equal(doc.checkpoint().lastLocalSeq, 1);
+    assert.deepEqual(doc.checkpoint().pendingBatches, [{
+      clientId: "client-1",
+      seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 1 }],
+    }]);
+
+    unsubscribe();
+    doc.state.count.value = 2;
+
+    assert.deepEqual(trace, ["batch:1", "first listener", "batch:2", "second listener"]);
+    assert.equal(doc.state.count.value, 2);
+    assert.equal(doc.checkpoint().lastLocalSeq, 2);
+    assert.deepEqual(batches.map((batch) => batch.seq), [1, 2]);
+    assert.deepEqual(doc.checkpoint().pendingBatches, batches);
+    assert.deepEqual(batches[1]?.operations, [
+      { type: "value/set", path: "count", value: 2 },
+    ]);
+    assert.deepEqual(changes, [{ origin: "local", batch: batches[1] }]);
+  });
+
   it("does nothing for an empty transaction", () => {
     const { batches, doc } = setup();
     let changes = 0;
