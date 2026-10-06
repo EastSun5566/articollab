@@ -31,6 +31,7 @@
     "LICENSE"
   ],
   "scripts": {
+    "release": "commit-and-tag-version --sign",
     "lint": "oxlint --deny-warnings --report-unused-disable-directives",
     "knip": "knip --no-progress --treat-config-hints-as-errors",
     "docs:build": "node scripts/docs.ts build",
@@ -47,6 +48,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "commit-and-tag-version": "^13.2.1",
     "knip": "^6.39.0",
     "oxlint": "^1.87.0",
     "oxlint-tsgolint": "^7.0.2003",

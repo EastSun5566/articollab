@@ -244,10 +244,11 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
       assert.doesNotMatch(path, /(^|\/)(src|test|tests|examples|node_modules)\//);
     }
     const original = await json(join(root, "package.json"));
+    assert.ok(typeof original.version === "string");
     const installedRoot = join(consumer, "node_modules/articollab");
     const installed = await json(join(installedRoot, "package.json"));
     assert.equal(installed.name, "articollab");
-    assert.equal(installed.version, "0.1.0-beta.0");
+    assert.equal(installed.version, original.version);
     assert.equal(installed.private, false);
     assert.deepEqual(installed.repository, {
       type: "git", url: "git+https://github.com/EastSun5566/articollab.git",

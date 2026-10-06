@@ -75,13 +75,35 @@ Before the first automated release, configure the package's **Trusted publishing
 
 The manifest's `repository.url` must match this repository. The workflow uses GitHub-hosted runners and npm `11.21.0`, with `id-token: write` only on the publish job, separate from checks and docs deployment. No npm token, login or approval environment is used. Private source repositories support trusted publishing but do not generate provenance, even for a public package; see [npm's trusted publishing documentation](https://docs.npmjs.com/trusted-publishers/).
 
-For a new release, update `package.json` and the consumer test's exact version assertion, review the compatibility notes and documentation, then commit to `main`. For example, after preparing `0.1.0-beta.1`:
+Use the local [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) tool to prepare releases. Fetch `origin/main` and tags first, confirm a clean `main` synchronized with `origin/main`, and review compatibility notes and documentation. Always specify the intended version and preview it before making changes:
+
+```sh
+pnpm release --release-as 0.1.0-beta.1 --dry-run
+```
+
+After reviewing the preview and authorizing the release:
+
+```sh
+pnpm release --release-as 0.1.0-beta.1
+```
+
+This updates `package.json`, generates `CHANGELOG.md` from Conventional Commits, and creates a signed release commit and signed `v` tag using the configured GPG key. It does not push or publish. The consumer test compares the installed version exactly with the checkout manifest, so no separate test-version edit or updater is needed. Release tooling and the changelog stay outside the production tarball.
+
+The tool's standard changelog window starts at the previous stable release, not the previous beta. Until there is a stable tag, a beta changelog includes existing core features; those entries are cumulative, not necessarily new in that beta. Do not use `--first-release`, force tags, or replace existing tags. If the tool or signing fails, inspect the partial result before taking further action; do not bypass signing or blindly rerun it.
+
+Verify the release diff, commit/tag signatures and local checks, then push only `main`:
 
 ```sh
 git push origin main
-git tag -s v0.1.0-beta.1 -m "v0.1.0-beta.1"
+```
+
+Confirm CI succeeds for that release commit before pushing its specific tag:
+
+```sh
 git push origin v0.1.0-beta.1
 ```
+
+Ignore the tool's suggested manual publish command: pushing the tag starts the existing CI publication flow. Do not use `--follow-tags`, which could push other release tags too. Preparing a release, pushing it, and publishing it are separate steps; previewing or installing this tool does not authorize a release.
 
 The tag runs the full checks before publication. A separate job builds the same commit, packs one tarball outside the checkout, dry-runs it, then publishes that same file with explicit registry, public access and the selected dist-tag. Explicit CLI tags override the manifest's default `beta` tag. Publish lifecycle scripts are disabled; tags are not automatically cancelled by newer runs. PRs, main pushes and manual dispatch never publish.
 
