@@ -249,6 +249,9 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     assert.equal(installed.name, "articollab");
     assert.equal(installed.version, "0.1.0-beta.0");
     assert.equal(installed.private, false);
+    assert.deepEqual(installed.repository, {
+      type: "git", url: "git+https://github.com/EastSun5566/articollab.git",
+    });
     assert.deepEqual(installed.publishConfig, {
       registry: "https://registry.npmjs.org/", access: "public", tag: "beta",
     });

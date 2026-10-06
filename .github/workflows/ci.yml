@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -12,23 +13,45 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   checks:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      dist-tag: ${{ steps.release.outputs.dist-tag }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up Node.js 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           package-manager-cache: false
+
+      - name: Validate release tag
+        id: release
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { appendFileSync, readFileSync } from "node:fs";
+
+          const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+          const tag = process.env.GITHUB_REF_NAME;
+          assert.match(tag ?? "", /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/);
+          assert.equal(tag, "v" + manifest.version, "Release tag must match package.json");
+          assert.equal(manifest.name, "articollab");
+          assert.equal(manifest.private, false);
+          const distTag = tag.includes("-beta.") ? "beta" : "latest";
+          appendFileSync(process.env.GITHUB_OUTPUT, "dist-tag=" + distTag + "\n");
+          NODE
 
       - name: Set up pnpm from packageManager
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -57,6 +80,9 @@ jobs:
       # Browser JS imports the built entrypoint; type-aware lint needs its declarations.
       - name: Lint
         run: pnpm lint
+
+      - name: Check unused code and dependencies
+        run: pnpm knip
 
       - name: Check browser smoke JSDoc
         run: pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js examples/http-sync-controller.js examples/browser-http-smoke/smoke.js examples/browser-reload-recovery/recovery.js
@@ -97,3 +123,92 @@ jobs:
       - name: Deploy validated documentation
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  publish:
+    needs: checks
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && needs.checks.outputs.dist-tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NPM_DIST_TAG: ${{ needs.checks.outputs.dist-tag }}
+    steps:
+      - name: Check out validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Set up pnpm from packageManager
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+          cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Set up npm for trusted publishing
+        run: |
+          npm install --global npm@11.21.0 --ignore-scripts
+          npm --version
+
+      - name: Build
+        run: pnpm build
+
+      - name: Pack release tarball
+        id: pack
+        run: |
+          release_directory=$(mktemp -d "$RUNNER_TEMP/articollab-release.XXXXXX")
+          pnpm pack --pack-destination "$release_directory"
+          node --input-type=module - "$release_directory" <<'NODE'
+          import assert from "node:assert/strict";
+          import { createHash } from "node:crypto";
+          import { appendFileSync, readFileSync, readdirSync } from "node:fs";
+          import { join } from "node:path";
+
+          const directory = process.argv[2];
+          const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+          const filename = manifest.name + "-" + manifest.version + ".tgz";
+          assert.deepEqual(readdirSync(directory), [filename]);
+          const tarball = join(directory, filename);
+          const integrity = "sha512-" + createHash("sha512").update(readFileSync(tarball)).digest("base64");
+          appendFileSync(process.env.GITHUB_OUTPUT, "tarball=" + tarball + "\nintegrity=" + integrity + "\n");
+          NODE
+
+      - name: Dry-run release tarball
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: npm publish "$TARBALL" --dry-run --ignore-scripts --tag "$NPM_DIST_TAG" --access public --registry=https://registry.npmjs.org/
+
+      - name: Publish release tarball with OIDC
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: npm publish "$TARBALL" --ignore-scripts --tag "$NPM_DIST_TAG" --access public --registry=https://registry.npmjs.org/
+
+      - name: Verify registry version, dist-tag and integrity
+        env:
+          TARBALL_INTEGRITY: ${{ steps.pack.outputs.integrity }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { execFileSync } from "node:child_process";
+          import { readFileSync } from "node:fs";
+
+          const { name, version } = JSON.parse(readFileSync("package.json", "utf8"));
+          const published = JSON.parse(execFileSync("npm", [
+            "view", name + "@" + version, "--json", "--registry=https://registry.npmjs.org/",
+          ], { encoding: "utf8", timeout: 30_000 }));
+          assert.equal(published.version, version);
+          assert.equal(published["dist-tags"][process.env.NPM_DIST_TAG], version);
+          assert.equal(published.dist.integrity, process.env.TARBALL_INTEGRITY);
+          console.log("Verified " + name + "@" + version + " on " + process.env.NPM_DIST_TAG);
+          NODE

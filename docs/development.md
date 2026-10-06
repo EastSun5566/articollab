@@ -12,14 +12,17 @@ pnpm check
 pnpm test
 pnpm build
 pnpm lint
+pnpm knip
 pnpm test:package
 ```
 
 Native Node tests run TypeScript directly; production builds emit only `src` into `dist`. `test:package` is separate from `test`: it builds/packs a local tarball and installs it in a fresh temporary ESM consumer, checking package contents, runtime and independent strict NodeNext declarations (`skipLibCheck: false`). Consumer installation uses the checkout's exact installed TypeScript/Node types versions, disables install scripts and may need registry access. Nothing is published; temporary consumers are cleaned up.
 
-`pnpm lint` uses pinned Oxlint/tsgolint with type-aware TypeScript/Oxc rules, correctness/suspicious errors, explicit-any and unsafe-value checks. Warnings and unused disable directives fail. Pedantic/style/restriction/nursery are not enabled wholesale. Native `node:test` registration calls have a package- and test-source-limited known-safe exception; other promises remain checked. Local exceptions document verified decoder/type bridges, deliberate negative fixtures and Unicode code-point behavior. Build first so browser JS can resolve the production declarations. `tsc` and independent browser JSDoc checking remain separate gates.
+`pnpm lint` uses lockfile-pinned Oxlint/tsgolint with caret ranges in the manifest, type-aware TypeScript/Oxc rules, correctness/suspicious errors, explicit-any and unsafe-value checks. Warnings and unused disable directives fail. Pedantic/style/restriction/nursery are not enabled wholesale. Native `node:test` registration calls have a package- and test-source-limited known-safe exception; other promises remain checked. Local exceptions document verified decoder/type bridges, deliberate negative fixtures and Unicode code-point behavior. Build first so browser JS can resolve the production declarations. `tsc` and independent browser JSDoc checking remain separate gates.
 
-The GitHub Actions `CI` workflow runs on main pushes, PRs targeting main and manual dispatch. One Ubuntu 24.04/Node 24 checks job uses the pinned pnpm, frozen install, check/test/build/lint, complete browser JSDoc checking, package consumer smoke and docs build/check. There is no dependency cache. Local success is not proof of remote CI success.
+`pnpm knip` checks unused files, dependencies and internal exports across source, tests, examples and scripts. Findings and configuration hints fail CI. Public entrypoint exports are intentional package APIs, not deletion candidates just because this checkout does not use them. Browser module entries are explicit; package scripts are discovered automatically. Generated files follow `.gitignore`. Knip is a static check, not proof that all unnecessary code is absent; review findings before removing anything.
+
+The GitHub Actions `CI` workflow runs on main pushes, `v*` tag pushes, PRs targeting main and manual dispatch. One Ubuntu 24.04/Node 24 checks job uses the pinned pnpm, frozen install, check/test/build/lint/Knip, complete browser JSDoc checking, package consumer smoke and docs build/check. There is no dependency cache. Local success is not proof of remote CI success.
 
 | Contract | Existing focused / integration checks |
 | --- | --- |
@@ -55,8 +58,33 @@ pnpm docs:serve
 
 Preview at `http://127.0.0.1:5566/articollab/` (or `pnpm docs:serve 0` for an automatic port). The prefix matches the intended Pages project site; hash routes support deep-link reload without server fallback. Preview snapshots the staged assets at startup; restart it after editing. `docs:check` verifies the staged allowlist, local navigation/anchors, pinned CDN assets, and typechecks/runs the exact Counter snippet against built public ESM/declarations. Docs/tooling are not included in the production tarball. CDN-based rendering needs network access.
 
-PRs only validate. Documentation artifact upload and the `deploy-docs` job are gated by repository variable `PAGES_ENABLED=true`, a main push/manual event, and successful checks. Only deployment gets `pages: write`/`id-token: write` and the `github-pages` environment; only validated `.docs-site/` is uploaded. Configure Pages uses `enablement: false`. With the variable unset, no upload/deploy occurs. Nothing in this setup enables Pages, changes repository visibility, or publishes npm.
+PRs only validate. Documentation artifact upload and the `deploy-docs` job are gated by repository variable `PAGES_ENABLED=true`, a main push/manual event, and successful checks. The docs deployment job gets `pages: write`/`id-token: write` and the `github-pages` environment; only validated `.docs-site/` is uploaded. Configure Pages uses `enablement: false`. With the variable unset, no upload/deploy occurs. Documentation deployment never enables Pages, changes repository visibility or publishes npm. Tag runs do not deploy docs.
 
 The source repository remains private; the npm beta is public. Before enabling deployment, check [GitHub Pages support for private repositories](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages) and review the staged content. A private repository does not make its documentation site private. After deployment, check the workflow commit, site URL and browser behavior; CI checks alone do not verify the rendered site.
+
+## npm release
+
+Release only by pushing a matching version tag after the version commit is on `main`. Tags must be canonical `vX.Y.Z` or `vX.Y.Z-beta.N`, exactly match `package.json`, and point to a commit in `origin/main` history. Other prereleases, build metadata and leading-zero version components are rejected before dependency installation. Beta tags publish to `beta`; stable tags publish to `latest`.
+
+Before the first automated release, configure the package's **Trusted publishing** settings on npm:
+
+- Provider: GitHub Actions.
+- Organization or user: `EastSun5566`; repository: `articollab`.
+- Workflow filename: `ci.yml` (not the full path); environment name: leave empty.
+- Allow direct `npm publish`; no additional dist-tag management permission is needed.
+
+The manifest's `repository.url` must match this repository. The workflow uses GitHub-hosted runners and npm `11.21.0`, with `id-token: write` only on the publish job, separate from checks and docs deployment. No npm token, login or approval environment is used. Private source repositories support trusted publishing but do not generate provenance, even for a public package; see [npm's trusted publishing documentation](https://docs.npmjs.com/trusted-publishers/).
+
+For a new release, update `package.json` and the consumer test's exact version assertion, review the compatibility notes and documentation, then commit to `main`. For example, after preparing `0.1.0-beta.1`:
+
+```sh
+git push origin main
+git tag -s v0.1.0-beta.1 -m "v0.1.0-beta.1"
+git push origin v0.1.0-beta.1
+```
+
+The tag runs the full checks before publication. A separate job builds the same commit, packs one tarball outside the checkout, dry-runs it, then publishes that same file with explicit registry, public access and the selected dist-tag. Explicit CLI tags override the manifest's default `beta` tag. Publish lifecycle scripts are disabled; tags are not automatically cancelled by newer runs. PRs, main pushes and manual dispatch never publish.
+
+After publishing, the job verifies registry version, dist-tag and SHA-512 integrity against that tarball. Local dry-run is not proof of OIDC authentication or remote publication. An already published name/version fails on rerun; there is no automatic version bump or retry. If the publish response or final verification fails, inspect the registry before taking further action: publication may already have completed and cannot be rolled back by the workflow. Do not move old tags or attempt to overwrite a released version.
 
 [Previous: Examples guide](examples.md) · [Next: FAQ and limitations](faq.md)

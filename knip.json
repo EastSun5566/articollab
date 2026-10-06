@@ -1,0 +1,11 @@
+{
+  "$schema": "./node_modules/knip/schema.json",
+  "entry": [
+    "src/index.ts",
+    "test/**/*.test.ts",
+    "examples/browser-smoke/smoke.js",
+    "examples/browser-http-smoke/smoke.js",
+    "examples/browser-reload-recovery/recovery.js"
+  ],
+  "project": ["**/*.{ts,js}"]
+}

@@ -8,6 +8,10 @@
     "tag": "beta"
   },
   "description": "Server-authoritative collaborative collections powered by articulated.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EastSun5566/articollab.git"
+  },
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@10.34.5",
@@ -28,6 +32,7 @@
   ],
   "scripts": {
     "lint": "oxlint --deny-warnings --report-unused-disable-directives",
+    "knip": "knip --no-progress --treat-config-hints-as-errors",
     "docs:build": "node scripts/docs.ts build",
     "docs:check": "node scripts/docs.ts check",
     "docs:serve": "node scripts/docs.ts serve",
@@ -42,8 +47,9 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "oxlint": "1.87.0",
-    "oxlint-tsgolint": "7.0.2003",
+    "knip": "^6.39.0",
+    "oxlint": "^1.87.0",
+    "oxlint-tsgolint": "^7.0.2003",
     "typescript": "^7.0.2"
   }
 }
