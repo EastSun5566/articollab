@@ -1,13 +1,9 @@
 import { decodeClientBatch } from "../src/index.ts";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { before as setup, describe, it, type TestContext } from "node:test";
-import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 
 import { createServer, type ClientCheckpoint, type ClientDocument } from "../src/index.ts";
 import { startBrowserReloadRecoveryServer } from "../examples/browser-reload-recovery/server.ts";
@@ -21,9 +17,6 @@ type Storage = { getItem(this: void, key: string): string | null; setItem(key: s
 type Connection = { doc: ClientDocument<Shape>; documentId: string; sync(): Promise<boolean>; rejectPending(): Promise<boolean> };
 const key = "articollab:browser-reload-recovery:checkpoint";
 const header = "X-Articollab-Document-Id";
-const root = fileURLToPath(new URL("../", import.meta.url));
-const execute = promisify(execFile);
-const require = createRequire(import.meta.url);
 let recovery: {
   createSessionCheckpointStore(storage: Storage): { load(): Record | null; save(record: Record): undefined };
   connectPersistentBrowserClient(url: string, options: { storage: Storage; fetch?: typeof fetch }): Promise<Connection>;
@@ -57,8 +50,6 @@ async function host(t: TestContext, port = 0) {
 
 describe("browser recovery document lineage", { timeout: 30_000 }, () => {
   setup(async () => {
-    const compiler = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
-    await execute(process.execPath, [compiler, "-p", "tsconfig.build.json"], { cwd: root, timeout: 15_000 });
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.
     recovery = (await import(new URL("../examples/browser-reload-recovery/recovery.js", import.meta.url).href)) as typeof recovery;
   });

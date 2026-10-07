@@ -16,7 +16,17 @@ pnpm knip
 pnpm test:package
 ```
 
-Native Node tests run TypeScript directly; production builds emit only `src` into `dist`. `test:package` is separate from `test`: it builds/packs a local tarball and installs it in a fresh temporary ESM consumer, checking package contents, runtime and independent strict NodeNext declarations (`skipLibCheck: false`). Consumer installation uses the checkout's exact installed TypeScript/Node types versions, disables install scripts and may need registry access. Nothing is published; temporary consumers are cleaned up.
+Native Node tests run TypeScript directly; production builds emit only `src` into `dist`. `pnpm test` and `pnpm test:coverage` build production code once before starting the runner, then execute at most two test files concurrently. Suites do not rebuild the shared `dist`; file-level isolation and existing protocol interleaving tests remain unchanged. Build failure stops execution before tests start.
+
+For focused browser or benchmark tests, run `pnpm build` first, including after changing source. Direct `node --test` does not build or check whether `dist` is current:
+
+```sh
+pnpm build
+node --unhandled-rejections=strict --test test/browser-server-recovery.test.ts
+node --unhandled-rejections=strict --test test/benchmark.test.ts
+```
+
+`test:package` is separate from `test`: it still builds/packs a local tarball and installs it in a fresh temporary ESM consumer, checking package contents, runtime and independent strict NodeNext declarations (`skipLibCheck: false`). Consumer installation uses the checkout's exact installed TypeScript/Node types versions, disables install scripts and may need registry access. Nothing is published; temporary consumers are cleaned up. `pnpm bench` also keeps its own production build.
 
 `pnpm lint` uses lockfile-pinned Oxlint/tsgolint with caret ranges in the manifest, type-aware TypeScript/Oxc rules, correctness/suspicious errors, explicit-any and unsafe-value checks. Warnings and unused disable directives fail. Pedantic/style/restriction/nursery are not enabled wholesale. Native `node:test` registration calls have a package- and test-source-limited known-safe exception; other promises remain checked. Local exceptions document verified decoder/type bridges, deliberate negative fixtures and Unicode code-point behavior. Build first so browser JS can resolve the production declarations. `tsc` and independent browser JSDoc checking remain separate gates.
 

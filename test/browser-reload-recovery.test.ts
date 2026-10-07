@@ -3,8 +3,7 @@ import { decodeClientBatch } from "../src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { before as setup, describe, it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -15,7 +14,6 @@ import { startHttpExampleServer } from "../examples/http-sync.ts";
 import { Board } from "../examples/resume.ts";
 
 const execute = promisify(execFile);
-const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const recoveryUrl = new URL("../examples/browser-reload-recovery/recovery.js", import.meta.url).href;
 const browserUrl = new URL("../examples/browser-http-smoke/smoke.js", import.meta.url).href;
@@ -66,8 +64,6 @@ function visible(doc: Client) {
 
 describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
   setup(async () => {
-    const compiler = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
-    await execute(process.execPath, [compiler, "-p", "tsconfig.build.json"], { cwd: root, timeout: 15_000 });
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.
     recovery = (await import(new URL("../examples/browser-reload-recovery/recovery.js", import.meta.url).href)) as typeof recovery;
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.

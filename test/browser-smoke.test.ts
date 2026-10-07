@@ -24,9 +24,6 @@ async function host(t: TestContext) {
 
 describe("browser core smoke example", { timeout: 30_000 }, () => {
   before(async () => {
-    // Build once before the dynamic import so pnpm test also works without an existing dist.
-    const compiler = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
-    await execute(process.execPath, [compiler, "-p", "tsconfig.build.json"], { cwd: root, timeout: 15_000 });
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.
     smoke = (await import(smokeUrl)) as typeof smoke;
   });

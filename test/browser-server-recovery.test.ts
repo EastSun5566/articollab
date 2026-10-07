@@ -3,9 +3,8 @@ import { decodeClientBatch } from "../src/index.ts";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { before as setup, describe, it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -17,7 +16,6 @@ import { createCheckpointStore } from "../examples/persistent-resume.ts";
 import { Board } from "../examples/resume.ts";
 
 const execute = promisify(execFile);
-const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cli = join(root, "examples/browser-reload-recovery/server.ts");
 const recoveryUrl = new URL("../examples/browser-reload-recovery/recovery.js", import.meta.url).href;
@@ -109,8 +107,6 @@ function resources(t: TestContext) {
 
 describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
   setup(async () => {
-    const compiler = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
-    await execute(process.execPath, [compiler, "-p", "tsconfig.build.json"], { cwd: root, timeout: 15_000 });
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.
     ({ connectPersistentBrowserClient: connectBrowser } = (await import(recoveryUrl)) as { connectPersistentBrowserClient: typeof connectBrowser });
   });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { before, describe, it } from "node:test";
+import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -22,15 +22,6 @@ function run(args: string[]) {
 }
 
 describe("collection benchmark", () => {
-  before(async () => {
-    const cli = process.env.npm_execpath;
-    if (cli !== undefined) {
-      await execute(process.execPath, [cli, "--silent", "build"], { cwd: root, env, timeout: 30_000 });
-    } else {
-      await execute("pnpm", ["--silent", "build"], { cwd: root, env, timeout: 30_000 });
-    }
-  });
-
   it("runs every smoke workload and reports finite samples with reproducible metadata", async () => {
     const output = await run(["--expose-gc", script, "--smoke", "--json"]);
     assert.equal(output.stderr, "");

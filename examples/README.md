@@ -394,11 +394,12 @@ Open the printed localhost URL in your browser. The page runs three fixed scenar
 Both clients and the authoritative server run inside the page. The Node host only serves local assets: the production ESM build and the installed articulated/sparse-array-rled ESM builds. An import map resolves package names, while fixed extensionless asset aliases accommodate the dependencies' relative imports. No JavaScript is rewritten, and no CDN, bundler, Node polyfill or new dependency is used. The aliases are example-only loading support, not a package loader contract or a production browser transport. This smoke check exercises the browser used for interactive verification, not a complete browser compatibility matrix.
 
 ```sh
+pnpm build
 pnpm exec tsc --ignoreConfig --allowJs --checkJs --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js
 node --unhandled-rejections=strict --test test/browser-smoke.test.ts
 ```
 
-The focused native tests build production code once before importing the same smoke module, verify its repeatability and local asset routes, and check import side effects. Running them in Node does not replace opening the page in a real browser. The JavaScript smoke module uses JSDoc for type checking and browser-native execution; production `dist` still contains only library code.
+Build before running focused native tests; they import the same smoke module without rebuilding production code, verify its repeatability and local asset routes, and check import side effects. The full `pnpm test` command builds once and runs up to two test files concurrently. Running tests in Node does not replace opening the page in a real browser. The JavaScript smoke module uses JSDoc for type checking and browser-native execution; production `dist` still contains only library code.
 
 ## Browser HTTP smoke example
 
@@ -412,6 +413,7 @@ Open the printed localhost URL in your browser. Unlike the core smoke above, the
 Three fixed scenarios check mixed optimistic edits and silent acknowledgements, JSON checkpoint restore with tombstones and pending work, and rejection followed by blocked recovery and resumed editing. Each reports client/server state, watermarks, pending sequences and conflicts; failures stop the run and appear on the page. **Run again** and reload create new UUID client namespaces and start from the current server snapshot, not a reset document. The demo policy rejects only the first batch of each `reject-` client, then accepts later work. Assume no other writers while a smoke run is in progress.
 
 ```sh
+pnpm build
 node --unhandled-rejections=strict --test test/browser-http-smoke.test.ts
 pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js examples/http-sync-controller.js examples/browser-http-smoke/smoke.js
 ```
@@ -448,6 +450,7 @@ Bootstrap loads and validates the checkpoint, saves it, then starts listening. O
 The example-only browser wrapper saves synchronously after creation, after local pending is added, and after each successful receive, including silent acknowledgements. The session store serializes completely before one `setItem()` and loads through the public checkpoint decoder. Only a missing key creates a fresh client; malformed data, denied storage or quota failures throw without clearing the old data or falling back to a snapshot. Storage or synchronization failure stops the connection without rolling back runtime changes. Preserve the displayed current checkpoint before leaving: reload restores only successfully saved work. An incoming listener failure prevents the subsequent receive save.
 
 ```sh
+pnpm build
 node --unhandled-rejections=strict --test test/browser-reload-recovery.test.ts
 node --unhandled-rejections=strict --test test/browser-server-recovery.test.ts
 node --unhandled-rejections=strict --test test/document-lineage.test.ts
