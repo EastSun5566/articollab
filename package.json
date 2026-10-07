@@ -38,6 +38,7 @@
     "docs:check": "node scripts/docs.ts check",
     "docs:serve": "node scripts/docs.ts serve",
     "build": "tsc -p tsconfig.build.json",
+    "bench": "pnpm --silent build && node --expose-gc scripts/bench.ts",
     "check": "tsc -p tsconfig.json",
     "test": "node --test test/*.test.ts",
     "test:package": "node --unhandled-rejections=strict --test test/package-consumer/smoke.test.ts",

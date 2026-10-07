@@ -45,6 +45,33 @@ node --test --test-name-pattern="seed=42" test/interleaving.test.ts
 
 Browser JSDoc and Node integration tests do not replace interactive verification. Existing smoke/recovery instructions and the full JSDoc command are in the [examples guide](examples.md).
 
+## Collection performance baseline
+
+```sh
+pnpm bench
+pnpm --silent bench --json
+pnpm bench --smoke
+```
+
+The standalone benchmark builds production ESM and uses only the public `articollab` entrypoint. It measures List and Text separately at 1,000, 10,000 and 50,000 elements/code points. Initial values are `"x"`; List inserts `"y"` and Text inserts the single code point `"😀"`. Fixed snapshot/checkpoint hydration creates the fixtures without thousands of individual writes. Server history is disabled; there is no network, wire decoding, client churn or filesystem persistence in the measured workloads.
+
+| Workload | Measured work |
+| --- | --- |
+| `local-insert` / `local-delete` | Single-element middle edits; batches remain pending without submission. |
+| `sync-insert` | Insert, server receive, writer receive and one peer receive synchronously in one process. Not pure local mutation or network latency. |
+| `pending-replay` | Receive one remote Value commit with 20 local insert batches pending; server submission and pending setup are excluded. |
+| `materialize` | List `toArray()` or Text `toString()`. |
+| `snapshot` | `server.snapshot()`, without JSON serialization. |
+| `unused-policy-snapshot` | Server Value mutation with a resolver that never reads snapshot. |
+| `unchanged-receive` | Server Value mutation plus client receive while List/Text is unchanged. |
+| `retained-heap` | Signed GC-after-hydration heap delta for one live client. An estimate, not peak memory, allocation rate or RSS. |
+
+Cases run sequentially in separate Node processes, with a 30-second timeout per worker. Each case warms up once and collects five samples from fresh fixtures. Timings average ten operations per sample; pending replay performs one receive. Setup, explicit GC and semantic assertions are outside timing, while natural GC during operations remains included. Insert/delete samples evolve the fixture by ten elements. Repeated materialization/snapshot reads use unchanged state. Retained heap uses explicit GC before and after client construction, keeps the client alive through the reading and preserves negative measurements. Initial server snapshot/checkpoint UTF-8 JSON bytes are reported separately, outside timing and heap measurement.
+
+`--smoke` uses size 32, two samples and two operations per sample, still with 20 pending batches. Its tests check the same workloads and semantic invariants, not performance thresholds. The benchmark is not a CI timing gate, and results are not an SLA or a prediction of browser performance.
+
+The table shows median/min/max with units; JSON also includes raw samples, workload settings, Node/V8, OS/architecture/CPU, package/dependency versions and Git SHA/dirty status. For a pure JSON file, redirect `pnpm --silent bench --json` to a caller-chosen location outside the checkout. Nothing is saved automatically or included in the npm tarball. Compare runs on the same machine, Node version and workload, without unrelated load; repeat runs and inspect their spread before judging a regression. Five samples do not justify p95 claims.
+
 ## Documentation preview
 
 The tutorial and canonical core reference live in `docs/`. Staging copies those pages and generates only the examples page from `examples/README.md`. No documentation page is generated from the root README.
