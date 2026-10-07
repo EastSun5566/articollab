@@ -212,6 +212,7 @@ export class TextState {
   }
 
   visibleEquals(other: TextState): boolean {
+    if (this === other) return true;
     if (this.length !== other.length) return false;
 
     const left = this.idList.values();

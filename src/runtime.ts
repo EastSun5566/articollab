@@ -745,6 +745,9 @@ export class ServerDocument<S extends SchemaShape> {
         seq: batch.seq,
         operations: incomingOperations,
       });
+      const states = this.authoritativeStates;
+      const watermark = this.nextServerSeq - 1;
+      let snapshot: DocumentSnapshot<S> | undefined;
       const resolvedOperations =
         reject
           ? []
@@ -753,7 +756,10 @@ export class ServerDocument<S extends SchemaShape> {
             : this.resolve(
                 Object.freeze({
                   batch: ownedBatch,
-                  snapshot: this.snapshot(),
+                  get snapshot(): DocumentSnapshot<S> {
+                    // Capture pre-batch state even if the context is read after later commits.
+                    return snapshot ??= saveSnapshot<S>(states, watermark);
+                  },
                 })
               );
       if (!Array.isArray(resolvedOperations)) {

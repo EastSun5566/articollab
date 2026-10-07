@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { IdList } from "articulated";
+
+import { ListState } from "../src/list.ts";
+import { TextState } from "../src/text.ts";
 
 import {
   createClient,
   createServer,
   defineDocument,
   list,
+  text,
   value as valueSchema,
   type ChangeEvent,
   type ClientBatch,
@@ -14,6 +19,7 @@ import {
   type ServerCheckpoint,
   type ServerDocument,
   type ServerCommit,
+  type ServerResolveContext,
 } from "../src/index.ts";
 
 const Counter = defineDocument({
@@ -50,6 +56,49 @@ if (false) {
 }
 
 describe("client runtime", () => {
+  it("skips unchanged collection iteration while retaining equal own acks and real changes", (t) => {
+    const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
+    const server = createServer(Board);
+    const outgoing: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const remote: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const doc = createClient(Board, { clientId: "a", onBatch: (batch) => outgoing.push(batch) });
+    const peer = createClient(Board, { clientId: "b", onBatch: (batch) => remote.push(batch) });
+    let changes = 0;
+    doc.on("change", () => changes++);
+    doc.transact(() => {
+      doc.state.items.push("a");
+      doc.state.body.insert(0, "A😀");
+    });
+    const first = server.receive(outgoing[0]!).commit;
+    const iteration = t.mock.method(IdList.prototype, "values");
+    doc.receive(first);
+    peer.receive(first);
+    assert.equal(changes, 1); // Independently rebuilt but equal own state is silent.
+    assert.ok(iteration.mock.calls.length > 0);
+    iteration.mock.resetCalls();
+
+    peer.state.count.value = 1;
+    const count = server.receive(remote[0]!).commit;
+    doc.receive(count);
+    peer.receive(count);
+    assert.equal(iteration.mock.calls.length, 0);
+    assert.equal(changes, 2);
+    assert.equal(doc.state.count.value, 1);
+
+    peer.transact(() => {
+      peer.state.items.push("b");
+      peer.state.body.insert(0, "B");
+    });
+    const mixed = server.receive(remote[1]!).commit;
+    doc.receive(mixed);
+    peer.receive(mixed);
+    assert.equal(changes, 3);
+    assert.deepEqual(doc.state.items.toArray(), ["a", "b"]);
+    assert.equal(doc.state.body.toString(), "BA😀");
+    assert.equal(doc.checkpoint().pendingBatches.length, 0);
+    assert.equal(peer.checkpoint().pendingBatches.length, 0);
+  });
+
   it("infers the schema state and emits one batch for a mutation", () => {
     const { batches, doc } = setup();
     const initialCount: number = doc.state.count.value;
@@ -748,6 +797,50 @@ describe("server runtime", () => {
 });
 
 describe("server policy", () => {
+  it("lazily saves each frozen policy snapshot once from its captured pre-batch state", (t) => {
+    const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
+    const contexts: ServerResolveContext<typeof Board.definition>[] = [];
+    const listSave = t.mock.method(ListState.prototype, "save");
+    const textSave = t.mock.method(TextState.prototype, "save");
+    const server = createServer(Board, {
+      resolve: (context) => { contexts.push(context); return context.batch.operations; },
+    });
+    const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const doc = createClient(Board, { clientId: "a", onBatch: (batch) => batches.push(batch) });
+    doc.transact(() => {
+      doc.state.count.value = 1;
+      doc.state.items.push("a");
+      doc.state.body.insert(0, "A😀");
+    });
+    server.receive(batches[0]!);
+    doc.state.count.value = 2;
+    server.receive(batches[1]!);
+    assert.equal(listSave.mock.calls.length, 0);
+    assert.equal(textSave.mock.calls.length, 0);
+
+    const first = contexts[0]!;
+    assert.ok(Object.isFrozen(first));
+    const snapshot = first.snapshot; // First read happens after two successful commits.
+    assert.deepEqual(snapshot, {
+      serverSeq: 0,
+      data: { count: 0, items: { idList: [], values: [] }, body: { idList: [], value: "" } },
+    });
+    assert.ok(Object.isFrozen(snapshot));
+    assert.ok(Object.isFrozen(snapshot.data));
+    assert.strictEqual(first.snapshot, snapshot);
+    assert.equal(listSave.mock.calls.length, 1);
+    assert.equal(textSave.mock.calls.length, 1);
+
+    const second = contexts[1]!.snapshot;
+    assert.equal(second.serverSeq, 1);
+    assert.equal(second.data.count, 1);
+    assert.deepEqual(second.data.items.values, ["a"]);
+    assert.equal(second.data.body.value, "A😀");
+    assert.strictEqual(contexts[1]!.snapshot, second);
+    assert.equal(listSave.mock.calls.length, 2);
+    assert.equal(textSave.mock.calls.length, 2);
+  });
+
   it("resolves from a frozen pre-commit snapshot and owns transformed operations", () => {
     let transformedOperations: Array<{
       type: "value/set";

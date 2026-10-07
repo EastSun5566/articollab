@@ -211,6 +211,7 @@ export class ListState<T extends JsonValue> {
   }
 
   visibleEquals(other: ListState<T>): boolean {
+    if (this === other) return true;
     if (this.length !== other.length) return false;
 
     const left = this.idList.values();
