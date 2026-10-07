@@ -202,46 +202,60 @@ function assertSafeRangeEnd(
 
 function decodeJsonValue(
   input: unknown,
-  path: readonly PathSegment[],
-  ancestors = new WeakSet<object>()
+  path: readonly PathSegment[]
 ): JsonValue {
-  if (
-    input === null ||
-    typeof input === "string" ||
-    typeof input === "boolean"
-  ) {
-    return input;
-  }
-  if (typeof input === "number") {
-    if (!Number.isFinite(input)) fail(path, "number must be finite");
-    return input;
-  }
-  if (typeof input !== "object") fail(path, "value must be JSON-compatible");
-  if (ancestors.has(input)) fail(path, "value must not contain a cycle");
+  const currentPath = [...path];
+  const ancestors = new WeakSet<object>();
+  const stack: Array<{
+    input: object;
+    output: JsonValue[] | Record<string, JsonValue>;
+    entries: Iterator<[PathSegment, unknown]>;
+  }> = [];
 
-  ancestors.add(input);
-  try {
-    if (Array.isArray(input)) {
-      const array = decodeDenseArray(input, path, "JSON array");
-      return Object.freeze(
-        array.map((value, index) =>
-          decodeJsonValue(value, [...path, index], ancestors)
-        )
-      ) as unknown as JsonValue; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Recursive JSON validation completed; freezing a JSON array preserves its payload type.
+  // Reading a container schedules its children; it never recursively reads them.
+  const read = (value: unknown): JsonValue => {
+    if (value === null || typeof value === "string" || typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) fail(currentPath, "number must be finite");
+      return value;
+    }
+    if (typeof value !== "object") fail(currentPath, "value must be JSON-compatible");
+    if (ancestors.has(value)) fail(currentPath, "value must not contain a cycle");
+
+    const output: JsonValue[] | Record<string, JsonValue> = Array.isArray(value) ? [] : {};
+    const entries = Array.isArray(value)
+      ? decodeDenseArray(value, currentPath, "JSON array").entries()
+      : Object.entries(decodeRecord(value, currentPath, "JSON object")).values();
+    ancestors.add(value);
+    stack.push({ input: value, output, entries });
+    return output;
+  };
+
+  const result = read(input);
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1]!;
+    const next = frame.entries.next();
+    if (next.done) {
+      Object.freeze(frame.output);
+      ancestors.delete(frame.input);
+      stack.pop();
+      if (stack.length > 0) currentPath.pop();
+      continue;
     }
 
-    const record = decodeRecord(input, path, "JSON object");
-    return Object.freeze(
-      Object.fromEntries(
-        Object.keys(record).map((key) => [
-          key,
-          decodeJsonValue(record[key], [...path, key], ancestors),
-        ])
-      )
-    );
-  } finally {
-    ancestors.delete(input);
+    const [key, value] = next.value;
+    currentPath.push(key);
+    const depth = stack.length;
+    const decoded = read(value);
+    // Define data properties explicitly so keys such as __proto__ stay ordinary JSON.
+    Object.defineProperty(frame.output, key, {
+      value: decoded, enumerable: true, writable: true, configurable: true,
+    });
+    if (stack.length === depth) currentPath.pop();
   }
+  return result;
 }
 
 function decodeElementId(

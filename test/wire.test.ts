@@ -49,7 +49,7 @@ function assertWireError(callback: () => unknown, path: string): void {
     assert.ok(error instanceof WireDecodeError);
     assert.equal(error.name, "WireDecodeError");
     assert.equal(error.path, path);
-    assert.match(error.message, new RegExp(`at ${path.replaceAll("/", "\\/")}:`));
+    assert.ok(error.message.startsWith(`Invalid wire value at ${path}:`));
     return true;
   });
 }
@@ -483,6 +483,91 @@ describe("wire decoding", () => {
     assertWireError(
       () => decodeClientBatch(Board, valueBatch(cyclic)),
       "/operations/0/value/self"
+    );
+  });
+
+  it("copies and freezes 20,000 levels of mixed JSON containers without recursion", () => {
+    const Data = defineDocument({ meta: valueSchema<JsonValue>(null) });
+    const depth = 10_000;
+    const input: unknown = JSON.parse('[{"next":'.repeat(depth) + '0' + '}]'.repeat(depth));
+    const operation = decodeClientBatch(Data, valueBatch(input)).operations[0]!;
+    assert.equal(operation.type, "value/set");
+    let original: unknown = input;
+    let copied: unknown = operation.value;
+    for (let index = 0; index < depth; index++) {
+      assert.ok(Array.isArray(original));
+      assert.ok(Array.isArray(copied));
+      assert.notStrictEqual(copied, original);
+      assert.ok(Object.isFrozen(copied));
+      original = original[0];
+      copied = copied[0];
+      assert.ok(typeof original === "object" && original !== null && "next" in original);
+      assert.ok(typeof copied === "object" && copied !== null && "next" in copied);
+      assert.notStrictEqual(copied, original);
+      assert.ok(Object.isFrozen(copied));
+      original = original.next;
+      copied = copied.next;
+    }
+    assert.equal(original, 0);
+    assert.equal(copied, 0);
+  });
+
+  it("reports deep invalid leaves and cycles with escaped JSON Pointer paths", () => {
+    const depth = 20_000;
+    let invalid: unknown = Infinity;
+    const cycle: Record<string, unknown> = {};
+    let cyclic: unknown = cycle;
+    for (let index = 0; index < depth; index++) {
+      invalid = { "a/~": invalid };
+      cyclic = { "a/~": cyclic };
+    }
+    cycle.back = cyclic;
+    const path = "/operations/0/value" + "/a~1~0".repeat(depth);
+    assertWireError(() => decodeClientBatch(Board, valueBatch(invalid)), path);
+    assertWireError(() => decodeClientBatch(Board, valueBatch(cyclic)), path + "/back");
+  });
+
+  it("copies shared JSON branches separately without treating them as cycles", () => {
+    const Data = defineDocument({ meta: valueSchema<JsonValue>(null) });
+    const shared = { nested: [1] };
+    const input = { left: shared, right: shared, ["__proto__"]: { safe: true } };
+    const decoded = decodeClientBatch(Data, valueBatch(input)).operations[0]!.value;
+    assert.ok(typeof decoded === "object" && decoded !== null && !Array.isArray(decoded));
+    assert.notStrictEqual(decoded.left, shared);
+    assert.notStrictEqual(decoded.left, decoded.right);
+    assert.ok(Object.isFrozen(decoded.left));
+    assert.ok(Object.isFrozen(decoded.right));
+    assert.ok(Object.hasOwn(decoded, "__proto__"));
+    shared.nested[0] = 9;
+    assert.deepEqual(decoded, {
+      left: { nested: [1] }, right: { nested: [1] }, ["__proto__"]: { safe: true },
+    });
+  });
+
+  it("rejects nested sparse arrays and invalid descriptors without invoking getters", () => {
+    let reads = 0;
+    const getter = () => { reads++; return 1; };
+    const object = Object.defineProperty({}, "bad/~", { get: getter, enumerable: true });
+    assertWireError(
+      () => decodeClientBatch(Board, valueBatch({ nested: object })),
+      "/operations/0/value/nested/bad~1~0"
+    );
+    const array = Object.defineProperty([0], "0", { get: getter, enumerable: true });
+    assertWireError(
+      () => decodeClientBatch(Board, valueBatch({ nested: array })),
+      "/operations/0/value/nested/0"
+    );
+    assert.equal(reads, 0);
+    for (const invalid of [new Array<unknown>(1), { [Symbol("key")]: 1 }]) {
+      assertWireError(
+        () => decodeClientBatch(Board, valueBatch({ nested: invalid })),
+        "/operations/0/value/nested"
+      );
+    }
+    const hidden = Object.defineProperty({}, "hidden", { value: 1 });
+    assertWireError(
+      () => decodeClientBatch(Board, valueBatch({ nested: hidden })),
+      "/operations/0/value/nested/hidden"
     );
   });
 

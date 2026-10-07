@@ -33,7 +33,13 @@ export async function buildDocs(): Promise<void> {
   assert.deepEqual((await readdir(source)).sort(), [...sourceFiles].sort(), "Keep docs assets on the allowlist");
   for (const name of sourceFiles) {
     await requireRegular(join(source, name));
-    await copyFile(join(source, name), join(output, name));
+    if (name === "reference.md") {
+      const reference = (await readFile(join(source, name), "utf8"))
+        .replaceAll("../examples/README.md", "examples.md");
+      await writeFile(join(output, name), reference);
+    } else {
+      await copyFile(join(source, name), join(output, name));
+    }
   }
   const examples = (await readFile(join(root, "examples/README.md"), "utf8"))
     .replaceAll("../docs/reference.md", "reference.md");
@@ -53,6 +59,21 @@ function headingId(heading: string): string {
 
 /** Check staged links/assets, then typecheck and execute the exact documented Counter. */
 export async function checkDocs(): Promise<void> {
+  // The reference must also work when read directly in the source repository.
+  const reference = await readFile(join(source, "reference.md"), "utf8");
+  for (const match of withoutCode(reference).matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+    const link = match[1]!;
+    if (/^https:\/\//.test(link)) continue;
+    const [file, anchor] = link.split("#");
+    const target = join(source, file === "" ? "reference.md" : file!);
+    await requireRegular(target);
+    if (anchor !== undefined) {
+      const content = await readFile(target, "utf8");
+      const headings = [...withoutCode(content).matchAll(/^#{1,6}\s+(.+)$/gm)]
+        .map((heading) => headingId(heading[1]!));
+      assert.ok(headings.includes(anchor), `reference.md: missing heading ${link}`);
+    }
+  }
   assert.deepEqual((await readdir(output)).sort(), [...files].sort(), "Unexpected/missing staging assets");
   for (const name of files) await requireRegular(join(output, name));
   const markdown = new Map<string, string>();

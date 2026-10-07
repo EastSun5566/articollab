@@ -12,6 +12,7 @@ import {
   value as valueSchema,
   type ClientBatch,
   type DocumentOperation,
+  type JsonValue,
   type ServerReceipt,
 } from "../src/index.ts";
 
@@ -212,6 +213,48 @@ describe("server retry", () => {
     assert.deepEqual(server.snapshot().data.data, { a: [1, 2], b: { enabled: true } });
     assert.ok(Object.isFrozen(server.checkpoint().replays[0]));
     assert.ok(Object.isFrozen(server.checkpoint().replays[0]!.batch.operations));
+  });
+
+  it("retries and restores 20,000-level JSON while comparing the deepest payload", () => {
+    const Data = defineDocument({ data: valueSchema<JsonValue>(null) });
+    const depth = 20_000;
+    const makeDeepBatch = (leaf: JsonValue) => {
+      let nested = leaf;
+      for (let index = 0; index < depth; index++) nested = [nested];
+      return {
+        clientId: "deep", seq: 1,
+        operations: [{ type: "value/set" as const, path: "data" as const, value: nested }],
+      };
+    };
+    const server = createServer(Data);
+    const first = server.receive(makeDeepBatch({ a: 1, b: [true, null] }));
+    const checkpoint = server.checkpoint();
+    const same = makeDeepBatch({ b: [true, null], a: 1 });
+    assert.strictEqual(server.receive(same).commit, first.commit);
+    const changed = makeDeepBatch({ b: [true, null], a: 2 });
+    assert.throws(() => server.receive(changed), /Retry batch differs/);
+    assert.strictEqual(server.checkpoint().replays[0], checkpoint.replays[0]);
+    assert.equal(server.snapshot().serverSeq, 1);
+
+    const decoded = decodeServerCheckpoint(Data, checkpoint);
+    const restored = createServer(Data, { checkpoint: decoded });
+    const retry = restored.receive(decodeClientBatch(Data, same));
+    assert.equal(retry.replayed, true);
+    assert.equal(retry.commit.serverSeq, 1);
+    assert.throws(() => restored.receive(changed), /Retry batch differs/);
+    assert.equal(restored.snapshot().serverSeq, 1);
+    assert.equal(restored.checkpoint().history.length, 1);
+    let payload: unknown = restored.snapshot().data.data;
+    for (let index = 0; index < depth; index++) {
+      assert.ok(Array.isArray(payload));
+      assert.ok(Object.isFrozen(payload));
+      payload = payload[0];
+    }
+    assert.deepEqual(payload, { a: 1, b: [true, null] });
+    assert.equal(restored.receive({
+      clientId: "deep", seq: 2,
+      operations: [{ type: "value/set", path: "data", value: null }],
+    }).commit.serverSeq, 2);
   });
 
   it("replays rejected List and Text deletions without deleting twice", () => {

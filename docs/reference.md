@@ -66,7 +66,7 @@ console.log(doc.checkpoint().pendingBatches.length); // 0 — acknowledged.
 
 Both clients start at schema defaults and watermark 0. Local mutation is not network submission, and submission is not client acknowledgement: the source must receive its ordered commit too. This intentionally has no retries, policies or listener-created edits. Applications must finish delivering one commit before a reentrant listener's next commit can overtake it.
 
-Full broadcast, resume, HTTP and persistence walkthroughs are in the [examples guide](examples.md). The examples require repository access and are not shipped in the npm package.
+Full broadcast, resume, HTTP and persistence walkthroughs are in the [examples guide](../examples/README.md). The examples require repository access and are not shipped in the npm package.
 
 ## Public API
 
@@ -187,4 +187,4 @@ The intended minimal core and v0.1 compatibility baseline are established; the f
 
 There is no production transport or storage adapter, background sync, automatic retry/reconnect, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing, move, public stable positions or cursor API. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
 
-[Previous: Recovery](recovery.md) · [Next: Examples guide](examples.md)
+[Previous: Recovery](recovery.md) · [Next: Examples guide](../examples/README.md)
