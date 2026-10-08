@@ -204,11 +204,28 @@ jobs:
           import { readFileSync } from "node:fs";
 
           const { name, version } = JSON.parse(readFileSync("package.json", "utf8"));
-          const published = JSON.parse(execFileSync("npm", [
-            "view", name + "@" + version, "--json", "--registry=https://registry.npmjs.org/",
-          ], { encoding: "utf8", timeout: 30_000 }));
-          assert.equal(published.version, version);
-          assert.equal(published["dist-tags"][process.env.NPM_DIST_TAG], version);
-          assert.equal(published.dist.integrity, process.env.TARBALL_INTEGRITY);
-          console.log("Verified " + name + "@" + version + " on " + process.env.NPM_DIST_TAG);
+          // The registry may expose an accepted release later. Retry reads, never publication.
+          for (let attempt = 1; attempt <= 12; attempt++) {
+            let published;
+            try {
+              published = JSON.parse(execFileSync("npm", [
+                "view", name + "@" + version, "--json", "--prefer-online", "--registry=https://registry.npmjs.org/",
+              ], { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] }));
+            } catch (error) {
+              if (!error.stdout || JSON.parse(error.stdout).error?.code !== "E404") throw error;
+            }
+            if (published !== undefined) {
+              assert.equal(published.version, version);
+              assert.equal(published.dist.integrity, process.env.TARBALL_INTEGRITY);
+              if (published["dist-tags"][process.env.NPM_DIST_TAG] === version) {
+                console.log("Verified " + name + "@" + version + " on " + process.env.NPM_DIST_TAG);
+                break;
+              }
+            }
+            if (attempt === 12) {
+              throw new Error("Registry verification timed out after 12 reads. Publishing already succeeded; inspect the registry before retrying anything.");
+            }
+            console.log("Waiting for registry version and dist-tag (attempt " + attempt + "/12)");
+            await new Promise((resolve) => setTimeout(resolve, 15_000));
+          }
           NODE
