@@ -36,6 +36,25 @@ doc.receive(decodeServerCommit(Counter, JSON.parse(commitMessage)));
 
 Decoders do not infer a business object's shape from TypeScript `T`. Validate that separately. An operation with a structurally valid but unknown anchor may decode successfully, then fail runtime application atomically.
 
+## Optionally guard insertion namespaces
+
+Use the namespace helper when incoming clients should only allocate IDs in the package's standard writer/collection namespace:
+
+```ts
+import { assertClientBatchNamespace, decodeClientBatch } from "articollab";
+
+// authenticatedWriterId comes from your verified writer/session binding.
+const batch = decodeClientBatch(Board, JSON.parse(batchMessage));
+assertClientBatchNamespace(batch, authenticatedWriterId);
+const receipt = server.receive(batch);
+```
+
+A writer cannot allocate another writer's new IDs, but may still insert after or delete their existing elements. The helper checks exact canonical bunch IDs, not string prefixes, and returns `undefined` or throws `TypeError`. Guard retries too. It does not authenticate the caller or provide deletion authorization; every client ID must still have only one writer.
+
+The check is opt-in and only covers the incoming batch, not resolver-generated IDs. Custom incoming namespaces may use a different application policy. To explicitly reject a namespace-invalid batch, first verify that `batch.clientId` matches the authenticated writer, then call `server.reject(batch)` without the namespace check. Neither a guard failure nor a thrown runtime error is an ack.
+
+See the [namespace contract](reference.md#opt-in-insertion-namespaces) for the exact format and boundaries.
+
 ## Deliver in order
 
 ```ts

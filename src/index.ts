@@ -70,3 +70,5 @@ export {
   decodeSnapshot,
   WireDecodeError,
 } from "./wire.ts";
+
+export { assertClientBatchNamespace } from "./namespace.ts";

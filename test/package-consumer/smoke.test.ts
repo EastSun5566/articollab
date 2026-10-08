@@ -44,6 +44,7 @@ async function json(path: string): Promise<Record<string, unknown>> {
 const runtimeFixture = `
 import assert from "node:assert/strict";
 import {
+  assertClientBatchNamespace,
   createClient, createServer, defineDocument, list, text, value,
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint,
 } from "articollab";
@@ -67,7 +68,10 @@ function submit(batch) {
       insertionIds.add(key);
     }
   }
-  const receipt = server.receive(decodeClientBatch(Board, roundTrip(batch)));
+  const decoded = decodeClientBatch(Board, roundTrip(batch));
+  assert.equal(assertClientBatchNamespace(decoded, "source"), undefined);
+  assert.throws(() => assertClientBatchNamespace(decoded, "other-writer"), TypeError);
+  const receipt = server.receive(decoded);
   for (const doc of [source, peer]) doc.receive(decodeServerCommit(Board, roundTrip(receipt.commit)));
   return receipt.commit;
 }
@@ -132,6 +136,7 @@ for (const doc of [source, peer]) {
 
 const typesFixture = `
 import {
+  assertClientBatchNamespace,
   createClient, createServer, defineDocument, list, text, value,
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeSnapshot,
   type Value, type List, type Text, type DocumentOperation, type DocumentSnapshot,
@@ -176,6 +181,12 @@ doc.state.count.value = 1;
 doc.state.items.push("valid");
 doc.state.body.insert(0, "😀");
 const batch = decodeClientBatch(Board, {});
+assertClientBatchNamespace(batch, "types");
+type NamespaceResult = Expect<Equal<ReturnType<typeof assertClientBatchNamespace>, void>>;
+// @ts-expect-error Writer binding requires a string.
+assertClientBatchNamespace(batch, 123);
+// @ts-expect-error The guard accepts a typed batch, not arbitrary unknown input.
+assertClientBatchNamespace({} as unknown, "types");
 type DecodedOperation = Expect<Equal<(typeof batch.operations)[number], Operation>>;
 doc.receive(decodeServerCommit(Board, {}));
 createClient(Board, { clientId: "types", snapshot: decodeSnapshot(Board, {}), onBatch() {} });

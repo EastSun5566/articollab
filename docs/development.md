@@ -40,6 +40,7 @@ The GitHub Actions `CI` workflow runs on main pushes, `v*` tag pushes, PRs targe
 | Transaction batching, nested/no-savepoint behavior, rollback, local callback failures and reentrant delivery | `runtime.test.ts`, collection tests; `resume.test.ts`, `async-resume.test.ts`, HTTP sync |
 | Atomic policy, explicit rejection and original-result retry | Runtime policy tests, `server-reject.test.ts`, `retry.test.ts`; HTTP rejection recovery |
 | Optional historical-client admission bound and restore compatibility | `server-capacity.test.ts`; installed declaration fixture |
+| Opt-in incoming writer/collection namespaces, cross-writer references and unchanged retries | `namespace.test.ts`; installed runtime/declaration fixtures |
 | Owned wire JSON and restore metadata | `wire.test.ts`, `client-checkpoint.test.ts`, `history.test.ts` |
 | Local JSON validation, unchanged ownership, deep traversal and failure atomicity | `runtime.test.ts`, `list.test.ts`, `wire.test.ts` |
 | Pending prefix/conflicts, restore and catch-up | `replay-conflict.test.ts`, `client-checkpoint.test.ts`, `interleaving.test.ts`; HTTP/browser recovery |

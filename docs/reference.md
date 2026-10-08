@@ -85,6 +85,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `server.receive(batch)`, `server.reject(batch)` | Process a batch or replay its original result; return `{ commit, replayed }`. |
 | `server.snapshot()`, `server.checkpoint()`, `server.commitsSince(watermark)` | Late join, server restore, and complete ordered catch-up or `null`. |
 | `decodeClientBatch`, `decodeServerCommit`, `decodeSnapshot`, `decodeClientCheckpoint`, `decodeServerCheckpoint` | Each takes `(schema, unknown)`, validates parsed wire data and returns an owned frozen object. |
+| `assertClientBatchNamespace(batch, expectedClientId)` | Optional incoming-batch writer binding and canonical insertion namespace check; returns `void` or throws `TypeError`. |
 | `WireDecodeError` | Decoder error with `name`, JSON Pointer `path` (root `/`) and a readable message. |
 
 The entrypoint also exports these types, grouped by role rather than implementation file:
@@ -164,6 +165,18 @@ Only the last processed batch per client is retained for retry. The same payload
 Client capacity is an admission bound, not garbage collection, an online-client limit or a byte quota. Disconnect and history eviction do not release slots. Payloads, tombstones and client pending work still require application quotas; client IDs are not authorization. To admit more clients, an application may replace its server from a checkpoint with a higher limit while preserving document lineage and retiring the old server; no dynamic-limit or retirement API is provided.
 
 Broadcast new commits to all relevant clients, including their source. Route a replay only to the source still awaiting it, after any earlier missing commits; never redeliver an already-consumed commit. Retry does not catch up peers. Sequences and allocation counters stay within safe integers; exhaustion prevents new relevant work, while retained server retries remain available.
+
+### Opt-in insertion namespaces
+
+`assertClientBatchNamespace(batch: ClientBatch, expectedClientId: string): void` checks a typed incoming batch before application code calls `server.receive()`, including retries. Unknown input must first pass `decodeClientBatch()`. The nonempty expected ID must come from an application-authenticated writer/session binding, not the batch itself; `batch.clientId` must match it.
+
+For every List/Text insertion, `id.bunchId` must be exactly `JSON.stringify([clientId, operation.path, bunchSeq])`, where `bunchSeq` is a positive safe integer. Equivalent JSON with whitespace or alternate encoding is rejected. Bunch sequence is not batch sequence: insertions may extend an existing bunch. Text insertion ranges share their start ID's bunch. Anchors and deletion targets may belong to other writers.
+
+Success returns `undefined`; failure throws `TypeError` identifying the relevant field, without an exact-message guarantee. The helper does not copy, freeze or modify its input, read server state, create a commit or consume a sequence. It checks namespaces, not wire structure, state-dependent ID validity, authentication, writer locking or deletion authorization. Applications must still enforce one writer per `clientId`.
+
+This check is never enabled automatically by the server, decoders or restore. Applications with custom incoming namespaces can use their own policy instead. Resolver-generated authoritative IDs are outside this incoming check and retain their existing globally unique ID requirements.
+
+To cancel a namespace-invalid original batch, trusted application code must verify its writer binding, then call `server.reject(originalBatch)` without this namespace check. Otherwise invalid pending work could never be acknowledged. Original-result retry and ordered delivery rules still apply; rejection is not undo.
 
 ### Snapshots, checkpoints and catch-up
 
