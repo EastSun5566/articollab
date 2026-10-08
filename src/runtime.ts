@@ -165,6 +165,8 @@ export interface CreateServerOptions<S extends SchemaShape> {
   readonly resolve?: ServerResolver<S>;
   readonly checkpoint?: ServerCheckpoint<S>;
   readonly historyLimit?: number;
+  /** Maximum distinct clients ever successfully processed; undefined is unlimited. */
+  readonly maxClients?: number;
 }
 
 /** An optimistic collaborative value. Values are treated as immutable. */
@@ -639,6 +641,7 @@ export class ServerDocument<S extends SchemaShape> {
   private authoritativeStates: Map<string, CollectionState>;
   private readonly replays: Map<string, ServerReplayEntry<DocumentOperation<S>>>;
   private readonly historyLimit: number;
+  private readonly maxClients: number | undefined;
   private history: readonly ServerCommit<DocumentOperation<S>>[];
   private readonly resolve: ServerResolver<S> | undefined;
   private nextServerSeq = 1;
@@ -648,6 +651,11 @@ export class ServerDocument<S extends SchemaShape> {
     schema: DocumentSchema<S>,
     options: CreateServerOptions<S> = {}
   ) {
+    const maxClients = options.maxClients;
+    if (maxClients !== undefined && (!Number.isSafeInteger(maxClients) || maxClients < 0)) {
+      throw new Error("maxClients must be a non-negative safe integer");
+    }
+    this.maxClients = maxClients;
     const historyLimit =
       options.historyLimit === undefined ? 1000 : options.historyLimit;
     if (!Number.isSafeInteger(historyLimit) || historyLimit < 0) {
@@ -658,6 +666,9 @@ export class ServerDocument<S extends SchemaShape> {
       options.checkpoint === undefined
         ? undefined
         : restoreServerCheckpoint(schema, options.checkpoint);
+    if (maxClients !== undefined && restored !== undefined && restored.replays.size > maxClients) {
+      throw new Error("Checkpoint exceeds maxClients");
+    }
     this.authoritativeStates =
       restored?.states ?? initialStates(schema, undefined);
     this.replays = restored?.replays ?? new Map<string, ServerReplayEntry<DocumentOperation<S>>>();
@@ -738,6 +749,9 @@ export class ServerDocument<S extends SchemaShape> {
       }
       if (!Number.isSafeInteger(this.nextServerSeq)) {
         throw new Error("Server sequence exhausted");
+      }
+      if (previous === undefined && this.maxClients !== undefined && this.replays.size >= this.maxClients) {
+        throw new Error("Server client capacity exhausted");
       }
 
       const incomingOperations = freezeOperations(batch.operations);

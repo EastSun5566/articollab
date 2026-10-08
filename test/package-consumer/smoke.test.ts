@@ -136,12 +136,14 @@ import {
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeSnapshot,
   type Value, type List, type Text, type DocumentOperation, type DocumentSnapshot,
   type ListSnapshotData, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
+  type CreateServerOptions,
 } from "articollab";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Expect<T extends true> = T;
 const Board = defineDocument({ count: value(0), items: list<string>(), body: text() });
 type Shape = typeof Board.definition;
+type ClientCapacity = Expect<Equal<CreateServerOptions<Shape>["maxClients"], number | undefined>>;
 type Operation = DocumentOperation<Shape>;
 const doc = createClient(Board, { clientId: "types", onBatch(batch) {
   type BatchOperation = Expect<Equal<(typeof batch.operations)[number], Operation>>;
@@ -179,6 +181,9 @@ doc.receive(decodeServerCommit(Board, {}));
 createClient(Board, { clientId: "types", snapshot: decodeSnapshot(Board, {}), onBatch() {} });
 createClient(Board, { clientId: "types", checkpoint: decodeClientCheckpoint(Board, {}), onBatch() {} });
 createServer(Board, { checkpoint: decodeServerCheckpoint(Board, {}), resolve: ({ batch }) => batch.operations });
+createServer(Board, { maxClients: 2 });
+// @ts-expect-error Client capacity requires a number, not a string.
+createServer(Board, { maxClients: "2" });
 
 // @ts-expect-error Value remains number, not any or a string union.
 doc.state.count.value = "wrong";

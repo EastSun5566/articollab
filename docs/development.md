@@ -39,6 +39,7 @@ The GitHub Actions `CI` workflow runs on main pushes, `v*` tag pushes, PRs targe
 | Collection reads/mutations, Unicode, stable IDs and tombstones | `runtime.test.ts`, `list.test.ts`, `text.test.ts`; browser core smoke |
 | Transaction batching, nested/no-savepoint behavior, rollback, local callback failures and reentrant delivery | `runtime.test.ts`, collection tests; `resume.test.ts`, `async-resume.test.ts`, HTTP sync |
 | Atomic policy, explicit rejection and original-result retry | Runtime policy tests, `server-reject.test.ts`, `retry.test.ts`; HTTP rejection recovery |
+| Optional historical-client admission bound and restore compatibility | `server-capacity.test.ts`; installed declaration fixture |
 | Owned wire JSON and restore metadata | `wire.test.ts`, `client-checkpoint.test.ts`, `history.test.ts` |
 | Local JSON validation, unchanged ownership, deep traversal and failure atomicity | `runtime.test.ts`, `list.test.ts`, `wire.test.ts` |
 | Pending prefix/conflicts, restore and catch-up | `replay-conflict.test.ts`, `client-checkpoint.test.ts`, `interleaving.test.ts`; HTTP/browser recovery |
@@ -46,6 +47,8 @@ The GitHub Actions `CI` workflow runs on main pushes, `v*` tag pushes, PRs targe
 | Installed entrypoint and schema-specific declarations | `test/package-consumer/smoke.test.ts`; browser ESM smoke |
 
 These are coverage pointers, not proof of every observable edge case. Dedicated core regression cases in `runtime.test.ts` cover nested transaction batching, escaping-error rollback, caught inner errors without savepoints, and the pending/sequence/notification behavior when local callbacks throw. Existing persistence/recovery tests separately cover callback failures at application boundaries. Do not infer complete coverage from the number of passing tests.
+
+The server's optional `maxClients` checks the existing replay Map size before admitting a new client; it does not create a separate registry or evict entries. Keep this guard after retained-retry/sequence checks and before operation copying/policy. Failed admission is not an authoritative rejection or ack. Restore must validate the full checkpoint and reject an undersized limit rather than truncate client metadata. The limit counts historical processed IDs, not connections or bytes; applications still own authentication, payload quotas and any future client-retirement protocol.
 
 The deterministic interleaving suite uses three clients, five seeds, 200 scheduling steps and repeat-trace comparison, checking protocol invariants, a Value oracle, restore equivalence and convergence—not an independent List/Text model. Reproduce one seed with:
 
