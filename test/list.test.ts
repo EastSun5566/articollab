@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { ListState } from "../src/list.ts";
+import type { JsonValue } from "../src/schema.ts";
 
 import {
   createClient,
@@ -31,6 +33,33 @@ function setup(clientId = "client-1") {
 }
 
 describe("list runtime", () => {
+  it("isolates persistent branches and snapshots while preserving JSON payload references", () => {
+    const payload = { nested: { value: 1 } };
+    const base = ListState.empty<JsonValue>().insert({ type: "list/insert", path: "items",
+      before: null, id: { bunchId: "base", counter: 0 }, value: payload });
+    const saved = base.save();
+    const left = base.insert({ type: "list/insert", path: "items",
+      before: { bunchId: "base", counter: 0 }, id: { bunchId: "left", counter: 0 }, value: null });
+    const right = base.insert({ type: "list/insert", path: "items",
+      before: null, id: { bunchId: "right", counter: 0 }, value: -0 });
+    const deleted = left.delete({ type: "list/delete", path: "items", id: { bunchId: "base", counter: 0 } });
+    assert.deepEqual(base.toArray(), [payload]);
+    assert.strictEqual(base.get(0), payload);
+    assert.strictEqual(left.get(0), payload);
+    assert.deepEqual(left.toArray(), [payload, null]);
+    assert.ok(Object.is(right.get(0), -0));
+    assert.strictEqual(right.get(1), payload);
+    assert.deepEqual(deleted.toArray(), [null]);
+    assert.deepEqual(base.save(), saved);
+    const restored = ListState.load(right.save());
+    assert.ok(Object.is(restored.get(0), -0));
+    assert.strictEqual(restored.get(1), payload);
+    assert.ok(right.visibleEquals(restored));
+    assert.throws(() => base.insert({ type: "list/insert", path: "items", before: null,
+      id: { bunchId: "base", counter: 0 }, value: "collision" }));
+    assert.deepEqual(base.save(), saved);
+  });
+
   it("provides typed optimistic list operations and validates indexes", () => {
     const { batches, doc } = setup();
     let changes = 0;

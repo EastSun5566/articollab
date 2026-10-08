@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { TextState } from "../src/text.ts";
 
 import {
   createClient,
@@ -34,6 +35,53 @@ function setup(clientId = "client-1") {
 }
 
 describe("text runtime", () => {
+  it("isolates Unicode bulk branches and round-trips tombstones", () => {
+    const base = TextState.empty().insert({ type: "text/insert", path: "body", before: null,
+      id: { bunchId: "base", counter: 0 }, value: "A😀BC" });
+    const saved = base.save();
+    const left = base.insert({ type: "text/insert", path: "body",
+      before: { bunchId: "base", counter: 1 }, id: { bunchId: "left", counter: 0 }, value: "🦊é" });
+    const right = base.delete({ type: "text/delete", path: "body",
+      ranges: [{ start: { bunchId: "base", counter: 1 }, count: 1 }] });
+    const deleted = left.delete({ type: "text/delete", path: "body", ranges: [
+      { start: { bunchId: "base", counter: 2 }, count: 2 },
+      { start: { bunchId: "left", counter: 0 }, count: 1 },
+    ] });
+    assert.equal(base.toString(), "A😀BC");
+    assert.equal(left.toString(), "A😀🦊éBC");
+    assert.equal(right.toString(), "ABC");
+    assert.equal(deleted.toString(), "A😀é");
+    assert.equal(deleted.length, 4);
+    assert.deepEqual(base.save(), saved);
+    const restored = TextState.load(deleted.save());
+    assert.deepEqual(restored.save(), deleted.save());
+    assert.ok(deleted.visibleEquals(restored));
+    assert.equal(restored.insert({ type: "text/insert", path: "body",
+      before: { bunchId: "left", counter: 0 }, id: { bunchId: "later", counter: 0 }, value: "Z" }).toString(), "A😀Zé");
+    assert.equal(deleted.toString(), "A😀é");
+  });
+
+  it("rejects late invalid range targets before mutating persistent storage", () => {
+    const state = TextState.load({ idList: [
+      { bunchId: "base", startCounter: 0, count: 2, isDeleted: false },
+      { bunchId: "base", startCounter: 3, count: 1, isDeleted: false },
+    ], value: "A😀Z" });
+    const saved = state.save();
+    assert.throws(() => state.insert({ type: "text/insert", path: "body", before: null,
+      id: { bunchId: "base", counter: 2 }, value: "BQ" }));
+    assert.throws(() => state.delete({ type: "text/delete", path: "body", ranges: [
+      { start: { bunchId: "base", counter: 0 }, count: 1 },
+      { start: { bunchId: "missing", counter: 0 }, count: 1 },
+    ] }));
+    assert.throws(() => state.delete({ type: "text/delete", path: "body",
+      ranges: [{ start: { bunchId: "base", counter: 1 }, count: 3 }] }));
+    assert.deepEqual(state.save(), saved);
+    assert.equal(state.toString(), "A😀Z");
+    assert.equal(state.delete({ type: "text/delete", path: "body",
+      ranges: [{ start: { bunchId: "base", counter: 3 }, count: 1 }] }).toString(), "A😀");
+    assert.deepEqual(state.save(), saved);
+  });
+
   it("edits and iterates Unicode code points with validated no-ops", () => {
     const { batches, doc } = setup();
     let changes = 0;

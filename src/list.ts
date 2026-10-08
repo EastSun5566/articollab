@@ -8,6 +8,7 @@ import {
 
 import type { JsonValue } from "./schema.ts";
 import { CollectionConflictError } from "./conflict.ts";
+import { HamtMap } from "./vendor/hamt.ts";
 
 export interface SavedIdRange {
   readonly bunchId: string;
@@ -120,18 +121,18 @@ export function loadIdList(
 /** Internal persistent state for one List collection. */
 export class ListState<T extends JsonValue> {
   private readonly idList: IdList;
-  private readonly valuesById: ReadonlyMap<string, T>;
+  private readonly valuesById: HamtMap<T>;
 
   private constructor(
     idList: IdList,
-    valuesById: ReadonlyMap<string, T>
+    valuesById: HamtMap<T>
   ) {
     this.idList = idList;
     this.valuesById = valuesById;
   }
 
   static empty<T extends JsonValue>(): ListState<T> {
-    return new ListState<T>(IdList.new(), new Map<string, T>());
+    return new ListState<T>(IdList.new(), HamtMap.empty<T>());
   }
 
   static load<T extends JsonValue>(snapshot: ListSnapshotData<T>): ListState<T> {
@@ -152,11 +153,10 @@ export class ListState<T extends JsonValue> {
       );
     }
 
-    const valuesById = new Map<string, T>();
-    let index = 0;
-    for (const id of idList) {
-      valuesById.set(idKey(id), snapshot.values[index++]!);
-    }
+    const valuesById = HamtMap.empty<T>().mutate((draft) => {
+      let index = 0;
+      for (const id of idList) draft.set(idKey(id), snapshot.values[index++]!);
+    });
     return new ListState(idList, valuesById);
   }
 
@@ -186,8 +186,7 @@ export class ListState<T extends JsonValue> {
     }
 
     const nextIdList = this.idList.insertAfter(operation.before, operation.id);
-    const nextValues = new Map(this.valuesById);
-    nextValues.set(idKey(operation.id), operation.value);
+    const nextValues = this.valuesById.set(idKey(operation.id), operation.value);
     return new ListState(nextIdList, nextValues);
   }
 
@@ -197,8 +196,7 @@ export class ListState<T extends JsonValue> {
     }
     if (!this.idList.has(operation.id)) return this;
 
-    const nextValues = new Map(this.valuesById);
-    nextValues.delete(idKey(operation.id));
+    const nextValues = this.valuesById.delete(idKey(operation.id));
     return new ListState(this.idList.delete(operation.id), nextValues);
   }
 

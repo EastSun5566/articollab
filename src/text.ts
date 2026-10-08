@@ -7,6 +7,7 @@ import {
 
 import { loadIdList, type SavedIdRange } from "./list.ts";
 import { CollectionConflictError } from "./conflict.ts";
+import { HamtMap } from "./vendor/hamt.ts";
 
 export interface TextSnapshotData {
   readonly idList: readonly SavedIdRange[];
@@ -88,18 +89,18 @@ function* idsInRange(
 /** Internal persistent state for one Text collection. */
 export class TextState {
   private readonly idList: IdList;
-  private readonly valuesById: ReadonlyMap<string, string>;
+  private readonly valuesById: HamtMap<string>;
 
   private constructor(
     idList: IdList,
-    valuesById: ReadonlyMap<string, string>
+    valuesById: HamtMap<string>
   ) {
     this.idList = idList;
     this.valuesById = valuesById;
   }
 
   static empty(): TextState {
-    return new TextState(IdList.new(), new Map());
+    return new TextState(IdList.new(), HamtMap.empty<string>());
   }
 
   static load(snapshot: TextSnapshotData): TextState {
@@ -122,11 +123,10 @@ export class TextState {
       );
     }
 
-    const valuesById = new Map<string, string>();
-    let index = 0;
-    for (const id of idList) {
-      valuesById.set(idKey(id), values[index++]!);
-    }
+    const valuesById = HamtMap.empty<string>().mutate((draft) => {
+      let index = 0;
+      for (const id of idList) draft.set(idKey(id), values[index++]!);
+    });
     return new TextState(idList, valuesById);
   }
 
@@ -171,10 +171,11 @@ export class TextState {
       operation.id,
       values.length
     );
-    const nextValues = new Map(this.valuesById);
-    for (let index = 0; index < ids.length; index++) {
-      nextValues.set(idKey(ids[index]!), values[index]!);
-    }
+    const nextValues = this.valuesById.mutate((draft) => {
+      for (let index = 0; index < ids.length; index++) {
+        draft.set(idKey(ids[index]!), values[index]!);
+      }
+    });
     return new TextState(nextIdList, nextValues);
   }
 
@@ -193,13 +194,14 @@ export class TextState {
     }
 
     let nextIdList = this.idList;
-    const nextValues = new Map(this.valuesById);
-    for (const range of ranges) {
-      nextIdList = nextIdList.delete(range.start, range.count);
-      for (const id of idsInRange(range.start, range.count)) {
-        nextValues.delete(idKey(id));
+    const nextValues = this.valuesById.mutate((draft) => {
+      for (const range of ranges) {
+        nextIdList = nextIdList.delete(range.start, range.count);
+        for (const id of idsInRange(range.start, range.count)) {
+          draft.delete(idKey(id));
+        }
       }
-    }
+    });
     return new TextState(nextIdList, nextValues);
   }
 

@@ -247,6 +247,16 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     assert.ok(typeof original.version === "string");
     const installedRoot = join(consumer, "node_modules/articollab");
     const installed = await json(join(installedRoot, "package.json"));
+    for (const path of ["dist/vendor/hamt.js", "dist/vendor/hamt.d.ts"]) {
+      assert.ok(paths.includes(path), path);
+    }
+    const vendor = await readFile(join(installedRoot, "dist/vendor/hamt.js"), "utf8");
+    const source = await readFile(join(root, "src/vendor/hamt.ts"), "utf8");
+    const notice = source.match(/^\/\*![\s\S]*?\*\//)?.[0];
+    assert.ok(notice !== undefined);
+    assert.ok(vendor.includes(notice), "The complete vendor notice must survive packing");
+    assert.match(notice, /Copyright \(C\) 2016 Matt Bierner/);
+    assert.match(notice, /b8845c7343fdde3966f875d732248fec597cf538/);
     assert.equal(installed.name, "articollab");
     assert.equal(installed.version, original.version);
     assert.equal(installed.private, false);

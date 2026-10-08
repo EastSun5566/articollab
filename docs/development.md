@@ -57,6 +57,12 @@ Browser JSDoc and Node integration tests do not replace interactive verification
 
 ## Collection performance baseline
 
+List/Text values use a typed, string-key subset of [hamt_plus](https://github.com/mattbierner/hamt_plus) vendored at commit `b8845c7343fdde3966f875d732248fec597cf538`. Persistent updates share trie nodes; range edits and hydration use synchronous, finally-scoped transient updates. IdList still determines visible order and tombstones. Payloads are not cloned or converted; value no-op checks use `Object.is` to preserve signed zero. This avoids whole-Map copies, not every linear scan or collision cost.
+
+The source header records local adaptations and the full MIT notice, which must survive production packing. There is no added runtime dependency or public vendor API. Upstream upgrades require reviewing those adaptations, running collision/version-isolation regressions and comparing the full benchmark before and after the change on the same machine and Node version. Bulk drafts must stay inside their synchronous callbacks.
+
+Trie nodes add per-entry memory overhead, so compare retained heap as well as mutation latency. The retained-heap workload measures one hydrated client, not peak memory or the cost of keeping multiple pending versions.
+
 ```sh
 pnpm bench
 pnpm --silent bench --json

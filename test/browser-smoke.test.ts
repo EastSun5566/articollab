@@ -47,6 +47,7 @@ describe("browser core smoke example", { timeout: 30_000 }, () => {
       ["/", join(root, "examples/browser-smoke/index.html"), "text/html"],
       ["/smoke.js", join(root, "examples/browser-smoke/smoke.js"), "text/javascript"],
       ["/dist/index.js", join(root, "dist/index.js"), "text/javascript"],
+      ["/dist/vendor/hamt.js", join(root, "dist/vendor/hamt.js"), "text/javascript"],
       ["/vendor/articulated/index.js", join(dirname(articulated), "build/esm/index.js"), "text/javascript"],
       ["/vendor/articulated/id_list", join(dirname(articulated), "build/esm/id_list.js"), "text/javascript"],
       ["/vendor/articulated/id_list.js", join(dirname(articulated), "build/esm/id_list.js"), "text/javascript"],
