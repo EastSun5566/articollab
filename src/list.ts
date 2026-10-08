@@ -9,6 +9,7 @@ import {
 import type { JsonValue } from "./schema.ts";
 import { CollectionConflictError } from "./conflict.ts";
 import { HamtMap } from "./vendor/hamt.ts";
+import { validateJsonValue } from "./json.ts";
 
 export interface SavedIdRange {
   readonly bunchId: string;
@@ -334,6 +335,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
     }
 
     this.beforeMutation();
+    validateJsonValue(value, [this.path]);
     const before = index === 0 ? null : this.current.idAt(index - 1);
     const operation = freezeListOperation({
       type: "list/insert",

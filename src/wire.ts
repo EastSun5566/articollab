@@ -1,5 +1,5 @@
 import type { ElementId } from "articulated";
-import { jsonEquals } from "./json.ts";
+import { copyJsonValue, jsonArray, jsonEquals, jsonPointer, jsonRecord, type JsonPathSegment } from "./json.ts";
 import { initialStates, replayPending } from "./state.ts";
 import { PendingReplayError } from "./conflict.ts";
 
@@ -29,7 +29,7 @@ import type {
   ServerCommit,
 } from "./runtime.ts";
 
-type PathSegment = string | number;
+type PathSegment = JsonPathSegment;
 type WireRecord = Readonly<Record<string, unknown>>;
 
 /** An invalid value encountered while decoding parsed wire JSON. */
@@ -41,15 +41,6 @@ export class WireDecodeError extends Error {
     this.name = "WireDecodeError";
     this.path = path;
   }
-}
-
-function jsonPointer(path: readonly PathSegment[]): string {
-  if (path.length === 0) return "/";
-  return path
-    .map((segment) =>
-      `/${String(segment).replaceAll("~", "~0").replaceAll("/", "~1")}`
-    )
-    .join("");
 }
 
 function fail(path: readonly PathSegment[], message: string): never {
@@ -65,30 +56,7 @@ function decodeRecord(
   path: readonly PathSegment[],
   name: string
 ): WireRecord {
-  if (typeof input !== "object" || input === null || Array.isArray(input)) {
-    fail(path, `${name} must be a plain object`);
-  }
-
-  const prototype: unknown = Object.getPrototypeOf(input);
-  if (prototype !== Object.prototype && prototype !== null) {
-    fail(path, `${name} must be a plain object`);
-  }
-
-  for (const key of Reflect.ownKeys(input)) {
-    if (typeof key !== "string") {
-      fail(path, `${name} must only have string keys`);
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(input, key);
-    if (
-      descriptor === undefined ||
-      !descriptor.enumerable ||
-      !("value" in descriptor)
-    ) {
-      fail([...path, key], `${name} fields must be enumerable data properties`);
-    }
-  }
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Plain enumerable data properties were checked above; values stay unknown.
-  return input as WireRecord;
+  return jsonRecord(input, path, name, fail);
 }
 
 function requireExactFields(
@@ -114,41 +82,7 @@ function decodeDenseArray(
   path: readonly PathSegment[],
   name: string
 ): readonly unknown[] {
-  if (!Array.isArray(input)) fail(path, `${name} must be an array`);
-
-  let indexCount = 0;
-  for (const key of Reflect.ownKeys(input)) {
-    if (key === "length") continue;
-    if (typeof key !== "string") {
-      fail(path, `${name} must only have array indexes`);
-    }
-    const index = Number(key);
-    if (
-      !Number.isSafeInteger(index) ||
-      index < 0 ||
-      String(index) !== key ||
-      index >= input.length
-    ) {
-      fail([...path, key], `${name} must only have array indexes`);
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(input, key);
-    if (
-      descriptor === undefined ||
-      !descriptor.enumerable ||
-      !("value" in descriptor)
-    ) {
-      fail(
-        [...path, index],
-        `${name} entries must be enumerable data properties`
-      );
-    }
-    indexCount++;
-  }
-
-  if (indexCount !== input.length) {
-    fail(path, `${name} must be a dense array`);
-  }
-  return input;
+  return jsonArray(input, path, name, fail);
 }
 
 function decodeString(
@@ -204,58 +138,7 @@ function decodeJsonValue(
   input: unknown,
   path: readonly PathSegment[]
 ): JsonValue {
-  const currentPath = [...path];
-  const ancestors = new WeakSet<object>();
-  const stack: Array<{
-    input: object;
-    output: JsonValue[] | Record<string, JsonValue>;
-    entries: Iterator<[PathSegment, unknown]>;
-  }> = [];
-
-  // Reading a container schedules its children; it never recursively reads them.
-  const read = (value: unknown): JsonValue => {
-    if (value === null || typeof value === "string" || typeof value === "boolean") {
-      return value;
-    }
-    if (typeof value === "number") {
-      if (!Number.isFinite(value)) fail(currentPath, "number must be finite");
-      return value;
-    }
-    if (typeof value !== "object") fail(currentPath, "value must be JSON-compatible");
-    if (ancestors.has(value)) fail(currentPath, "value must not contain a cycle");
-
-    const output: JsonValue[] | Record<string, JsonValue> = Array.isArray(value) ? [] : {};
-    const entries = Array.isArray(value)
-      ? decodeDenseArray(value, currentPath, "JSON array").entries()
-      : Object.entries(decodeRecord(value, currentPath, "JSON object")).values();
-    ancestors.add(value);
-    stack.push({ input: value, output, entries });
-    return output;
-  };
-
-  const result = read(input);
-  while (stack.length > 0) {
-    const frame = stack[stack.length - 1]!;
-    const next = frame.entries.next();
-    if (next.done) {
-      Object.freeze(frame.output);
-      ancestors.delete(frame.input);
-      stack.pop();
-      if (stack.length > 0) currentPath.pop();
-      continue;
-    }
-
-    const [key, value] = next.value;
-    currentPath.push(key);
-    const depth = stack.length;
-    const decoded = read(value);
-    // Define data properties explicitly so keys such as __proto__ stay ordinary JSON.
-    Object.defineProperty(frame.output, key, {
-      value: decoded, enumerable: true, writable: true, configurable: true,
-    });
-    if (stack.length === depth) currentPath.pop();
-  }
-  return result;
+  return copyJsonValue(input, path, fail);
 }
 
 function decodeElementId(

@@ -9,6 +9,7 @@ import type {
   PendingReplayConflict,
 } from "./runtime.ts";
 import { CollectionConflictError, PendingReplayError } from "./conflict.ts";
+import { validateJsonValue } from "./json.ts";
 
 export type CollectionState = JsonValue | ListState<JsonValue> | TextState;
 
@@ -153,6 +154,7 @@ export function initialStates<S extends SchemaShape>(
         snapshotData === undefined
           ? descriptor.initialValue
           : snapshotData[path];
+      if (snapshotData === undefined) validateJsonValue(value, [path]);
       if (value === undefined) {
         throw new Error(`Missing document path: ${path}`);
       }

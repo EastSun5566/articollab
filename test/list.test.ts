@@ -33,6 +33,67 @@ function setup(clientId = "client-1") {
 }
 
 describe("list runtime", () => {
+  it("rejects non-JSON insert/push before allocating IDs or producing a batch", () => {
+    const schema = defineDocument({ items: list<JsonValue>() });
+    let batches = 0;
+    let changes = 0;
+    let reads = 0;
+    const getter = () => { reads++; return 1; };
+    const doc = createClient(schema, { clientId: "json", onBatch: () => batches++ });
+    doc.on("change", () => changes++);
+    const before = doc.checkpoint();
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    for (const input of [undefined, NaN, Infinity, -Infinity, 1n, () => {}, Symbol(), new Date(), cycle,
+      { nested: undefined }, new Array<unknown>(1), { [Symbol()]: 1 },
+      Object.assign([0], { extra: 1 }), Object.defineProperty({}, "hidden", { value: 1 }),
+      Object.defineProperty({}, "bad/~", { get: getter, enumerable: true }),
+      Object.defineProperty([0], "0", { get: getter, enumerable: true }),
+      { toJSON: () => { reads++; return 1; } }]) {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid local payloads verify the runtime boundary beyond TS.
+      const payload = input as JsonValue;
+      assert.throws(() => doc.state.items.insert(0, payload), TypeError);
+      assert.throws(() => doc.state.items.push(payload), TypeError);
+      assert.equal(doc.state.items.length, 0);
+      assert.deepEqual(doc.checkpoint(), before);
+    }
+    assert.equal(reads, 0);
+    assert.equal(batches, 0);
+    assert.equal(changes, 0);
+    doc.state.items.push("valid");
+    const operation = doc.checkpoint().pendingBatches[0]!.operations[0]!;
+    assert.equal(operation.type, "list/insert");
+    if (operation.type !== "list/insert") return;
+    assert.equal(operation.id.bunchId, JSON.stringify(["json", "items", 1]));
+    assert.equal(operation.id.counter, 0);
+    assert.equal(doc.checkpoint().lastLocalSeq, 1);
+    assert.equal(batches, 1);
+    assert.equal(changes, 1);
+  });
+
+  it("keeps legal list payloads shared and accepts deep JSON without freezing it", () => {
+    const schema = defineDocument({ items: list<JsonValue>() });
+    const doc = createClient(schema, { clientId: "refs", onBatch() {} });
+    const dictionary: Record<string, JsonValue> = Object.create(null) as Record<string, JsonValue>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Null-prototype JSON fixture with only ordinary string data properties.
+    dictionary.value = false;
+    const shared = { nested: [1] };
+    const payload = { dictionary, left: shared, right: shared, ["__proto__"]: { safe: true } };
+    doc.state.items.push(payload);
+    assert.strictEqual(doc.state.items.get(0), payload);
+    assert.strictEqual(doc.state.items.toArray()[0], payload);
+    for (const object of [payload, dictionary, shared, shared.nested, payload.__proto__]) {
+      assert.equal(Object.isFrozen(object), false);
+    }
+    for (const primitive of [null, false, "", 0, -0, 1.5]) {
+      doc.state.items.push(primitive);
+      assert.ok(Object.is(doc.state.items.get(doc.state.items.length - 1), primitive));
+    }
+    const deep: JsonValue = JSON.parse('[{"next":'.repeat(10_000) + '0' + '}]'.repeat(10_000)) as JsonValue; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Only valid JSON tokens are used in this deep fixture.
+    doc.state.items.insert(0, deep);
+    assert.strictEqual(doc.state.items.get(0), deep);
+    assert.equal(Object.isFrozen(deep), false);
+  });
+
   it("isolates persistent branches and snapshots while preserving JSON payload references", () => {
     const payload = { nested: { value: 1 } };
     const base = ListState.empty<JsonValue>().insert({ type: "list/insert", path: "items",

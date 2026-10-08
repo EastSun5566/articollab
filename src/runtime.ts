@@ -35,7 +35,7 @@ import {
   wrongCollectionKind,
   type CollectionState,
 } from "./state.ts";
-import { jsonEquals } from "./json.ts";
+import { jsonEquals, validateJsonValue } from "./json.ts";
 
 export interface ValueSetOperation<
   Path extends string = string,
@@ -206,6 +206,7 @@ class RuntimeValue<T extends JsonValue> implements Value<T> {
 
   set(nextValue: T): void {
     this.beforeMutation();
+    validateJsonValue(nextValue, [this.path]);
     this.current = nextValue;
     this.mutate(
       Object.freeze({

@@ -16,6 +16,7 @@ import {
   type ClientBatch,
   type DocumentOperation,
   type DocumentSnapshot,
+  type JsonValue,
   type ServerCheckpoint,
   type ServerDocument,
   type ServerCommit,
@@ -56,6 +57,168 @@ if (false) {
 }
 
 describe("client runtime", () => {
+  it("rejects invalid schema defaults and local Value payloads without side effects", () => {
+    let getterReads = 0;
+    const getter = () => { getterReads++; return 1; };
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    const invalids: unknown[] = [
+      undefined, NaN, Infinity, -Infinity, 1n, () => {}, Symbol("value"),
+      new Date(), new Map(), new Set(), /pattern/, cycle,
+      { nested: undefined }, { nested: [Infinity] }, new Array<unknown>(1),
+      { [Symbol("key")]: 1 }, Object.assign([0], { extra: 1 }),
+      Object.defineProperty({}, "hidden", { value: 1 }),
+      Object.defineProperty({}, "bad/~", { get: getter, enumerable: true }),
+      Object.defineProperty([0], "0", { get: getter, enumerable: true }),
+      { toJSON: () => { getterReads++; return 1; } },
+    ];
+    const schema = defineDocument({ data: valueSchema<JsonValue>(null) });
+    let batches = 0;
+    let changes = 0;
+    const doc = createClient(schema, { clientId: "local", onBatch: () => batches++ });
+    doc.on("change", () => changes++);
+    const before = doc.checkpoint();
+    for (const input of invalids) {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately bypass static JSON typing to verify local runtime rejection.
+      const payload = input as JsonValue;
+      assert.throws(() => valueSchema(payload), TypeError);
+      const manual = defineDocument({ data: { kind: "value", initialValue: payload } });
+      assert.throws(() => createClient(manual, { clientId: "manual", onBatch() {} }), TypeError);
+      assert.throws(() => createServer(manual), TypeError);
+      assert.throws(() => { doc.state.data.value = payload; }, TypeError);
+      assert.throws(() => doc.state.data.set(payload), TypeError);
+      assert.strictEqual(doc.state.data.value, null);
+      assert.deepEqual(doc.checkpoint(), before);
+    }
+    assert.equal(getterReads, 0);
+    assert.equal(batches, 0);
+    assert.equal(changes, 0);
+    doc.state.data.set(1);
+    assert.equal(doc.checkpoint().lastLocalSeq, 1);
+    assert.equal(batches, 1);
+    assert.equal(changes, 1);
+
+    const defaultPayload: Record<string, JsonValue> = { nested: 1 };
+    const defaults = defineDocument({ data: valueSchema(defaultPayload) });
+    defaultPayload.nested = NaN; // Violates immutability; construction must still recheck defaults.
+    assert.throws(() => createClient(defaults, { clientId: "defaults", onBatch() {} }), TypeError);
+    assert.throws(() => createServer(defaults), TypeError);
+  });
+
+  it("preserves valid local JSON references, descriptors and signed zero", () => {
+    const dictionary: Record<string, JsonValue> = Object.create(null) as Record<string, JsonValue>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- This fixture creates a null-prototype JSON dictionary.
+    dictionary.label = "valid";
+    const shared = { nested: [1, null, false, "", 0, -0, 1.5] };
+    const payload = { dictionary, left: shared, right: shared, ["__proto__"]: { safe: true } };
+    const schema = defineDocument({ data: valueSchema<JsonValue>(payload) });
+    const doc = createClient(schema, { clientId: "refs", onBatch() {} });
+    const server = createServer(schema);
+    assert.strictEqual(doc.state.data.value, payload);
+    assert.strictEqual(server.snapshot().data.data, payload);
+    doc.state.data.set(payload);
+    const operation = doc.checkpoint().pendingBatches[0]!.operations[0]!;
+    assert.strictEqual(operation.value, payload);
+    assert.strictEqual(payload.left, payload.right);
+    assert.equal(Object.getPrototypeOf(dictionary), null);
+    assert.ok(Object.hasOwn(payload, "__proto__"));
+    for (const object of [payload, dictionary, shared, shared.nested, payload.__proto__]) {
+      assert.equal(Object.isFrozen(object), false);
+    }
+    for (const primitive of [null, false, "", 0, -0, 1.5]) {
+      doc.state.data.set(primitive);
+      assert.ok(Object.is(doc.state.data.value, primitive));
+    }
+  });
+
+  it("validates 20,000 levels without recursion and reports deep invalid payload positions", () => {
+    const depth = 20_000;
+    const payload: JsonValue = JSON.parse('{"a/~":'.repeat(depth) + '0' + '}'.repeat(depth)) as JsonValue; // oxlint-disable-line typescript/no-unsafe-type-assertion -- The fixture is generated entirely from valid JSON tokens.
+    const schema = defineDocument({ data: valueSchema<JsonValue>(payload) });
+    const doc = createClient(schema, { clientId: "deep", onBatch() {} });
+    assert.strictEqual(doc.state.data.value, payload);
+    doc.state.data.set(payload);
+    assert.strictEqual(doc.state.data.value, payload);
+    let node = payload;
+    for (let index = 0; index < depth; index++) {
+      assert.ok(typeof node === "object" && node !== null && !Array.isArray(node));
+      assert.equal(Object.isFrozen(node), false);
+      node = node["a/~"]!;
+    }
+    assert.equal(node, 0);
+
+    const cycle: Record<string, unknown> = {};
+    let invalid: unknown = Infinity;
+    let cyclic: unknown = cycle;
+    for (let index = 0; index < depth; index++) {
+      invalid = { "a/~": invalid };
+      cyclic = { "a/~": cyclic };
+    }
+    cycle.back = cyclic;
+    const before = doc.checkpoint();
+    for (const [input, suffix] of [[invalid, ""], [cyclic, "/back"]] as const) {
+      assert.throws(() => {
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Negative deep fixtures intentionally violate the static JSON constraint.
+        doc.state.data.set(input as JsonValue);
+      }, (error: unknown) => {
+        assert.ok(error instanceof TypeError);
+        assert.ok(error.message.includes("/data" + "/a~1~0".repeat(depth) + suffix));
+        return true;
+      });
+    }
+    // Avoid recursive deep assertions on the valid 20,000-level retained payload.
+    assert.equal(doc.checkpoint().lastLocalSeq, before.lastLocalSeq);
+    assert.strictEqual(doc.checkpoint().pendingBatches[0], before.pendingBatches[0]);
+    assert.strictEqual(doc.state.data.value, payload);
+  });
+
+  it("rolls back a mixed transaction when JSON validation escapes the callback", () => {
+    const schema = defineDocument({ count: valueSchema(0), items: list<JsonValue>(), body: text() });
+    let batches = 0;
+    let changes = 0;
+    const doc = createClient(schema, { clientId: "rollback", onBatch: () => batches++ });
+    doc.on("change", () => changes++);
+    assert.throws(() => doc.transact(() => {
+      doc.state.count.set(1);
+      doc.state.items.push("valid");
+      doc.state.body.insert(0, "😀");
+      doc.state.count.set(NaN);
+    }), TypeError);
+    assert.equal(doc.state.count.value, 0);
+    assert.deepEqual(doc.state.items.toArray(), []);
+    assert.equal(doc.state.body.toString(), "");
+    assert.deepEqual(doc.checkpoint().pendingBatches, []);
+    assert.equal(doc.checkpoint().lastLocalSeq, 0);
+    assert.equal(batches, 0);
+    assert.equal(changes, 0);
+    doc.state.count.set(2);
+    assert.equal(doc.checkpoint().lastLocalSeq, 1);
+  });
+
+  it("keeps valid transaction operations when JSON validation failures are caught", () => {
+    const schema = defineDocument({ count: valueSchema(0), items: list<JsonValue>(), body: text() });
+    let batches = 0;
+    let changes = 0;
+    const doc = createClient(schema, { clientId: "caught", onBatch: () => batches++ });
+    doc.on("change", () => changes++);
+    doc.transact(() => {
+      doc.state.count.set(1);
+      assert.throws(() => doc.state.count.set(Infinity), TypeError);
+      assert.throws(() => doc.state.items.insert(0, NaN), TypeError);
+      doc.state.items.push({ label: "valid" });
+      doc.state.body.insert(0, "😀");
+      doc.state.count.set(2);
+    });
+    assert.deepEqual(doc.checkpoint().pendingBatches[0]!.operations.map((operation) => operation.type),
+      ["value/set", "list/insert", "text/insert", "value/set"]);
+    assert.equal(doc.state.count.value, 2);
+    assert.deepEqual(doc.state.items.toArray(), [{ label: "valid" }]);
+    assert.equal(doc.state.body.toString(), "😀");
+    assert.equal(doc.checkpoint().lastLocalSeq, 1);
+    assert.deepEqual(doc.checkpoint().lastBunchSeqs, { items: 1, body: 1 });
+    assert.equal(batches, 1);
+    assert.equal(changes, 1);
+  });
+
   it("skips unchanged collection iteration while retaining equal own acks and real changes", (t) => {
     const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
     const server = createServer(Board);

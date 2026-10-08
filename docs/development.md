@@ -40,6 +40,7 @@ The GitHub Actions `CI` workflow runs on main pushes, `v*` tag pushes, PRs targe
 | Transaction batching, nested/no-savepoint behavior, rollback, local callback failures and reentrant delivery | `runtime.test.ts`, collection tests; `resume.test.ts`, `async-resume.test.ts`, HTTP sync |
 | Atomic policy, explicit rejection and original-result retry | Runtime policy tests, `server-reject.test.ts`, `retry.test.ts`; HTTP rejection recovery |
 | Owned wire JSON and restore metadata | `wire.test.ts`, `client-checkpoint.test.ts`, `history.test.ts` |
+| Local JSON validation, unchanged ownership, deep traversal and failure atomicity | `runtime.test.ts`, `list.test.ts`, `wire.test.ts` |
 | Pending prefix/conflicts, restore and catch-up | `replay-conflict.test.ts`, `client-checkpoint.test.ts`, `interleaving.test.ts`; HTTP/browser recovery |
 | Save-before-send/success and lineage boundaries (application examples) | `persistent-resume.test.ts`, `persistent-http-sync.test.ts`, browser recovery tests, `document-lineage.test.ts` |
 | Installed entrypoint and schema-specific declarations | `test/package-consumer/smoke.test.ts`; browser ESM smoke |
@@ -56,6 +57,8 @@ node --test --test-name-pattern="seed=42" test/interleaving.test.ts
 Browser JSDoc and Node integration tests do not replace interactive verification. Existing smoke/recovery instructions and the full JSDoc command are in the [examples guide](examples.md).
 
 ## Collection performance baseline
+
+Local schema defaults, Value sets and List inserts always validate JSON before mutation. Local validation and wire copy/freeze share the iterative traversal in `src/json.ts`; local validation creates no payload copy and does not freeze the input. It checks each occurrence in the supplied payload without a validation cache, so large Value/List elements have linear traversal cost. Server apply and pending replay do not repeat this local check. Measure large-payload replacement separately from the collection-size benchmark below, which inserts primitive strings. Neither finite numbers nor these checks guarantee lossless JSON serialization of signed zero, enforce later immutability or validate business type shapes.
 
 List/Text values use a typed, string-key subset of [hamt_plus](https://github.com/mattbierner/hamt_plus) vendored at commit `b8845c7343fdde3966f875d732248fec597cf538`. Persistent updates share trie nodes; range edits and hydration use synchronous, finally-scoped transient updates. IdList still determines visible order and tombstones. Payloads are not cloned or converted; value no-op checks use `Object.is` to preserve signed zero. This avoids whole-Map copies, not every linear scan or collision cost.
 

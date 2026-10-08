@@ -486,6 +486,23 @@ describe("wire decoding", () => {
     );
   });
 
+  it("still copies and freezes null-prototype JSON after local validation", () => {
+    const dictionary: Record<string, JsonValue> = Object.create(null) as Record<string, JsonValue>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Only string data properties are added to this null-prototype fixture.
+    dictionary.nested = { ok: true };
+    const Data = defineDocument({ meta: valueSchema<JsonValue>(dictionary) });
+    const local = createClient(Data, { clientId: "dictionary", onBatch() {} });
+    local.state.meta.set(dictionary);
+    const decoded = decodeClientBatch(Data, local.checkpoint().pendingBatches[0]);
+    const copied = decoded.operations[0]!.value;
+    assert.notStrictEqual(copied, dictionary);
+    assert.equal(Object.isFrozen(dictionary), false);
+    assert.ok(typeof copied === "object" && copied !== null && !Array.isArray(copied));
+    assert.ok(Object.isFrozen(copied));
+    assert.ok(Object.isFrozen(copied.nested));
+    assert.equal(Object.getPrototypeOf(copied), Object.prototype);
+    assert.deepEqual(copied, { nested: { ok: true } });
+  });
+
   it("copies and freezes 20,000 levels of mixed JSON containers without recursion", () => {
     const Data = defineDocument({ meta: valueSchema<JsonValue>(null) });
     const depth = 10_000;

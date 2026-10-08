@@ -1,5 +1,6 @@
 import type { ListSnapshotData } from "./list.ts";
 import type { TextSnapshotData } from "./text.ts";
+import { validateJsonValue } from "./json.ts";
 
 export type JsonPrimitive = null | boolean | number | string;
 
@@ -43,6 +44,7 @@ export function value(initialValue: boolean): ValueSchema<boolean>;
 export function value(initialValue: null): ValueSchema<null>;
 export function value<T extends JsonValue>(initialValue: T): ValueSchema<T>;
 export function value<T extends JsonValue>(initialValue: T): ValueSchema<T> {
+  validateJsonValue(initialValue, ["initialValue"]);
   return Object.freeze({ kind: "value", initialValue });
 }
 

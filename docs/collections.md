@@ -22,6 +22,8 @@ console.log(doc.state.count.value); // 2
 
 An accessor intercepts replacement, not nested object mutation. For `value({ done: false })`, replace with `doc.state.task.value = { done: true }`; do not edit `.value.done` in place. JSON payloads must remain immutable after being supplied.
 
+Schema defaults and local Value/List payloads are validated before use. For example, `doc.state.count.set(NaN)` throws `TypeError` without changing state or producing a batch. Validation does not copy or freeze your object and does not check its application-specific shape. Large payloads cost more to validate; unchanged document collections are not scanned.
+
 ## List: single-element edits
 
 ```ts
