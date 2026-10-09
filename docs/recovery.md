@@ -4,7 +4,7 @@ Use a snapshot for a new client, checkpoints to restore retired writers, and cat
 
 ## Upgrading from 0.1
 
-The unpublished 0.2 beta requires an explicitly opened server session before a writer submits its first batch:
+The published `0.2.0-beta.0` requires an explicitly opened server session before a writer submits its first batch:
 
 ```ts
 const fresh = createClient(Board, {

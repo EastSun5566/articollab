@@ -116,7 +116,7 @@ The source repository remains private; the npm beta is public. Before enabling d
 
 Release only by pushing a matching version tag after the version commit is on `main`. Tags must be canonical `vX.Y.Z` or `vX.Y.Z-beta.N`, exactly match `package.json`, and point to a commit in `origin/main` history. Other prereleases, build metadata and leading-zero version components are rejected before dependency installation. Beta tags publish to `beta`; stable tags publish to `latest`.
 
-Before the first automated release, configure the package's **Trusted publishing** settings on npm:
+The tag workflow publishes through npm **Trusted publishing**. Keep the package's publisher settings aligned with the workflow:
 
 - Provider: GitHub Actions.
 - Organization or user: `EastSun5566`; repository: `articollab`.
@@ -127,19 +127,19 @@ The manifest's `repository.url` must match this repository. The workflow uses Gi
 
 Use the local [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) tool to prepare releases. Fetch `origin/main` and tags first, confirm a clean `main` synchronized with `origin/main`, and review compatibility notes and documentation. Always specify the intended version and preview it before making changes:
 
-This checkout already sets `package.json` to `0.2.0-beta.0`; it is not yet released. Specify that exact version below rather than asking the tool to infer a bump or adding `--prerelease`. Check that the preview includes the session/checkpoint breaking changes and would create `v0.2.0-beta.0`. Dry-run must leave tracked files, HEAD and tags unchanged; it is not release or publish authorization.
+`0.2.0-beta.0` has been published; do not recreate its tag or republish that version. The commands below use `0.2.0-beta.1` as a future-release example, not authorization to release it. Specify the intended version explicitly rather than asking the tool to infer a bump or adding `--prerelease`. Check the preview's changelog and expected `v0.2.0-beta.1` tag. Dry-run must leave tracked files, HEAD and tags unchanged; it is not release or publish authorization.
 
 ```sh
-pnpm release --release-as 0.2.0-beta.0 --dry-run
+pnpm release --release-as 0.2.0-beta.1 --dry-run
 ```
 
 After reviewing the preview and authorizing the release:
 
 ```sh
-pnpm release --release-as 0.2.0-beta.0
+pnpm release --release-as 0.2.0-beta.1
 ```
 
-This writes the chosen version to `package.json` (no version change when it is already `0.2.0-beta.0`), generates `CHANGELOG.md` from Conventional Commits, and creates a signed release commit and signed `v` tag using the configured GPG key. It does not push or publish. The consumer test compares the installed version exactly with the checkout manifest, so no separate test-version edit or updater is needed. Release tooling and the changelog stay outside the production tarball.
+This writes the chosen version to `package.json`, generates `CHANGELOG.md` from Conventional Commits, and creates a signed release commit and signed `v` tag using the configured GPG key. It does not push or publish. The consumer test compares the installed version exactly with the checkout manifest, so no separate test-version edit or updater is needed. Release tooling and the changelog stay outside the production tarball.
 
 The tool's standard changelog window starts at the previous stable release, not the previous beta. Until there is a stable tag, a beta changelog includes existing core features; those entries are cumulative, not necessarily new in that beta. Do not use `--first-release`, force tags, or replace existing tags. If the tool or signing fails, inspect the partial result before taking further action; do not bypass signing or blindly rerun it.
 
@@ -152,7 +152,7 @@ git push origin main
 Confirm CI succeeds for that release commit before pushing its specific tag:
 
 ```sh
-git push origin v0.2.0-beta.0
+git push origin v0.2.0-beta.1
 ```
 
 Ignore the tool's suggested manual publish command: pushing the tag starts the existing CI publication flow. Do not use `--follow-tags`, which could push other release tags too. Preparing a release, pushing it, and publishing it are separate steps; previewing or installing this tool does not authorize a release.
