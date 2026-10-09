@@ -11,8 +11,8 @@ async function runDemo(): Promise<void> {
   });
   const host = await startHttpExampleServer(server);
   try {
-    const a = await connectHttpExampleClient(host.url, "a");
-    const peer = await connectHttpExampleClient(host.url, "b");
+    const a = await connectHttpExampleClient(host.url);
+    const peer = await connectHttpExampleClient(host.url);
     a.doc.transact(() => {
       a.doc.state.count.value = 1;
       a.doc.state.items.push("A");

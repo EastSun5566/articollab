@@ -109,8 +109,8 @@ async function runDemo(): Promise<void> {
     }
 
     const original = boot();
-    const source = original.network.connect("client-a");
-    const peer = original.network.connect("client-b");
+    const source = original.network.connect();
+    const peer = original.network.connect();
     source.disconnect();
     source.doc.transact(() => {
       source.doc.state.count.value = 1;
@@ -128,10 +128,10 @@ async function runDemo(): Promise<void> {
     peer.disconnect(); // Both old writers are now stopped.
 
     const restored = boot(); // Load files; do not pass the old objects' checkpoints.
-    const restoredPeer = restored.network.connect("client-b", store.loadClient("client-b")!);
+    const restoredPeer = restored.network.connect(store.loadClient(peer.doc.checkpoint().clientId)!);
     assert.equal(await restoredPeer.resume(), true);
     await restored.network.idle();
-    const restoredSource = restored.network.connect("client-a", store.loadClient("client-a")!);
+    const restoredSource = restored.network.connect(store.loadClient(source.doc.checkpoint().clientId)!);
     assert.equal(await restoredSource.resume(), true);
     await restored.network.idle();
     restoredSource.doc.state.items.push("Live");

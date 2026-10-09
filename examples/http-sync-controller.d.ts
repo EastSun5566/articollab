@@ -4,6 +4,10 @@ export function readHttpResponse(
   url: string, fetch: typeof globalThis.fetch, path: string, status: number, init?: RequestInit
 ): Promise<string>;
 
+export function readClientRegistration(
+  url: string, fetch: typeof globalThis.fetch
+): Promise<{ clientId: string; snapshot: unknown }>;
+
 export function createHttpSyncController<O extends Operation>(options: {
   url: string;
   fetch: typeof globalThis.fetch;

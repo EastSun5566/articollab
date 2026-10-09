@@ -167,7 +167,7 @@ describe("file-backed checkpoint recovery example", () => {
       "const server = createServer(Board)",
       "store.saveServer(server.checkpoint())",
       "const network = createAsyncExampleNetwork(server, { saveClientCheckpoint: store.saveClient, saveServerCheckpoint: store.saveServer })",
-      "const { doc } = network.connect('a')",
+      "const { doc } = network.connect()",
       "doc.transact(() => { doc.state.count.value = 1; doc.state.items.push('saved'); doc.state.body.insert(0, '😀'); })",
       "process.exit(0)", // No Promise jobs, drain or graceful-shutdown handler.
     ].join(";\n");
@@ -176,11 +176,11 @@ describe("file-backed checkpoint recovery example", () => {
     assert.equal(result.stdout, "");
     const store = createCheckpointStore(root);
     assert.equal(store.loadServer()!.snapshot.serverSeq, 0);
-    const checkpoint = store.loadClient("a")!;
+    const checkpoint = store.loadClient("client-1")!;
     assert.equal(checkpoint.pendingBatches.length, 1);
     const { server, network } = boot(store);
-    const peer = network.connect("b");
-    const source = network.connect("a", checkpoint);
+    const peer = network.connect();
+    const source = network.connect(checkpoint);
     assert.equal(source.doc.state.body.toString(), "😀");
     assert.equal(await source.resume(), true);
     await network.idle();
@@ -190,8 +190,8 @@ describe("file-backed checkpoint recovery example", () => {
   it("restores mixed tombstones, several lost acks, sequences and fresh ID allocations from files", async (t) => {
     const store = createCheckpointStore(directory(t));
     const first = boot(store);
-    const source = first.network.connect("a");
-    const peer = first.network.connect("b");
+    const source = first.network.connect();
+    const peer = first.network.connect();
     source.disconnect();
     source.doc.transact(() => {
       source.doc.state.count.value = 1;
@@ -208,7 +208,7 @@ describe("file-backed checkpoint recovery example", () => {
       source.doc.state.items.push("restored");
       source.doc.state.body.insert(0, "B😀");
     });
-    const saved = store.loadClient("a")!;
+    const saved = store.loadClient("client-1")!;
     for (const batch of saved.pendingBatches.slice(0, 2)) await first.network.submit(batch);
     await first.network.idle();
     peer.disconnect();
@@ -221,10 +221,10 @@ describe("file-backed checkpoint recovery example", () => {
     const seen: number[] = [];
     const next = boot(store, { resolve: ({ batch }) => { seen.push(batch.seq); return batch.operations; } });
     assert.deepEqual(next.server.checkpoint(), serverCheckpoint);
-    const restoredPeer = next.network.connect("b", store.loadClient("b")!);
+    const restoredPeer = next.network.connect(store.loadClient("client-2")!);
     assert.equal(await restoredPeer.resume(), true);
     await next.network.idle();
-    const restored = next.network.connect("a", store.loadClient("a")!);
+    const restored = next.network.connect(store.loadClient("client-1")!);
     assert.equal(await restored.resume(), true);
     await next.network.idle();
     assert.deepEqual(seen, [3]);
@@ -256,7 +256,7 @@ describe("file-backed checkpoint recovery example", () => {
         saveServerCheckpoint(checkpoint) { store.saveServer(checkpoint); serverSaves.push(checkpoint.snapshot.serverSeq); },
         saveClientCheckpoint(checkpoint) {
           store.saveClient(checkpoint);
-          if (checkpoint.clientId === "a") clientWatermarks.push(checkpoint.snapshot.serverSeq);
+          if (checkpoint.clientId === "client-1") clientWatermarks.push(checkpoint.snapshot.serverSeq);
         },
         transfer: async (direction, id, message) => {
           if (direction === "client-to-server") {
@@ -268,8 +268,8 @@ describe("file-backed checkpoint recovery example", () => {
           return message;
         },
       });
-      const source = network.connect("a");
-      const peer = network.connect("b");
+      const source = network.connect();
+      const peer = network.connect();
       let changes = 0;
       source.doc.on("change", (event) => { if (event.origin === "server") changes++; });
       source.doc.transact(() => {
@@ -278,14 +278,14 @@ describe("file-backed checkpoint recovery example", () => {
       });
       await network.idle();
       assert.equal(changes, 0);
-      assert.equal(store.loadClient("a")!.snapshot.serverSeq, 1);
+      assert.equal(store.loadClient("client-1")!.snapshot.serverSeq, 1);
       source.doc.transact(() => {
         source.doc.state.count.value = 10;
         source.doc.state.items.delete(0);
         source.doc.state.body.delete(0);
       });
       await network.idle();
-      assert.deepEqual(serverSaves, [1, 2]);
+      assert.deepEqual(serverSaves, [0, 0, 1, 2]);
       assert.ok(clientWatermarks.includes(2));
       assert.equal(changes, mode === "accept" ? 0 : 1);
       assert.equal(source.doc.state.count.value, mode === "reject" ? 0 : mode === "transform" ? 5 : 10);
@@ -303,11 +303,11 @@ describe("file-backed checkpoint recovery example", () => {
       saveClientCheckpoint() { throw expected; },
       transfer: async (_direction, _id, message) => { requests++; return message; },
     });
-    assert.throws(() => network.connect("a"), (error: unknown) => error === expected);
-    assert.equal(store.loadClient("a"), null);
+    assert.throws(() => network.connect(), (error: unknown) => error === expected);
+    assert.equal(store.loadClient("client-1"), null);
     assert.equal(requests, 0);
     await assert.rejects(network.idle(), (error: unknown) => error === expected);
-    assert.throws(() => network.connect("b"), (error: unknown) => error === expected);
+    assert.throws(() => network.connect(), (error: unknown) => error === expected);
   });
 
   it("preserves the last saved pending batch and cancels queued sends on local save failure", async (t) => {
@@ -324,7 +324,7 @@ describe("file-backed checkpoint recovery example", () => {
         return message;
       },
     });
-    const source = network.connect("a");
+    const source = network.connect();
     source.doc.state.count.value = 1;
     const drained = assert.rejects(network.idle(), (error: unknown) => error === expected);
     assert.throws(() => { source.doc.state.count.value = 2; }, (error: unknown) => error === expected);
@@ -332,9 +332,9 @@ describe("file-backed checkpoint recovery example", () => {
     assert.equal(requests, 0);
     assert.equal(server.snapshot().serverSeq, 0);
     assert.deepEqual(source.doc.checkpoint().pendingBatches.map((batch) => batch.seq), [1, 2]);
-    assert.deepEqual(store.loadClient("a")!.pendingBatches.map((batch) => batch.seq), [1]);
+    assert.deepEqual(store.loadClient("client-1")!.pendingBatches.map((batch) => batch.seq), [1]);
     const next = boot(store);
-    const restored = next.network.connect("a", store.loadClient("a")!);
+    const restored = next.network.connect(store.loadClient("client-1")!);
     assert.equal(await restored.resume(), true);
     await next.network.idle();
     assert.equal(restored.doc.state.count.value, 1); // The failed edit was never promised durable.
@@ -346,26 +346,29 @@ describe("file-backed checkpoint recovery example", () => {
     const expected = new Error("server save failed");
     let deliveries = 0;
     const first = boot(store, {}, {
-      saveServerCheckpoint() { throw expected; },
+      saveServerCheckpoint(checkpoint) {
+        if (checkpoint.snapshot.serverSeq > 0) throw expected;
+        store.saveServer(checkpoint);
+      },
       transfer: async (direction, _id, message) => {
         if (direction === "server-to-client") deliveries++;
         return message;
       },
     });
-    const source = first.network.connect("a");
-    const peer = first.network.connect("b");
+    const source = first.network.connect();
+    const peer = first.network.connect();
     source.doc.state.count.value = 1;
     await assert.rejects(first.network.idle(), (error: unknown) => error === expected);
     assert.equal(first.server.snapshot().serverSeq, 1); // Discard this advanced in-memory instance.
     assert.equal(store.loadServer()!.snapshot.serverSeq, 0);
     assert.equal(deliveries, 0);
     assert.equal(peer.doc.checkpoint().snapshot.serverSeq, 0);
-    assert.equal(store.loadClient("a")!.pendingBatches.length, 1);
+    assert.equal(store.loadClient("client-1")!.pendingBatches.length, 1);
     const next = boot(store);
-    const restoredPeer = next.network.connect("b", store.loadClient("b")!);
+    const restoredPeer = next.network.connect(store.loadClient("client-2")!);
     assert.equal(await restoredPeer.resume(), true);
     await next.network.idle();
-    const restored = next.network.connect("a", store.loadClient("a")!);
+    const restored = next.network.connect(store.loadClient("client-1")!);
     assert.equal(await restored.resume(), true);
     await next.network.idle();
     assert.equal(next.server.snapshot().serverSeq, 1);
@@ -392,8 +395,8 @@ describe("file-backed checkpoint recovery example", () => {
           return message;
         },
       });
-      const source = first.network.connect("a");
-      const peer = first.network.connect("b");
+      const source = first.network.connect();
+      const peer = first.network.connect();
       source.doc.transact(() => {
         source.doc.state.items.push("seed");
         source.doc.state.body.insert(0, "😀");
@@ -409,14 +412,14 @@ describe("file-backed checkpoint recovery example", () => {
       await assert.rejects(first.network.idle(), (error: unknown) => error === expected);
       assert.equal(deliveries, 0);
       assert.equal(store.loadServer()!.snapshot.serverSeq, 2);
-      assert.equal(store.loadClient("a")!.snapshot.serverSeq, 1);
+      assert.equal(store.loadClient("client-1")!.snapshot.serverSeq, 1);
       assert.equal(peer.doc.checkpoint().snapshot.serverSeq, 1);
       let calls = 0;
       const next = boot(store, { resolve: () => { calls++; throw new Error("must use saved result"); } });
-      const restoredPeer = next.network.connect("b", store.loadClient("b")!);
+      const restoredPeer = next.network.connect(store.loadClient("client-2")!);
       assert.equal(await restoredPeer.resume(), true);
       await next.network.idle();
-      const restored = next.network.connect("a", store.loadClient("a")!);
+      const restored = next.network.connect(store.loadClient("client-1")!);
       assert.equal(await restored.resume(), true);
       await next.network.idle();
       assert.equal(calls, 0);
@@ -432,12 +435,12 @@ describe("file-backed checkpoint recovery example", () => {
     const expected = new Error("ack save failed");
     const first = boot(store, {}, {
       saveClientCheckpoint(checkpoint) {
-        if (checkpoint.clientId === "a" && checkpoint.snapshot.serverSeq === 1) throw expected;
+        if (checkpoint.clientId === "client-1" && checkpoint.snapshot.serverSeq === 1) throw expected;
         store.saveClient(checkpoint);
       },
     });
-    const source = first.network.connect("a");
-    const peer = first.network.connect("b");
+    const source = first.network.connect();
+    const peer = first.network.connect();
     let changes = 0;
     source.doc.on("change", (event) => { if (event.origin === "server") changes++; });
     source.doc.state.count.value = 1;
@@ -445,16 +448,16 @@ describe("file-backed checkpoint recovery example", () => {
     assert.equal(changes, 0);
     assert.equal(source.doc.checkpoint().snapshot.serverSeq, 1);
     assert.deepEqual(source.doc.checkpoint().pendingBatches, []);
-    assert.equal(store.loadClient("a")!.snapshot.serverSeq, 0);
-    assert.equal(store.loadClient("a")!.pendingBatches.length, 1);
+    assert.equal(store.loadClient("client-1")!.snapshot.serverSeq, 0);
+    assert.equal(store.loadClient("client-1")!.pendingBatches.length, 1);
     assert.equal(store.loadServer()!.snapshot.serverSeq, 1);
     assert.equal(peer.doc.checkpoint().snapshot.serverSeq, 0);
     let calls = 0;
     const next = boot(store, { resolve: ({ batch }) => { calls++; return batch.operations; } });
-    const restoredPeer = next.network.connect("b", store.loadClient("b")!);
+    const restoredPeer = next.network.connect(store.loadClient("client-2")!);
     assert.equal(await restoredPeer.resume(), true);
     await next.network.idle();
-    const restored = next.network.connect("a", store.loadClient("a")!);
+    const restored = next.network.connect(store.loadClient("client-1")!);
     assert.equal(await restored.resume(), true);
     await next.network.idle();
     assert.equal(calls, 0);
@@ -469,31 +472,31 @@ describe("file-backed checkpoint recovery example", () => {
     let serverWrites = 0;
     let peerDeliveries = 0;
     const { server, network } = boot(store, { resolve: ({ batch }) => {
-      if (batch.clientId === "a") seenA.push(batch.seq);
-      return batch.clientId === "a" && batch.seq === 1 ? [] : batch.operations;
+      if (batch.clientId === "client-1") seenA.push(batch.seq);
+      return batch.clientId === "client-1" && batch.seq === 1 ? [] : batch.operations;
     } }, {
       saveClientCheckpoint(checkpoint) {
         store.saveClient(checkpoint);
         clientWrites++;
-        if (checkpoint.clientId === "a" && checkpoint.snapshot.serverSeq === 1) {
+        if (checkpoint.clientId === "client-1" && checkpoint.snapshot.serverSeq === 1) {
           savedPending.push(checkpoint.pendingBatches.map((batch) => batch.seq));
         }
       },
       saveServerCheckpoint(checkpoint) { store.saveServer(checkpoint); serverWrites++; },
       transfer: async (direction, id, message) => {
-        if (direction === "server-to-client" && id === "b") peerDeliveries++;
+        if (direction === "server-to-client" && id === "client-2") peerDeliveries++;
         return message;
       },
     });
-    const original = network.connect("a");
-    const peer = network.connect("b");
+    const original = network.connect();
+    const peer = network.connect();
     original.disconnect();
     original.doc.state.count.value = 10;
     original.doc.transact(() => {
       original.doc.state.items.push("older");
       original.doc.state.body.insert(0, "older");
     });
-    const restored = network.connect("a", store.loadClient("a")!);
+    const restored = network.connect(store.loadClient("client-1")!);
     let edited = false;
     restored.doc.on("change", (event) => {
       if (event.origin === "server" && !edited) {
@@ -503,7 +506,7 @@ describe("file-backed checkpoint recovery example", () => {
     });
     let peerEdited = false;
     peer.doc.on("change", (event) => {
-      if (event.origin === "server" && event.commit.source.clientId === "a"
+      if (event.origin === "server" && event.commit.source.clientId === "client-1"
           && event.commit.source.seq === 2 && !peerEdited) {
         peerEdited = true;
         peer.doc.state.count.value = 40;
@@ -518,7 +521,7 @@ describe("file-backed checkpoint recovery example", () => {
     converged(store, server, restored.doc, peer.doc);
     const before = { clientWrites, serverWrites, peerDeliveries };
     const checkpoint = store.loadServer()!;
-    const batch = checkpoint.replays.find((entry) => entry.batch.clientId === "a")!.batch;
+    const batch = checkpoint.clients.find((entry) => entry.clientId === "client-1")!.replay!.batch;
     await network.submit(batch);
     await network.idle();
     assert.deepEqual({ clientWrites, serverWrites, peerDeliveries }, before);
@@ -537,15 +540,15 @@ describe("file-backed checkpoint recovery example", () => {
         store.saveClient(checkpoint);
       },
     });
-    const source = first.network.connect("a");
+    const source = first.network.connect();
     source.doc.on("change", (event) => { if (event.origin === "server") throw expected; });
     source.doc.state.count.value = 1;
     await assert.rejects(first.network.idle(), (error: unknown) => error === expected);
     assert.deepEqual(saves, [0, 0]);
     assert.equal(source.doc.checkpoint().snapshot.serverSeq, 1);
-    assert.equal(store.loadClient("a")!.snapshot.serverSeq, 0);
+    assert.equal(store.loadClient("client-1")!.snapshot.serverSeq, 0);
     const next = boot(store);
-    const restored = next.network.connect("a", store.loadClient("a")!);
+    const restored = next.network.connect(store.loadClient("client-1")!);
     assert.equal(await restored.resume(), true);
     await next.network.idle();
     assert.equal(restored.doc.state.count.value, 2);
@@ -555,14 +558,14 @@ describe("file-backed checkpoint recovery example", () => {
   it("leaves saved pending disconnected without submission when history is insufficient", async (t) => {
     const store = createCheckpointStore(directory(t));
     const first = boot(store, { historyLimit: 0 });
-    const source = first.network.connect("a");
-    const peer = first.network.connect("b");
+    const source = first.network.connect();
+    const peer = first.network.connect();
     source.disconnect();
     source.doc.state.count.value = 1;
     peer.doc.state.count.value = 2;
     await first.network.idle();
     peer.disconnect();
-    const saved = store.loadClient("a")!;
+    const saved = store.loadClient("client-1")!;
     let requests = 0;
     const next = boot(store, { historyLimit: 0 }, {
       transfer: async (direction, _id, message) => {
@@ -570,13 +573,13 @@ describe("file-backed checkpoint recovery example", () => {
         return message;
       },
     });
-    const restored = next.network.connect("a", saved);
+    const restored = next.network.connect(saved);
     assert.equal(await restored.resume(), false);
     assert.equal(await restored.resume(), false);
     await next.network.idle();
     assert.equal(requests, 0);
     assert.deepEqual(restored.doc.checkpoint(), saved);
-    assert.deepEqual(store.loadClient("a"), saved);
+    assert.deepEqual(store.loadClient("client-1"), saved);
     assert.equal(store.loadServer()!.snapshot.serverSeq, 1);
   });
 });

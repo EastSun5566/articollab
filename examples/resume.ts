@@ -98,8 +98,9 @@ export function createExampleNetwork(server: ServerDocument<Shape>) {
     });
   }
 
-  function connect(clientId: string, checkpoint?: Checkpoint) {
+  function connect(checkpoint?: Checkpoint) {
     requireUsable();
+    const clientId = checkpoint?.clientId ?? server.openClient();
     const previous = connections.get(clientId);
     if (previous !== undefined && previous.mode !== "offline") {
       throw new Error("Disconnect the previous writer before replacing it");
@@ -170,8 +171,8 @@ export function createExampleNetwork(server: ServerDocument<Shape>) {
 function runDemo(): void {
   const server = createServer(Board);
   const network = createExampleNetwork(server);
-  const original = network.connect("client-a");
-  const peer = network.connect("client-b");
+  const original = network.connect();
+  const peer = network.connect();
 
   original.disconnect();
   original.doc.transact(() => {
@@ -193,7 +194,7 @@ function runDemo(): void {
     JSON.parse(JSON.stringify(original.doc.checkpoint()))
   );
   // Stop using the old writer before restoring the same client ID.
-  const restored = network.connect(checkpoint.clientId, checkpoint);
+  const restored = network.connect(checkpoint);
   assert.equal(restored.resume(), true);
   restored.doc.state.items.push("Live");
 

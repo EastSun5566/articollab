@@ -49,7 +49,7 @@ The GitHub Actions `CI` workflow runs on main pushes, `v*` tag pushes, PRs targe
 
 These are coverage pointers, not proof of every observable edge case. Dedicated core regression cases in `runtime.test.ts` cover nested transaction batching, escaping-error rollback, caught inner errors without savepoints, and the pending/sequence/notification behavior when local callbacks throw. Existing persistence/recovery tests separately cover callback failures at application boundaries. Do not infer complete coverage from the number of passing tests.
 
-The server's optional `maxClients` checks the existing replay Map size before admitting a new client; it does not create a separate registry or evict entries. Keep this guard after retained-retry/sequence checks and before operation copying/policy. Failed admission is not an authoritative rejection or ack. Restore must validate the full checkpoint and reject an undersized limit rather than truncate client metadata. The limit counts historical processed IDs, not connections or bytes; applications still own authentication, payload quotas and any future client-retirement protocol.
+The optional `maxClients` bounds open writer sessions, including those without a batch. `openClient()` allocates a canonical, never-reused ID; `closeClient()` removes its session and last retry. Disconnect and history eviction do not close it. Unknown/closed writers fail before operation copying/policy. Restore validates all session metadata before checking capacity; the allocation counter survives closure and restore. Server checkpoints from 0.1 are intentionally incompatible.
 
 The deterministic interleaving suite uses three clients, five seeds, 200 scheduling steps and repeat-trace comparison, checking protocol invariants, a Value oracle, restore equivalence and convergence—not an independent List/Text model. Reproduce one seed with:
 
@@ -128,13 +128,13 @@ The manifest's `repository.url` must match this repository. The workflow uses Gi
 Use the local [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) tool to prepare releases. Fetch `origin/main` and tags first, confirm a clean `main` synchronized with `origin/main`, and review compatibility notes and documentation. Always specify the intended version and preview it before making changes:
 
 ```sh
-pnpm release --release-as 0.1.0-beta.1 --dry-run
+pnpm release --release-as 0.2.0-beta.0 --dry-run
 ```
 
 After reviewing the preview and authorizing the release:
 
 ```sh
-pnpm release --release-as 0.1.0-beta.1
+pnpm release --release-as 0.2.0-beta.0
 ```
 
 This updates `package.json`, generates `CHANGELOG.md` from Conventional Commits, and creates a signed release commit and signed `v` tag using the configured GPG key. It does not push or publish. The consumer test compares the installed version exactly with the checkout manifest, so no separate test-version edit or updater is needed. Release tooling and the changelog stay outside the production tarball.
@@ -150,7 +150,7 @@ git push origin main
 Confirm CI succeeds for that release commit before pushing its specific tag:
 
 ```sh
-git push origin v0.1.0-beta.1
+git push origin v0.2.0-beta.0
 ```
 
 Ignore the tool's suggested manual publish command: pushing the tag starts the existing CI publication flow. Do not use `--follow-tags`, which could push other release tags too. Preparing a release, pushing it, and publishing it are separate steps; previewing or installing this tool does not authorize a release.

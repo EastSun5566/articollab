@@ -89,8 +89,9 @@ describe("browser HTTP smoke example", { timeout: 30_000 }, () => {
       requests.push({ path: new URL((input instanceof Request ? input.url : input.toString())).pathname, method: init?.method ?? "GET", status: response.status });
       return response;
     } }));
-    assert.deepEqual(new Set(requests.map((entry) => entry.path)), new Set(["/snapshot", "/commits", "/batches", "/rejections"]));
+    assert.deepEqual(new Set(requests.map((entry) => entry.path)), new Set(["/clients", "/snapshot", "/commits", "/batches", "/rejections"]));
     for (const [index, request] of requests.entries()) {
+      if (request.path === "/clients") { assert.equal(request.status, 201); continue; }
       if (request.method !== "POST") continue;
       assert.equal(request.status, 204);
       assert.equal(requests[index + 1]?.path, "/commits");
@@ -143,7 +144,7 @@ describe("browser HTTP smoke example", { timeout: 30_000 }, () => {
     let posts = 0;
     await assert.rejects(smoke.runBrowserHttpSmoke(url, { fetch: async (input, init) => {
       const response = await fetch(input, init);
-      if (init?.method === "POST") {
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) {
         posts++;
         await response.text();
         throw failure;

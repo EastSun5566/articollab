@@ -27,15 +27,15 @@ async function runDemo(): Promise<void> {
 
     const original = await boot();
     const lostResponse = new Error("POST response lost after saving the server checkpoint");
-    const source = await connectHttpExampleClient(original.host.url, "a", {
+    const source = await connectHttpExampleClient(original.host.url, {
       saveClientCheckpoint: store.saveClient,
       fetch: async (input, init) => {
         const response = await fetch(input, init);
-        if (init?.method === "POST") { await response.text(); throw lostResponse; }
+        if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) { await response.text(); throw lostResponse; }
         return response;
       },
     });
-    await connectHttpExampleClient(original.host.url, "b", { saveClientCheckpoint: store.saveClient });
+    const peer = await connectHttpExampleClient(original.host.url, { saveClientCheckpoint: store.saveClient });
     source.doc.transact(() => {
       source.doc.state.count.value = 1;
       source.doc.state.items.push("Saved");
@@ -48,15 +48,15 @@ async function runDemo(): Promise<void> {
     });
     await assert.rejects(source.sync(), (error: unknown) => error === lostResponse);
     assert.equal(store.loadServer()!.snapshot.serverSeq, 1);
-    assert.equal(store.loadClient("a")!.pendingBatches.length, 2);
+    assert.equal(store.loadClient(source.doc.checkpoint().clientId)!.pendingBatches.length, 2);
     await original.host.close(); // Both old writers are retired before rebuilding from files.
 
     const restored = await boot();
-    const a = await connectHttpExampleClient(restored.host.url, "a", {
-      checkpoint: store.loadClient("a")!, saveClientCheckpoint: store.saveClient,
+    const a = await connectHttpExampleClient(restored.host.url, {
+      checkpoint: store.loadClient(source.doc.checkpoint().clientId)!, saveClientCheckpoint: store.saveClient,
     });
-    const b = await connectHttpExampleClient(restored.host.url, "b", {
-      checkpoint: store.loadClient("b")!, saveClientCheckpoint: store.saveClient,
+    const b = await connectHttpExampleClient(restored.host.url, {
+      checkpoint: store.loadClient(peer.doc.checkpoint().clientId)!, saveClientCheckpoint: store.saveClient,
     });
     assert.equal(await a.sync(), true); // Catch-up confirms batch 1; only batch 2 is posted.
     assert.equal(await b.sync(), true);

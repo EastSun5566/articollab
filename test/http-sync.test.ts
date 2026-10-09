@@ -23,7 +23,7 @@ async function host(t: TestContext, server: ServerDocument<Shape> = createServer
   return result;
 }
 
-function makeBatch(clientId = "a", seq = 1, value = 1) {
+function makeBatch(clientId = "client-1", seq = 1, value = 1) {
   return { clientId, seq, operations: [{ type: "value/set", path: "count", value }] };
 }
 
@@ -67,6 +67,90 @@ async function child(t: TestContext, code: string): Promise<string> {
 }
 
 describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
+  it("registers fresh writers before returning their snapshot and never reopens restored writers", async (t) => {
+    let resolves = 0;
+    const server = createServer(Board, { maxClients: 1, resolve: ({ batch: incoming }) => {
+      resolves++; return incoming.operations;
+    } });
+    const saved: ReturnType<typeof server.checkpoint>[] = [];
+    const h = await startHttpExampleServer(server, { saveServerCheckpoint(checkpoint) { saved.push(checkpoint); } });
+    t.after(() => h.close());
+    const a = await connectHttpExampleClient(h.url, { fetch: async (input, init) => {
+      const response = await fetch(input, init);
+      if (response.status === 201) assert.deepEqual(saved.at(-1), server.checkpoint());
+      return response;
+    } });
+    assert.equal(a.doc.checkpoint().clientId, "client-1");
+    assert.equal(saved.length, 2); // Bootstrap and the unprocessed open session.
+    assert.deepEqual(saved[1]!.clients, [{ clientId: "client-1", replay: null }]);
+    assert.equal(resolves, 0);
+    assert.equal(server.snapshot().serverSeq, 0);
+    a.doc.state.items.push("Offline");
+    const checkpoint = roundTrip(a.doc.checkpoint());
+    const restored = await connectHttpExampleClient(h.url, { checkpoint, fetch: async () => assert.fail("Restore must not request registration") });
+    assert.deepEqual(restored.doc.checkpoint(), checkpoint);
+    assert.deepEqual(server.checkpoint().clients, saved[1]!.clients);
+    await assert.rejects(connectHttpExampleClient(h.url), /409/);
+    assert.equal(saved.length, 2);
+    server.closeClient(checkpoint.clientId);
+    await assert.rejects(a.sync(), /409/);
+    assert.deepEqual(a.doc.checkpoint().pendingBatches, checkpoint.pendingBatches);
+    const next = await connectHttpExampleClient(h.url);
+    assert.equal(next.doc.checkpoint().clientId, "client-2");
+  });
+
+  it("validates registration bodies and stops the host if saving a new session fails", async (t) => {
+    const server = createServer(Board);
+    const failure = new Error("Registration save failed");
+    let fail = false;
+    let saves = 0;
+    const h = await startHttpExampleServer(server, { saveServerCheckpoint() {
+      saves++; if (fail) throw failure;
+    } });
+    t.after(() => h.close());
+    for (const [body, contentType, status] of [
+      ["{}", "text/plain", 415], ["{", "application/json", 400],
+      ["[]", "application/json", 400], ["null", "application/json", 400],
+      ['{"clientId":"chosen"}', "application/json", 400],
+      [" ".repeat(1024 * 1024 + 1), "application/json", 413],
+    ] as const) {
+      const response = await fetch(h.url + "/clients", { method: "POST", headers: { "Content-Type": contentType }, body });
+      assert.equal(response.status, status); await response.text();
+      assert.equal(server.checkpoint().lastClientNumber, 0);
+      assert.equal(saves, 1);
+    }
+    const before = server.checkpoint();
+    fail = true;
+    const response = await fetch(h.url + "/clients", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    assert.equal(response.status, 500); await response.text();
+    assert.equal(server.checkpoint().lastClientNumber, 1); // Discard this advanced instance.
+    assert.equal(server.snapshot().serverSeq, 0);
+    const stopped = await fetch(h.url + "/clients", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    assert.equal(stopped.status, 503); await stopped.text();
+    assert.equal(saves, 2);
+    assert.equal(createServer(Board, { checkpoint: before }).openClient(), "client-1");
+  });
+
+  it("does not retry lost registration responses or return handles for malformed registration", async (t) => {
+    const server = createServer(Board);
+    const h = await host(t, server);
+    const failure = new Error("Registration response lost");
+    let requests = 0;
+    await assert.rejects(connectHttpExampleClient(h.url, { fetch: async (input, init) => {
+      requests++;
+      const response = await fetch(input, init); await response.text(); throw failure;
+    } }), (error: unknown) => error === failure);
+    assert.equal(requests, 1);
+    assert.deepEqual(server.checkpoint().clients, [{ clientId: "client-1", replay: null }]);
+    for (const body of [null, {}, { clientId: "client-01", snapshot: server.snapshot() },
+      { clientId: "client-1\n", snapshot: server.snapshot() },
+      { clientId: "client-9007199254740992", snapshot: server.snapshot() },
+      { clientId: "client-2", snapshot: {} }, { clientId: "client-2", snapshot: server.snapshot(), extra: true }]) {
+      await assert.rejects(connectHttpExampleClient(h.url, { fetch: async () => new Response(JSON.stringify(body), { status: 201 }) }));
+    }
+    assert.equal((await connectHttpExampleClient(h.url)).doc.checkpoint().clientId, "client-2");
+  });
+
   it("imports without opening a server or running the demo", async (t) => {
     assert.equal(await child(t, "await import(" + JSON.stringify(exampleUrl) + ")"), "");
   });
@@ -74,8 +158,8 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
   it("syncs mixed optimistic work and silent acknowledgements without automatic sending", async (t) => {
     const server = createServer(Board);
     const { url } = await host(t, server);
-    const a = await connectHttpExampleClient(url, "a");
-    const b = await connectHttpExampleClient(url, "b");
+    const a = await connectHttpExampleClient(url);
+    const b = await connectHttpExampleClient(url);
     assert.deepEqual(a.doc.checkpoint().snapshot, server.snapshot());
     let serverChanges = 0;
     a.doc.on("change", (event) => { if (event.origin === "server") serverChanges++; });
@@ -107,10 +191,10 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
   it("catches updates between snapshot retrieval and the first sync", async (t) => {
     const server = createServer(Board);
     const { url } = await host(t, server);
-    const peer = await connectHttpExampleClient(url, "peer");
-    const client = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
+    const peer = await connectHttpExampleClient(url);
+    const client = await connectHttpExampleClient(url, { fetch: async (input, init) => {
       const response = await fetch(input, init);
-      if (!(input instanceof Request ? input.url : input.toString()).endsWith("/snapshot")) return response;
+      if (!(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) return response;
       const message = await response.text();
       peer.doc.state.items.push("After snapshot");
       assert.equal(await peer.sync(), true);
@@ -128,15 +212,15 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     const server = createServer(Board);
     const { url } = await host(t, server);
     const postWatermarks: number[] = [];
-    const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
+    const a = await connectHttpExampleClient(url, { fetch: async (input, init) => {
       const response = await fetch(input, init);
-      if (init?.method === "POST") {
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) {
         postWatermarks.push(a.doc.checkpoint().snapshot.serverSeq);
         assert.ok(a.doc.checkpoint().pendingBatches.length > 0);
       }
       return response;
     } });
-    const b = await connectHttpExampleClient(url, "b");
+    const b = await connectHttpExampleClient(url);
     a.doc.state.count.value = 1;
     a.doc.state.count.value = 2;
     b.doc.state.count.value = 8;
@@ -161,10 +245,10 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     const seen: string[] = [];
     const server = createServer(Board, { resolve: ({ batch: incoming }) => {
       seen.push(incoming.clientId + ":" + incoming.seq);
-      return incoming.clientId === "a" && incoming.seq === 1 ? [] : incoming.operations;
+      return incoming.clientId === "client-1" && incoming.seq === 1 ? [] : incoming.operations;
     } });
     const { url } = await host(t, server);
-    const a = await connectHttpExampleClient(url, "a");
+    const a = await connectHttpExampleClient(url);
     a.doc.state.count.value = 10;
     a.doc.state.items.push("Older");
     let changed = false;
@@ -179,7 +263,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       });
     });
     assert.equal(await a.sync(), true);
-    assert.deepEqual(seen, ["a:1", "a:2", "a:3"]);
+    assert.deepEqual(seen, ["client-1:1", "client-1:2", "client-1:3"]);
     assert.deepEqual(a.doc.state.items.toArray(), ["Older", "Listener"]);
     assert.equal(a.doc.state.count.value, 30);
     assert.deepEqual(a.doc.checkpoint().snapshot, server.snapshot());
@@ -195,14 +279,14 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
         return mode === "reject" ? [] : [{ type: "value/set", path: "count", value: 5 }];
       } });
       const { url } = await host(t, server);
-      const a = await connectHttpExampleClient(url, "a");
+      const a = await connectHttpExampleClient(url);
       a.doc.transact(() => {
         a.doc.state.count.value = 1;
         a.doc.state.items.push("Seed");
         a.doc.state.body.insert(0, "😀");
       });
       assert.equal(await a.sync(), true);
-      const b = await connectHttpExampleClient(url, "b");
+      const b = await connectHttpExampleClient(url);
       a.doc.transact(() => {
         a.doc.state.count.value = 10;
         a.doc.state.items.delete(0);
@@ -233,13 +317,13 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     const server = createServer(Board, { historyLimit: 0 });
     const { url } = await host(t, server);
     let requests = 0;
-    const a = await connectHttpExampleClient(url, "a", { fetch: (input, init) => {
+    const a = await connectHttpExampleClient(url, { fetch: (input, init) => {
       requests++;
       return fetch(input, init);
     } });
     a.doc.state.count.value = 1;
     const before = a.doc.checkpoint();
-    assert.equal(await post(url, makeBatch("b")), 204);
+    assert.equal(await post(url, makeBatch(server.openClient())), 204);
     assert.equal(await a.sync(), false);
     assert.equal(await a.sync(), false);
     assert.equal(requests, 2); // Snapshot and one catch-up only.
@@ -250,6 +334,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
   it("rejects invalid routes, methods, JSON, wire data and watermarks without consuming sequence", async (t) => {
     const server = createServer(Board);
     const { url } = await host(t, server);
+    assert.equal(server.openClient(), "client-1");
     const inputs: Array<[string, RequestInit | undefined, number]> = [
       ["/unknown", undefined, 404],
       ["/snapshot", { method: "POST" }, 405],
@@ -274,19 +359,20 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       assert.equal(typeof error.error, "string");
       assert.equal(server.snapshot().serverSeq, 0);
     }
-    assert.equal(await post(url, makeBatch("a", 2)), 409);
+    assert.equal(await post(url, makeBatch("client-1", 2)), 409);
     assert.equal(await post(url, { ...makeBatch(), operations: [{ type: "list/delete", path: "items", id: { bunchId: "unknown", counter: 0 } }] }), 409);
     assert.equal(await post(url, makeBatch()), 204);
-    assert.equal(await post(url, makeBatch("a", 1, 99)), 409);
-    assert.equal(await post(url, makeBatch("a", 3)), 409);
-    assert.equal(await post(url, makeBatch("a", 2, 2)), 204);
+    assert.equal(await post(url, makeBatch("client-1", 1, 99)), 409);
+    assert.equal(await post(url, makeBatch("client-1", 3)), 409);
+    assert.equal(await post(url, makeBatch("client-1", 2, 2)), 204);
     assert.equal(server.snapshot().serverSeq, 2);
   });
 
   it("counts actual chunked UTF-8 bytes, completes 413 and accepts the exact 1 MiB boundary", async (t) => {
     const server = createServer(Board);
     const { url } = await host(t, server);
-    const oversized = JSON.stringify(makeBatch("a", 1, 1)).replace('"value":1', '"value":"' + "😀".repeat(270_000) + '"');
+    assert.equal(server.openClient(), "client-1");
+    const oversized = JSON.stringify(makeBatch("client-1", 1, 1)).replace('"value":1', '"value":"' + "😀".repeat(270_000) + '"');
     assert.ok(oversized.length < 1024 * 1024);
     assert.ok(Buffer.byteLength(oversized) > 1024 * 1024);
     const bytes = Buffer.from(oversized);
@@ -324,7 +410,9 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       return incoming.operations;
     } });
     const { url } = await host(t, server);
-    const message = JSON.stringify(makeBatch("a", 1, 2));
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    const message = JSON.stringify(makeBatch("client-1", 1, 2));
     let request!: ReturnType<typeof httpRequest>;
     const response = new Promise<number>((resolve, reject) => {
       request = httpRequest(url + "/batches", { method: "POST", headers: { "Content-Type": "application/json" } }, (incoming) => {
@@ -341,10 +429,10 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     }));
     request.write(message.slice(0, 10));
     await connected;
-    assert.equal(await post(url, makeBatch("b")), 204);
+    assert.equal(await post(url, makeBatch("client-2")), 204);
     request.end(message.slice(10));
     assert.equal(await response, 204);
-    assert.deepEqual(seen, ["b", "a"]);
+    assert.deepEqual(seen, ["client-2", "client-1"]);
     assert.equal(server.snapshot().data.count, 2);
   });
 
@@ -355,6 +443,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       return incoming.operations;
     } });
     const { url } = await host(t, server);
+    assert.equal(server.openClient(), "client-1");
     assert.equal(await post(url, makeBatch()), 409);
     assert.equal(server.snapshot().serverSeq, 0);
     fail = false;
@@ -364,7 +453,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     assert.equal(response.status, 500);
     assert.deepEqual(await response.json(), { error: "Internal server error" });
     snapshot.mock.restore();
-    assert.equal(await post(url, makeBatch("a", 2)), 204);
+    assert.equal(await post(url, makeBatch("client-1", 2)), 204);
   });
 
   it("retains pending after a lost POST response and lets the server replay the original batch", async (t) => {
@@ -372,12 +461,12 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     const server = createServer(Board, { resolve: ({ batch: incoming }) => { calls++; return incoming.operations; } });
     const { url } = await host(t, server);
     const failure = new Error("Response lost after acceptance");
-    const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
+    const a = await connectHttpExampleClient(url, { fetch: async (input, init) => {
       const response = await fetch(input, init);
-      if (init?.method === "POST") { await response.text(); throw failure; }
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) { await response.text(); throw failure; }
       return response;
     } });
-    const peer = await connectHttpExampleClient(url, "peer");
+    const peer = await connectHttpExampleClient(url);
     a.doc.state.count.value = 1;
     const pending = a.doc.checkpoint().pendingBatches[0]!;
     await assert.rejects(a.sync(), (error: unknown) => error === failure);
@@ -394,12 +483,12 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
 
   it("consumes HTTP errors and stops only the failing client", async (t) => {
     const server = createServer(Board, { resolve: ({ batch: incoming }) => {
-      if (incoming.clientId === "a") throw new Error("Cannot resolve this batch");
+      if (incoming.clientId === "client-1") throw new Error("Cannot resolve this batch");
       return incoming.operations;
     } });
     const { url } = await host(t, server);
     const responses: Response[] = [];
-    const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
+    const a = await connectHttpExampleClient(url, { fetch: async (input, init) => {
       const response = await fetch(input, init);
       responses.push(response);
       return response;
@@ -415,7 +504,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     assert.ok(responses.every((response) => response.bodyUsed));
     assert.equal(a.doc.checkpoint().pendingBatches.length, 1);
     assert.equal(server.snapshot().serverSeq, 0);
-    const peer = await connectHttpExampleClient(url, "peer");
+    const peer = await connectHttpExampleClient(url);
     peer.doc.state.count.value = 2;
     assert.equal(await peer.sync(), true);
     assert.equal(server.snapshot().data.count, 2);
@@ -426,7 +515,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       const server = createServer(Board);
       const { url } = await host(t, server);
       let requests = 0;
-      const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
+      const a = await connectHttpExampleClient(url, { fetch: async (input, init) => {
         requests++;
         const response = await fetch(input, init);
         if (!(input instanceof Request ? input.url : input.toString()).includes("/commits?")) return response;
@@ -444,7 +533,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
         ] }];
         return new Response(mode === "json" ? "{" : JSON.stringify(changed), { status: 200 });
       } });
-      const peer = await connectHttpExampleClient(url, "peer");
+      const peer = await connectHttpExampleClient(url);
       peer.doc.state.count.value = 1;
       peer.doc.state.count.value = 2;
       assert.equal(await peer.sync(), true);
@@ -463,8 +552,8 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
   it("preserves applied state and remaining pending when an incoming listener throws", async (t) => {
     const server = createServer(Board);
     const { url } = await host(t, server);
-    const a = await connectHttpExampleClient(url, "a");
-    const peer = await connectHttpExampleClient(url, "peer");
+    const a = await connectHttpExampleClient(url);
+    const peer = await connectHttpExampleClient(url);
     a.doc.state.count.value = 1;
     a.doc.state.count.value = 2;
     peer.doc.state.items.push("Remote");
@@ -488,7 +577,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     const release = gate();
     t.after(() => release.resolve());
     let paused = false;
-    const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
+    const a = await connectHttpExampleClient(url, { fetch: async (input, init) => {
       if (!paused && (input instanceof Request ? input.url : input.toString()).includes("/commits?")) {
         paused = true;
         entered.resolve();
@@ -496,7 +585,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       }
       return fetch(input, init);
     } });
-    const peer = await connectHttpExampleClient(url, "peer");
+    const peer = await connectHttpExampleClient(url);
     a.doc.state.count.value = 1;
     const syncing = a.sync();
     void syncing.catch(() => {});
@@ -527,9 +616,9 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       const { url } = await host(t, server);
       let submitted = false;
       let posts = 0;
-      const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
+      const a = await connectHttpExampleClient(url, { fetch: async (input, init) => {
         const response = await fetch(input, init);
-        if (init?.method === "POST") { submitted = true; posts++; }
+        if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) { submitted = true; posts++; }
         if (mode === "missing-ack" && submitted && (input instanceof Request ? input.url : input.toString()).includes("/commits?")) {
           await response.text();
           return new Response("[]", { status: 200 });
@@ -554,7 +643,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
   it("restores mixed pending work, tombstones and ID allocation progress without initial requests", async (t) => {
     const server = createServer(Board);
     const { url } = await host(t, server);
-    const original = await connectHttpExampleClient(url, "a");
+    const original = await connectHttpExampleClient(url);
     original.doc.transact(() => {
       original.doc.state.items.push("Seed");
       original.doc.state.body.insert(0, "A😀");
@@ -581,9 +670,9 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     assert.ok(checkpoint.snapshot.data.body.idList.some((range) => range.isDeleted));
     const requests: string[] = [];
     const posts: number[] = [];
-    const restored = await connectHttpExampleClient(url, "a", { checkpoint, fetch: (input, init) => {
+    const restored = await connectHttpExampleClient(url, { checkpoint, fetch: (input, init) => {
       requests.push((input instanceof Request ? input.url : input.toString()));
-      if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
       return fetch(input, init);
     } });
     assert.deepEqual(requests, []);
@@ -609,7 +698,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     assert.equal(serverChanges, 0); // Silent own acks still drain all pending.
     assert.deepEqual(restored.doc.checkpoint().snapshot, server.snapshot());
     assert.deepEqual(restored.doc.checkpoint().pendingBatches, []);
-    const peer = await connectHttpExampleClient(url, "peer");
+    const peer = await connectHttpExampleClient(url);
     assert.deepEqual(peer.doc.state.items.toArray(), ["Restored", "Pending"]);
     assert.equal(peer.doc.state.body.toString(), "R😀");
     restored.doc.state.count.value = 6;
@@ -627,20 +716,20 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     } });
     const { url } = await host(t, server);
     const failure = new Error("Lost response");
-    const original = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
+    const original = await connectHttpExampleClient(url, { fetch: async (input, init) => {
       const response = await fetch(input, init);
-      if (init?.method === "POST") { await response.text(); throw failure; }
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) { await response.text(); throw failure; }
       return response;
     } });
-    const peer = await connectHttpExampleClient(url, "peer");
+    const peer = await connectHttpExampleClient(url);
     original.doc.state.count.value = 1;
     original.doc.state.items.push("Unsent");
     await assert.rejects(original.sync(), (error: unknown) => error === failure);
     const checkpoint = roundTrip(original.doc.checkpoint());
     assert.deepEqual(checkpoint.pendingBatches.map((batch) => batch.seq), [1, 2]);
     const posts: number[] = [];
-    const restored = await connectHttpExampleClient(url, "a", { checkpoint, fetch: (input, init) => {
-      if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
+    const restored = await connectHttpExampleClient(url, { checkpoint, fetch: (input, init) => {
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
       return fetch(input, init);
     } });
     assert.equal(await restored.sync(), true);
@@ -661,8 +750,8 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
         return mode === "reject" ? [] : [{ type: "value/set", path: "count", value: batch.seq * 10 }];
       } });
       const { url } = await host(t, server);
-      const original = await connectHttpExampleClient(url, "a");
-      const peer = await connectHttpExampleClient(url, "peer");
+      const original = await connectHttpExampleClient(url);
+      const peer = await connectHttpExampleClient(url);
       original.doc.state.count.value = 1;
       original.doc.state.count.value = 2;
       original.doc.transact(() => {
@@ -673,8 +762,8 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       // Server receives two batches while the original client receives neither ack.
       for (const batch of checkpoint.pendingBatches.slice(0, 2)) assert.equal(await post(url, batch), 204);
       const posts: number[] = [];
-      const restored = await connectHttpExampleClient(url, "a", { checkpoint, fetch: (input, init) => {
-        if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
+      const restored = await connectHttpExampleClient(url, { checkpoint, fetch: (input, init) => {
+        if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
         return fetch(input, init);
       } });
       assert.equal(await restored.sync(), true);
@@ -691,16 +780,16 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     const resolved: number[] = [];
     const server = createServer(Board, { resolve: ({ batch }) => {
       resolved.push(batch.seq);
-      return batch.clientId === "a" && batch.seq <= 2
+      return batch.clientId === "client-1" && batch.seq <= 2
         ? [{ type: "value/set", path: "count", value: batch.seq }] : batch.operations;
     } });
     const { url } = await host(t, server);
-    const original = await connectHttpExampleClient(url, "a");
+    const original = await connectHttpExampleClient(url);
     original.doc.state.count.value = 10;
     original.doc.state.count.value = 20;
     const checkpoint = roundTrip(original.doc.checkpoint());
     assert.equal(await post(url, checkpoint.pendingBatches[0]), 204);
-    const restored = await connectHttpExampleClient(url, "a", { checkpoint });
+    const restored = await connectHttpExampleClient(url, { checkpoint });
     const watermarks: number[] = [];
     restored.doc.on("change", (event) => {
       if (event.origin !== "server") return;
@@ -712,7 +801,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       });
     });
     // A pending write to count hides the first transform. A remote visible update triggers catch-up's listener.
-    assert.equal(await post(url, { ...makeBatch("peer"), operations: [{ type: "list/insert", path: "items",
+    assert.equal(await post(url, { ...makeBatch(server.openClient()), operations: [{ type: "list/insert", path: "items",
       before: null, id: { bunchId: "remote", counter: 0 }, value: "Remote" }] }), 204);
     assert.equal(await restored.sync(), true);
     assert.deepEqual(resolved, [1, 1, 2, 3, 4]);
@@ -724,7 +813,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
 
   it("rejects invalid or mismatched checkpoints before requests and owns restored input", async (t) => {
     const { url } = await host(t);
-    const original = await connectHttpExampleClient(url, "a");
+    const original = await connectHttpExampleClient(url);
     original.doc.transact(() => {
       original.doc.state.count.value = 1;
       original.doc.state.items.push("Owned");
@@ -733,13 +822,13 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     const checkpoint = roundTrip(original.doc.checkpoint());
     let requests = 0;
     const neverFetch: typeof fetch = async () => { requests++; throw new Error("Unexpected request"); };
-    await assert.rejects(connectHttpExampleClient(url, "b", { checkpoint, fetch: neverFetch }), /clientId must match/);
-    await assert.rejects(connectHttpExampleClient(url, "a", {
+    await assert.rejects(connectHttpExampleClient(url, { checkpoint: { ...checkpoint, clientId: "other" }, fetch: neverFetch }), WireDecodeError);
+    await assert.rejects(connectHttpExampleClient(url, {
       checkpoint: { ...checkpoint, lastLocalSeq: -1 }, fetch: neverFetch,
     }), WireDecodeError);
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
     const input = JSON.parse(JSON.stringify(checkpoint)) as Mutable<ClientCheckpoint<Shape>>;
-    const restored = await connectHttpExampleClient(url, "a", { checkpoint: input, fetch: neverFetch });
+    const restored = await connectHttpExampleClient(url, { checkpoint: input, fetch: neverFetch });
     input.snapshot.data.count = 99;
     assert.ok(input.pendingBatches[0]!.operations[0]!.type === "value/set");
     assert.ok(input.pendingBatches[0]!.operations[1]!.type === "list/insert");
@@ -756,12 +845,12 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
   it("keeps restored pending unchanged when retained history is insufficient", async (t) => {
     const server = createServer(Board, { historyLimit: 0 });
     const { url } = await host(t, server);
-    const original = await connectHttpExampleClient(url, "a");
+    const original = await connectHttpExampleClient(url);
     original.doc.state.items.push("Keep pending");
     const checkpoint = roundTrip(original.doc.checkpoint());
-    assert.equal(await post(url, makeBatch("peer")), 204);
+    assert.equal(await post(url, makeBatch(server.openClient())), 204);
     let requests = 0;
-    const restored = await connectHttpExampleClient(url, "a", { checkpoint, fetch: (input, init) => {
+    const restored = await connectHttpExampleClient(url, { checkpoint, fetch: (input, init) => {
       requests++;
       assert.notEqual(init?.method, "POST");
       return fetch(input, init);
@@ -776,11 +865,11 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
   it("can reconnect again after a restored incoming listener fails without losing remaining pending", async (t) => {
     const server = createServer(Board);
     const { url } = await host(t, server);
-    const original = await connectHttpExampleClient(url, "a");
+    const original = await connectHttpExampleClient(url);
     original.doc.state.count.value = 1;
     original.doc.state.count.value = 2;
-    const restored = await connectHttpExampleClient(url, "a", { checkpoint: roundTrip(original.doc.checkpoint()) });
-    const peer = await connectHttpExampleClient(url, "peer");
+    const restored = await connectHttpExampleClient(url, { checkpoint: roundTrip(original.doc.checkpoint()) });
+    const peer = await connectHttpExampleClient(url);
     peer.doc.state.items.push("Remote");
     assert.equal(await peer.sync(), true);
     const failure = new Error("Restored listener failed");
@@ -793,7 +882,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     assert.equal(checkpoint.snapshot.serverSeq, 1);
     assert.deepEqual(checkpoint.pendingBatches.map((batch) => batch.seq), [1, 2, 3]);
     assert.equal(server.snapshot().serverSeq, 1);
-    const again = await connectHttpExampleClient(url, "a", { checkpoint });
+    const again = await connectHttpExampleClient(url, { checkpoint });
     assert.equal(await again.sync(), true);
     assert.equal(await peer.sync(), true);
     assert.deepEqual(again.doc.checkpoint().snapshot, peer.doc.checkpoint().snapshot);
@@ -803,7 +892,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
   it("resumes against a new HTTP host backed by a restored server checkpoint", async (t) => {
     const server = createServer(Board);
     const first = await host(t, server);
-    const original = await connectHttpExampleClient(first.url, "a");
+    const original = await connectHttpExampleClient(first.url);
     original.doc.transact(() => {
       original.doc.state.items.push("Seed");
       original.doc.state.body.insert(0, "😀");
@@ -821,8 +910,8 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     const restoredServer = createServer(Board, { checkpoint: savedServer });
     const second = await host(t, restoredServer);
     const posts: number[] = [];
-    const restored = await connectHttpExampleClient(second.url, "a", { checkpoint, fetch: (input, init) => {
-      if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
+    const restored = await connectHttpExampleClient(second.url, { checkpoint, fetch: (input, init) => {
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
       return fetch(input, init);
     } });
     assert.equal(await restored.sync(), true);
@@ -836,10 +925,10 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
   it("syncs a separate client process through HTTP while the parent serves requests", async (t) => {
     const server = createServer(Board);
     const { url } = await host(t, server);
-    const peer = await connectHttpExampleClient(url, "peer");
+    const peer = await connectHttpExampleClient(url);
     const code = [
       "import { connectHttpExampleClient } from " + JSON.stringify(exampleUrl),
-      "const client = await connectHttpExampleClient(" + JSON.stringify(url) + ", 'child')",
+      "const client = await connectHttpExampleClient(" + JSON.stringify(url) + ")",
       "client.doc.transact(() => { client.doc.state.count.value = 7; client.doc.state.items.push('Child'); client.doc.state.body.insert(0, '😀'); })",
       "if (!(await client.sync())) throw new Error('Unexpected history gap')",
       "console.log(JSON.stringify(client.doc.checkpoint()))",
@@ -856,7 +945,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
   it("restores a JSON checkpoint in a separate client process and catches up before resending", async (t) => {
     const server = createServer(Board);
     const { url } = await host(t, server);
-    const original = await connectHttpExampleClient(url, "child");
+    const original = await connectHttpExampleClient(url);
     original.doc.transact(() => {
       original.doc.state.count.value = 7;
       original.doc.state.items.push("Child");
@@ -872,7 +961,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       "import { decodeClientCheckpoint } from " + JSON.stringify(coreUrl),
       "import { Board } from " + JSON.stringify(boardUrl),
       "const checkpoint = decodeClientCheckpoint(Board, JSON.parse(" + JSON.stringify(JSON.stringify(checkpoint)) + "))",
-      "const client = await connectHttpExampleClient(" + JSON.stringify(url) + ", 'child', { checkpoint })",
+      "const client = await connectHttpExampleClient(" + JSON.stringify(url) + ", { checkpoint })",
       "if (!(await client.sync())) throw new Error('Unexpected history gap')",
       "client.doc.state.body.insert(client.doc.state.body.length, '!')",
       "if (!(await client.sync())) throw new Error('Unexpected history gap')",
@@ -883,7 +972,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     assert.deepEqual(saved.pendingBatches, []);
     assert.deepEqual(saved.snapshot, server.snapshot());
     assert.equal(server.snapshot().serverSeq, 3);
-    const peer = await connectHttpExampleClient(url, "peer");
+    const peer = await connectHttpExampleClient(url);
     assert.deepEqual(peer.doc.state.items.toArray(), ["Child", "Unsent"]);
     assert.equal(peer.doc.state.body.toString(), "😀!");
   });

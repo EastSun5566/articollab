@@ -3,6 +3,7 @@ import { copyJsonValue, jsonArray, jsonEquals, jsonPointer, jsonRecord, type Jso
 import { initialStates, replayPending } from "./state.ts";
 import { PendingReplayError } from "./conflict.ts";
 import { localBunchSeq } from "./namespace.ts";
+import { clientNumber } from "./client-id.ts";
 
 import {
   ListState,
@@ -739,171 +740,102 @@ export function decodeServerCheckpoint<S extends SchemaShape>(
   schema: DocumentSchema<S>,
   input: unknown
 ): ServerCheckpoint<S> {
-  const path: readonly PathSegment[] = [];
-  const record = decodeRecord(input, path, "Server checkpoint");
-  requireExactFields(record, path, ["snapshot", "replays", "history"]);
+  const record = decodeRecord(input, [], "Server checkpoint");
+  requireExactFields(record, [], ["snapshot", "lastClientNumber", "clients", "history"]);
   const snapshot = decodeSnapshotAt(schema, record.snapshot, ["snapshot"]);
-  const inputReplays = decodeDenseArray(
-    record.replays,
-    ["replays"],
-    "Replay entries"
+  const lastClientNumber = decodeSafeInteger(
+    record.lastClientNumber, ["lastClientNumber"], "Client allocation counter", 0
   );
-  const clientIds = new Set<string>();
-  const serverSeqs = new Set<number>();
-  let totalClientSeq = 0;
-  let maxServerSeq = 0;
-  const replays = Object.freeze(
-    inputReplays.map((inputReplay, index) => {
-      const entryPath = ["replays", index] as const;
-      const entry = decodeRecord(inputReplay, entryPath, "Replay entry");
-      requireExactFields(entry, entryPath, ["batch", "commit"]);
-      const batchPath = [...entryPath, "batch"];
-      const commitPath = [...entryPath, "commit"];
-      const batch = decodeClientBatchAt(schema, entry.batch, batchPath);
-      const commit = decodeServerCommitAt(schema, entry.commit, commitPath);
-      if (clientIds.has(batch.clientId)) {
-        fail([...batchPath, "clientId"], "clientId must not be duplicated");
-      }
-      clientIds.add(batch.clientId);
-      if (commit.source.clientId !== batch.clientId) {
-        fail(
-          [...commitPath, "source", "clientId"],
-          "source must match replay batch"
-        );
-      }
-      if (commit.source.seq !== batch.seq) {
-        fail([...commitPath, "source", "seq"], "source must match replay batch");
-      }
-      if (commit.serverSeq > snapshot.serverSeq) {
-        fail(
-          [...commitPath, "serverSeq"],
-          "commit must not exceed snapshot serverSeq"
-        );
-      }
-      if (serverSeqs.has(commit.serverSeq)) {
-        fail(
-          [...commitPath, "serverSeq"],
-          "commit serverSeq must not be duplicated"
-        );
-      }
-      serverSeqs.add(commit.serverSeq);
-      maxServerSeq = Math.max(maxServerSeq, commit.serverSeq);
-      if (totalClientSeq > snapshot.serverSeq - batch.seq) {
-        fail(
-          ["replays"],
-          "client sequences must sum to snapshot serverSeq"
-        );
-      }
-      totalClientSeq += batch.seq;
-      return Object.freeze({ batch, commit });
-    })
-  );
-  if (totalClientSeq !== snapshot.serverSeq) {
-    fail(
-      ["replays"],
-      "client sequences must sum to snapshot serverSeq"
-    );
+  if (lastClientNumber === 0 && snapshot.serverSeq > 0) {
+    fail(["lastClientNumber"], "commits require at least one allocated client");
   }
-  if (maxServerSeq !== snapshot.serverSeq) {
-    fail(["replays"], "latest replay commit must match snapshot serverSeq");
-  }
-
-  // By each client's last commit, all of that client's earlier batches exist.
-  // Their cumulative count cannot exceed the global sequence at that point.
-  const ordered = replays
-    .map((entry, index) => ({ entry, index }))
-    .sort((left, right) => left.entry.commit.serverSeq - right.entry.commit.serverSeq);
-  let completedBatches = 0;
-  for (const { entry, index } of ordered) {
-    if (completedBatches > entry.commit.serverSeq - entry.batch.seq) {
-      fail(
-        ["replays", index, "commit", "serverSeq"],
-        "commit sequence precedes the required client batches"
-      );
+  function issuedId(inputId: unknown, path: readonly PathSegment[]): string {
+    const id = decodeString(inputId, path, "Client ID", true);
+    const number = clientNumber(id);
+    if (number === undefined || number > lastClientNumber) {
+      fail(path, "client ID must have been allocated");
     }
-    completedBatches += entry.batch.seq;
+    return id;
+  }
+  const ids = new Set<string>();
+  const serverSeqs = new Set<number>();
+  const clients = Object.freeze(decodeDenseArray(record.clients, ["clients"], "Open clients").map((inputClient, index) => {
+    const path = ["clients", index] as const;
+    const entry = decodeRecord(inputClient, path, "Client entry");
+    requireExactFields(entry, path, ["clientId", "replay"]);
+    const clientId = issuedId(entry.clientId, [...path, "clientId"]);
+    if (ids.has(clientId)) fail([...path, "clientId"], "clientId must not be duplicated");
+    ids.add(clientId);
+    if (entry.replay === null) return Object.freeze({ clientId, replay: null });
+    const replayPath = [...path, "replay"];
+    const replay = decodeRecord(entry.replay, replayPath, "Replay entry");
+    requireExactFields(replay, replayPath, ["batch", "commit"]);
+    const batch = decodeClientBatchAt(schema, replay.batch, [...replayPath, "batch"]);
+    const commit = decodeServerCommitAt(schema, replay.commit, [...replayPath, "commit"]);
+    if (batch.clientId !== clientId) fail([...replayPath, "batch", "clientId"], "batch must match client entry");
+    if (commit.source.clientId !== clientId) fail([...replayPath, "commit", "source", "clientId"], "source must match client entry");
+    if (commit.source.seq !== batch.seq) fail([...replayPath, "commit", "source", "seq"], "source must match replay batch");
+    if (commit.serverSeq > snapshot.serverSeq) fail([...replayPath, "commit", "serverSeq"], "commit must not exceed snapshot serverSeq");
+    if (serverSeqs.has(commit.serverSeq)) fail([...replayPath, "commit", "serverSeq"], "commit serverSeq must not be duplicated");
+    serverSeqs.add(commit.serverSeq);
+    return Object.freeze({ clientId, replay: Object.freeze({ batch, commit }) });
+  }));
+
+  // Open writers alone cannot account for more batches than actually existed.
+  const ordered = clients.map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => entry.replay !== null)
+    .sort((left, right) => left.entry.replay!.commit.serverSeq - right.entry.replay!.commit.serverSeq);
+  let completed = 0;
+  for (const { entry, index } of ordered) {
+    const replay = entry.replay!;
+    if (completed > replay.commit.serverSeq - replay.batch.seq) {
+      fail(["clients", index, "replay", "commit", "serverSeq"], "commit precedes the required client batches");
+    }
+    completed += replay.batch.seq;
   }
 
-  const inputHistory = decodeDenseArray(
-    record.history,
-    ["history"],
-    "Commit history"
-  );
-  const history = Object.freeze(
-    inputHistory.map((commit, index) =>
-      decodeServerCommitAt(schema, commit, ["history", index])
-    )
-  );
+  const history = Object.freeze(decodeDenseArray(record.history, ["history"], "Commit history")
+    .map((inputCommit, index) => decodeServerCommitAt(schema, inputCommit, ["history", index])));
   if (history.length > 0) {
     const firstSeq = history[0]!.serverSeq;
-    if (
-      history.length > snapshot.serverSeq ||
-      firstSeq !== snapshot.serverSeq - history.length + 1
-    ) {
-      fail(
-        ["history", 0, "serverSeq"],
-        "history must be a suffix ending at snapshot serverSeq"
-      );
+    if (history.length > snapshot.serverSeq || firstSeq !== snapshot.serverSeq - history.length + 1) {
+      fail(["history", 0, "serverSeq"], "history must be a suffix ending at snapshot serverSeq");
     }
-
-    const firstClientSeq = new Map<string, number>();
-    const lastByClient = new Map<string, {
-      readonly commit: ServerCommit<DocumentOperation<S>>;
-      readonly index: number;
-    }>();
+    const lastByClient = new Map<string, { commit: ServerCommit<DocumentOperation<S>>; index: number }>();
+    const firstByClient = new Map<string, number>();
     for (const [index, commit] of history.entries()) {
-      const commitPath = ["history", index] as const;
-      if (commit.serverSeq !== firstSeq + index) {
-        fail(
-          [...commitPath, "serverSeq"],
-          "history serverSeq must be consecutive and ascending"
-        );
+      const path = ["history", index] as const;
+      if (commit.serverSeq !== firstSeq + index) fail([...path, "serverSeq"], "history must be consecutive and ascending");
+      issuedId(commit.source.clientId, [...path, "source", "clientId"]);
+      if (commit.source.seq > commit.serverSeq) fail([...path, "source", "seq"], "client sequence cannot exceed server sequence");
+      const previous = lastByClient.get(commit.source.clientId);
+      if (previous !== undefined && commit.source.seq !== previous.commit.source.seq + 1) {
+        fail([...path, "source", "seq"], "history client sequence must be consecutive");
       }
-      const clientId = commit.source.clientId;
-      if (!clientIds.has(clientId)) {
-        fail([...commitPath, "source", "clientId"], "history client must exist in replays");
-      }
-      const previous = lastByClient.get(clientId);
-      if (previous === undefined) {
-        firstClientSeq.set(clientId, commit.source.seq);
-      } else if (commit.source.seq !== previous.commit.source.seq + 1) {
-        fail([...commitPath, "source", "seq"], "history client sequence must be consecutive");
-      }
-      lastByClient.set(clientId, { commit, index });
+      if (previous === undefined) firstByClient.set(commit.source.clientId, commit.source.seq);
+      lastByClient.set(commit.source.clientId, { commit, index });
     }
-
-    // Account for all batches before this suffix, including absent clients.
-    const beforeHistory = firstSeq - 1;
-    let totalBeforeHistory = 0;
-    for (const replay of replays) {
-      const clientId = replay.batch.clientId;
-      const last = lastByClient.get(clientId);
-      if (last === undefined && replay.commit.serverSeq >= firstSeq) {
-        fail(
-          ["history", replay.commit.serverSeq - firstSeq],
-          "history must include each replay commit within its retained range"
-        );
+    for (const entry of clients) {
+      const last = lastByClient.get(entry.clientId);
+      if (last !== undefined && (entry.replay === null || !jsonEquals(last.commit, entry.replay.commit))) {
+        fail(["history", last.index], "last open-client history commit must match replay commit");
       }
-      if (last !== undefined && !jsonEquals(last.commit, replay.commit)) {
-        fail(["history", last.index], "last client history commit must match replay commit");
+      if (last === undefined && entry.replay !== null && entry.replay.commit.serverSeq >= firstSeq) {
+        fail(["history", entry.replay.commit.serverSeq - firstSeq], "history must include retained replay commit");
       }
-      const first = firstClientSeq.get(clientId);
-      const priorCount = first === undefined ? replay.batch.seq : first - 1;
-      if (totalBeforeHistory > beforeHistory - priorCount) {
-        fail(
-          ["history"],
-          "client sequences before history must sum to its starting watermark"
-        );
-      }
-      totalBeforeHistory += priorCount;
     }
-    if (totalBeforeHistory !== beforeHistory) {
-      fail(
-        ["history"],
-        "client sequences before history must sum to its starting watermark"
-      );
+    // Lower bound, not an equality: closed writers may no longer have metadata.
+    let before = 0;
+    for (const seq of firstByClient.values()) {
+      if (before > firstSeq - seq) fail(["history"], "client batches exceed starting watermark");
+      before += seq - 1;
+    }
+    for (const entry of clients) {
+      if (entry.replay !== null && !firstByClient.has(entry.clientId)) {
+        if (before > firstSeq - 1 - entry.replay.batch.seq) fail(["history"], "client batches exceed starting watermark");
+        before += entry.replay.batch.seq;
+      }
     }
   }
-
-  return Object.freeze({ snapshot, replays, history });
+  return Object.freeze({ snapshot, lastClientNumber, clients, history });
 }

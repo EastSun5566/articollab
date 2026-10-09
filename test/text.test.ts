@@ -230,6 +230,7 @@ describe("text runtime", () => {
         return batch.operations;
       },
     });
+    assert.equal(server.openClient(), "client-1");
     const { batches, doc } = setup();
     const serverChanges: string[] = [];
     doc.on("change", (event) => {
@@ -260,6 +261,9 @@ describe("text runtime", () => {
 
   it("replays insertion after a deleted anchor and hydrates its tombstone", () => {
     const server = createServer(Note);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    assert.equal(server.openClient(), "client-3");
     const client1Batches: NoteBatch[] = [];
     const client2Batches: NoteBatch[] = [];
     const client1 = createClient(Note, {
@@ -307,6 +311,9 @@ describe("text runtime", () => {
 
   it("round-trips frozen Unicode snapshots and validates value length", () => {
     const server = createServer(Note);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    assert.equal(server.openClient(), "client-3");
     const { batches, doc } = setup();
     doc.state.body.insert(0, "A😀");
     doc.receive(server.receive(batches[0]!).commit);
@@ -345,6 +352,9 @@ describe("text runtime", () => {
 
   it("rejects invalid server text operations without consuming sequences", () => {
     const server = createServer(Note);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    assert.equal(server.openClient(), "client-3");
     const id1 = { bunchId: "one", counter: 0 };
     const id2 = { bunchId: "two", counter: 0 };
     const missing = { bunchId: "missing", counter: 0 };

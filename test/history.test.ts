@@ -47,9 +47,10 @@ function assertCheckpointError(input: unknown, path: string): void {
 describe("server history", () => {
   it("returns complete frozen catch-up results and validates watermarks", () => {
     const server = createServer(Board, { historyLimit: 3 });
+    assert.equal(server.openClient(), "client-1");
     assert.deepEqual(server.commitsSince(0), []);
     assert.ok(Object.isFrozen(server.commitsSince(0)));
-    for (let seq = 1; seq <= 4; seq++) server.receive(makeBatch("a", seq));
+    for (let seq = 1; seq <= 4; seq++) server.receive(makeBatch("client-1", seq));
     assert.equal(server.commitsSince(0), null);
     assert.deepEqual(sequences(server.commitsSince(1)), [2, 3, 4]);
     assert.deepEqual(sequences(server.commitsSince(2)), [3, 4]);
@@ -66,19 +67,23 @@ describe("server history", () => {
 
   it("defaults to 1000 commits, supports capacity one and disables history at zero", () => {
     const server = createServer(Board);
-    for (let seq = 1; seq <= 1001; seq++) server.receive(makeBatch("a", seq));
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    for (let seq = 1; seq <= 1001; seq++) server.receive(makeBatch("client-1", seq));
     assert.equal(server.checkpoint().history.length, 1000);
     assert.equal(server.commitsSince(0), null);
     assert.equal(server.commitsSince(1)!.length, 1000);
     for (const historyLimit of [0, 1]) {
       const document = createServer(Board, { historyLimit });
-      const first = document.receive(makeBatch("a", 1));
-      document.receive(makeBatch("b", 1));
+      assert.equal(document.openClient(), "client-1");
+      assert.equal(document.openClient(), "client-2");
+      const first = document.receive(makeBatch("client-1", 1));
+      document.receive(makeBatch("client-2", 1));
       assert.equal(document.checkpoint().history.length, historyLimit);
       assert.equal(document.commitsSince(0), null);
       assert.deepEqual(sequences(document.commitsSince(1)), historyLimit === 0 ? null : [2]);
       assert.deepEqual(document.commitsSince(2), []);
-      assert.strictEqual(document.receive(makeBatch("a", 1)).commit, first.commit);
+      assert.strictEqual(document.receive(makeBatch("client-1", 1)).commit, first.commit);
     }
     for (const historyLimit of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null, "2"]) {
       assert.throws(
@@ -113,38 +118,41 @@ describe("server history", () => {
         return batch.operations;
       },
     });
-    server.receive(makeBatch("a", 1));
+    assert.equal(server.openClient(), "client-1");
+    server.receive(makeBatch("client-1", 1));
     mode = "reject";
-    const rejected = server.receive(makeBatch("a", 2));
+    const rejected = server.receive(makeBatch("client-1", 2));
     mode = "transform";
-    const transformed = server.receive(makeBatch("a", 3));
+    const transformed = server.receive(makeBatch("client-1", 3));
     assert.deepEqual(server.commitsSince(1), [rejected.commit, transformed.commit]);
     assert.deepEqual(rejected.commit.operations, []);
     assert.equal(server.snapshot().data.count, 5);
     const checkpoint = server.checkpoint();
-    assert.equal(server.receive(makeBatch("a", 3)).replayed, true);
+    assert.equal(server.receive(makeBatch("client-1", 3)).replayed, true);
     assert.equal(calls, 3);
     assert.deepEqual(server.checkpoint(), checkpoint);
     assert.deepEqual(observed.map((entry) => entry.snapshot.serverSeq), [0, 1, 2]);
     for (const failure of ["throw", "invalid", "non-array", "reentrant"] as const) {
       mode = failure;
-      assert.throws(() => server.receive(makeBatch("a", 4)));
+      assert.throws(() => server.receive(makeBatch("client-1", 4)));
       assert.deepEqual(server.checkpoint(), checkpoint);
     }
-    assert.throws(() => server.receive(makeBatch("a", 5)), /Expected client sequence/);
-    assert.throws(() => server.receive(makeBatch("a", 3, 99)), /Retry batch differs/);
+    assert.throws(() => server.receive(makeBatch("client-1", 5)), /Expected client sequence/);
+    assert.throws(() => server.receive(makeBatch("client-1", 3, 99)), /Retry batch differs/);
     assert.deepEqual(server.checkpoint(), checkpoint);
     mode = "accept";
-    assert.equal(server.receive(makeBatch("a", 4)).commit.serverSeq, 4);
+    assert.equal(server.receive(makeBatch("client-1", 4)).commit.serverSeq, 4);
     assert.deepEqual(sequences(server.commitsSince(2)), [3, 4]);
   });
 
   it("catches up remote commits and an own acknowledgement with pending replay", () => {
     const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const aBatches: BoardBatch[] = [];
     const bBatches: BoardBatch[] = [];
-    const a = createClient(Board, { clientId: "a", onBatch: (batch) => aBatches.push(batch) });
-    const b = createClient(Board, { clientId: "b", onBatch: (batch) => bBatches.push(batch) });
+    const a = createClient(Board, { clientId: "client-1", onBatch: (batch) => aBatches.push(batch) });
+    const b = createClient(Board, { clientId: "client-2", onBatch: (batch) => bBatches.push(batch) });
     a.state.count.value = 10;
     a.state.items.push("pending"); // Remains pending after the first own commit.
     b.state.body.insert(0, "Hi 😀");
@@ -179,15 +187,16 @@ describe("server history", () => {
 
   it("keeps returned history and checkpoints point-in-time", () => {
     const server = createServer(Board, { historyLimit: 2 });
-    const first = server.receive(makeBatch("a", 1)).commit;
+    assert.equal(server.openClient(), "client-1");
+    const first = server.receive(makeBatch("client-1", 1)).commit;
     const history = server.commitsSince(0)!;
     const checkpoint = server.checkpoint();
     assert.ok(Object.isFrozen(checkpoint.history));
     assert.ok(Object.isFrozen(history));
     assert.notStrictEqual(history, checkpoint.history);
     assert.strictEqual(history[0], first);
-    server.receive(makeBatch("a", 2));
-    server.receive(makeBatch("a", 3));
+    server.receive(makeBatch("client-1", 2));
+    server.receive(makeBatch("client-1", 3));
     assert.deepEqual(history, [first]);
     assert.deepEqual(checkpoint.history, [first]);
     assert.equal(checkpoint.snapshot.serverSeq, 1);
@@ -196,7 +205,8 @@ describe("server history", () => {
 
   it("restores and resizes only retained history without changing retry results", () => {
     const server = createServer(Board, { historyLimit: 3 });
-    for (let seq = 1; seq <= 5; seq++) server.receive(makeBatch("a", seq));
+    assert.equal(server.openClient(), "client-1");
+    for (let seq = 1; seq <= 5; seq++) server.receive(makeBatch("client-1", seq));
     const checkpoint = decodeServerCheckpoint(Board, JSON.parse(JSON.stringify(server.checkpoint())));
     assert.deepEqual(sequences(checkpoint.history), [3, 4, 5]);
     for (const historyLimit of [undefined, 0, 1, 10]) {
@@ -207,16 +217,16 @@ describe("server history", () => {
       const expected = historyLimit === 0 ? [] : historyLimit === 1 ? [5] : [3, 4, 5];
       assert.deepEqual(sequences(restored.checkpoint().history), expected);
       assert.deepEqual(restored.snapshot(), checkpoint.snapshot);
-      assert.equal(restored.receive(makeBatch("a", 5)).replayed, true);
+      assert.equal(restored.receive(makeBatch("client-1", 5)).replayed, true);
       assert.deepEqual(sequences(restored.checkpoint().history), expected);
       assert.equal(restored.commitsSince(1), null);
-      assert.equal(restored.receive(makeBatch("a", 6)).commit.serverSeq, 6);
+      assert.equal(restored.receive(makeBatch("client-1", 6)).commit.serverSeq, 6);
     }
     const withoutHistory = { ...checkpoint, history: [] };
     const restored = createServer(Board, { checkpoint: withoutHistory });
     assert.equal(restored.commitsSince(4), null);
     assert.deepEqual(restored.commitsSince(5), []);
-    restored.receive(makeBatch("a", 6));
+    restored.receive(makeBatch("client-1", 6));
     assert.deepEqual(sequences(restored.commitsSince(5)), [6]);
     assert.equal(restored.commitsSince(4), null);
     assert.deepEqual(createServer(Board).checkpoint().history, []);
@@ -226,14 +236,16 @@ describe("server history", () => {
 describe("history checkpoint decoding", () => {
   it("rejects invalid containers, discontinuous history, and inconsistent replay sources", () => {
     const server = createServer(Board);
-    const a1 = server.receive(makeBatch("a", 1)).commit;
-    const b1 = server.receive(makeBatch("b", 1)).commit;
-    const a2 = server.receive(makeBatch("a", 2)).commit;
-    const b2 = server.receive(makeBatch("b", 2)).commit;
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    const a1 = server.receive(makeBatch("client-1", 1)).commit;
+    const b1 = server.receive(makeBatch("client-2", 1)).commit;
+    const a2 = server.receive(makeBatch("client-1", 2)).commit;
+    const b2 = server.receive(makeBatch("client-2", 2)).commit;
     const checkpoint = server.checkpoint();
     const withHistory = (history: unknown) => ({ ...checkpoint, history });
     const cases: Array<[unknown, string]> = [
-      [{ snapshot: checkpoint.snapshot, replays: checkpoint.replays }, "/history"],
+      [{ snapshot: checkpoint.snapshot, lastClientNumber: checkpoint.lastClientNumber, clients: checkpoint.clients }, "/history"],
       [{ ...checkpoint, extra: true }, "/extra"],
       [withHistory(null), "/history"],
       [withHistory({}), "/history"],
@@ -244,9 +256,9 @@ describe("history checkpoint decoding", () => {
       [withHistory([a1, a2, b1, b2]), "/history/1/serverSeq"],
       [withHistory([a1, b1, a2]), "/history/0/serverSeq"],
       [withHistory([{ ...a1, source: { clientId: "missing", seq: 1 } }, b1, a2, b2]), "/history/0/source/clientId"],
-      [withHistory([a1, b1, { ...a2, source: { clientId: "a", seq: 3 } }, b2]), "/history/2/source/seq"],
+      [withHistory([a1, b1, { ...a2, source: { clientId: "client-1", seq: 3 } }, b2]), "/history/2/source/seq"],
       [withHistory([a1, b1, { ...a2, operations: [] }, b2]), "/history/2"],
-      [withHistory([{ ...b2, source: { clientId: "b", seq: 3 } }]), "/history/0"],
+      [withHistory([{ ...b2, source: { clientId: "client-2", seq: 3 } }]), "/history/0"],
       [withHistory([{ ...a2, serverSeq: 4 }]), "/history/0"],
       [withHistory([{ ...b1, serverSeq: 3 }, b2]), "/history/0"],
     ];
@@ -266,8 +278,11 @@ describe("history checkpoint decoding", () => {
     });
     type DataBatch = ClientBatch<DocumentOperation<typeof Data.definition>>;
     const batches: DataBatch[] = [];
-    const doc = createClient(Data, { clientId: "a", onBatch: (batch) => batches.push(batch) });
+    const doc = createClient(Data, { clientId: "client-1", onBatch: (batch) => batches.push(batch) });
     const server = createServer(Data);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    assert.equal(server.openClient(), "client-3");
     doc.transact(() => {
       doc.state.payload.value = { a: [1], b: { enabled: true } };
       doc.state.items.push({ label: "gone" });
@@ -310,9 +325,9 @@ describe("history checkpoint decoding", () => {
     assert.ok(restored.snapshot().data.items.idList.some((range) => range.isDeleted));
     assert.deepEqual(restored.commitsSince(0), checkpoint.history);
     const late = createClient(Data, {
-      clientId: "late", snapshot: restored.snapshot(), onBatch: () => {},
+      clientId: restored.openClient(), snapshot: restored.snapshot(), onBatch: () => {},
     });
-    const next = restored.receive({ clientId: "new", seq: 1, operations: [{
+    const next = restored.receive({ clientId: "client-3", seq: 1, operations: [{
       type: "text/insert", path: "body",
       before: batches[0]!.operations.find((operation) => operation.type === "text/insert")!.id,
       id: { bunchId: "after-tombstone", counter: 0 }, value: "B",

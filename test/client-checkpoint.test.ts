@@ -24,7 +24,7 @@ function assertInvalid(input: unknown, path: string): void {
   assert.throws(() => decodeClientCheckpoint(Board, input), matches);
   assert.throws(() => createClient(Board, {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
-    clientId: "a", checkpoint: input as BoardCheckpoint,
+    clientId: "client-1", checkpoint: input as BoardCheckpoint,
     onBatch: () => assert.fail("restore must not send"),
   }), matches);
 }
@@ -38,7 +38,7 @@ function assertDeepFrozen(input: unknown): void {
 describe("client checkpoint", () => {
   it("saves typed fresh defaults and freezes owned containers", () => {
     const doc = createClient(Board, {
-      clientId: "a", onBatch: () => assert.fail("construction must not send"),
+      clientId: "client-1", onBatch: () => assert.fail("construction must not send"),
     });
     const checkpoint = doc.checkpoint();
     const allocations: Readonly<{ items: number; body: number }> = checkpoint.lastBunchSeqs;
@@ -46,7 +46,7 @@ describe("client checkpoint", () => {
     // @ts-expect-error Value paths do not have bunch allocations.
     void checkpoint.lastBunchSeqs.count;
     assert.deepEqual(checkpoint, {
-      clientId: "a", snapshot: createServer(Board).snapshot(),
+      clientId: "client-1", snapshot: createServer(Board).snapshot(),
       lastLocalSeq: 0, pendingBatches: [], lastBunchSeqs: { items: 0, body: 0 },
     });
     assertDeepFrozen(checkpoint);
@@ -63,7 +63,7 @@ describe("client checkpoint", () => {
   it("captures authoritative rather than optimistic values and remains point-in-time", () => {
     const observed: BoardCheckpoint[] = [];
     const doc = createClient(Board, {
-      clientId: "a", onBatch: (): void => { observed.push(doc.checkpoint()); },
+      clientId: "client-1", onBatch: (): void => { observed.push(doc.checkpoint()); },
     });
     const fresh = doc.checkpoint();
     doc.transact(() => {
@@ -80,6 +80,7 @@ describe("client checkpoint", () => {
     assert.deepEqual(pending.lastBunchSeqs, { items: 1, body: 1 });
     assertDeepFrozen(pending);
     const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
     doc.receive(server.receive(pending.pendingBatches[0]!).commit);
     doc.state.count.value = 2;
     assert.equal(fresh.lastLocalSeq, 0);
@@ -91,7 +92,7 @@ describe("client checkpoint", () => {
   });
 
   it("silently restores mixed pending batches and continues sequences and IDs", () => {
-    const doc = createClient(Board, { clientId: "a", onBatch: () => {} });
+    const doc = createClient(Board, { clientId: "client-1", onBatch: () => {} });
     doc.transact(() => {
       doc.state.count.value = 1;
       doc.state.items.push("first");
@@ -105,7 +106,7 @@ describe("client checkpoint", () => {
     const checkpoint = roundTrip(doc.checkpoint());
     const sent: BoardBatch[] = [];
     const restored = createClient(Board, {
-      clientId: "a", checkpoint, onBatch: (batch) => sent.push(batch),
+      clientId: "client-1", checkpoint, onBatch: (batch) => sent.push(batch),
     });
     let changes = 0;
     restored.on("change", () => changes++);
@@ -131,8 +132,9 @@ describe("client checkpoint", () => {
 
   it("restores acknowledged Unicode state and tombstones without reapplying old batches", () => {
     const batches: BoardBatch[] = [];
-    const doc = createClient(Board, { clientId: "a", onBatch: (batch) => batches.push(batch) });
+    const doc = createClient(Board, { clientId: "client-1", onBatch: (batch) => batches.push(batch) });
     const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
     doc.transact(() => {
       doc.state.items.push("deleted");
       doc.state.body.insert(0, "A😀");
@@ -151,7 +153,7 @@ describe("client checkpoint", () => {
     assert.ok(checkpoint.snapshot.data.body.idList.some((range) => range.isDeleted));
     const sent: BoardBatch[] = [];
     const restored = createClient(Board, {
-      clientId: "a", checkpoint, onBatch: (batch) => sent.push(batch),
+      clientId: "client-1", checkpoint, onBatch: (batch) => sent.push(batch),
     });
     assert.deepEqual(restored.state.items.toArray(), []);
     assert.deepEqual([...restored.state.body], ["😀"]);
@@ -170,8 +172,9 @@ describe("client checkpoint", () => {
   it("preserves rejected and rolled-back ID allocations across restore", () => {
     let reject = true;
     const server = createServer(Board, { resolve: ({ batch }) => reject ? [] : batch.operations });
+    assert.equal(server.openClient(), "client-1");
     const batches: BoardBatch[] = [];
-    const doc = createClient(Board, { clientId: "a", onBatch: (batch) => batches.push(batch) });
+    const doc = createClient(Board, { clientId: "client-1", onBatch: (batch) => batches.push(batch) });
     doc.transact(() => {
       doc.state.items.push("rejected");
       doc.state.body.insert(0, "rejected");
@@ -188,7 +191,7 @@ describe("client checkpoint", () => {
     assert.deepEqual(checkpoint.pendingBatches, []);
     assert.deepEqual(checkpoint.lastBunchSeqs, { items: 2, body: 2 });
     const restored = createClient(Board, {
-      clientId: "a", checkpoint, onBatch: (batch) => batches.push(batch),
+      clientId: "client-1", checkpoint, onBatch: (batch) => batches.push(batch),
     });
     assert.equal(restored.state.count.value, 0);
     assert.deepEqual(restored.state.items.toArray(), []);
@@ -211,13 +214,15 @@ describe("client checkpoint", () => {
 
   it("catches up a missed own result while preserving remaining pending work without resending", () => {
     const server = createServer(Board, { resolve: ({ batch }) =>
-      batch.clientId === "a" && batch.seq === 1
+      batch.clientId === "client-1" && batch.seq === 1
         ? [{ type: "value/set", path: "count", value: 8 }]
         : batch.operations,
     });
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const aBatches: BoardBatch[] = [], bBatches: BoardBatch[] = [];
-    const a = createClient(Board, { clientId: "a", onBatch: (batch) => aBatches.push(batch) });
-    const b = createClient(Board, { clientId: "b", onBatch: (batch) => bBatches.push(batch) });
+    const a = createClient(Board, { clientId: "client-1", onBatch: (batch) => aBatches.push(batch) });
+    const b = createClient(Board, { clientId: "client-2", onBatch: (batch) => bBatches.push(batch) });
     a.state.count.value = 10;
     a.transact(() => {
       a.state.items.push("pending");
@@ -233,7 +238,7 @@ describe("client checkpoint", () => {
     b.receive(own.commit); // a misses both commits.
     const sent: BoardBatch[] = [];
     const restored = createClient(Board, {
-      clientId: "a", checkpoint, onBatch: (batch) => sent.push(batch),
+      clientId: "client-1", checkpoint, onBatch: (batch) => sent.push(batch),
     });
     const views: number[] = [];
     for (const commit of server.commitsSince(checkpoint.snapshot.serverSeq)!) {
@@ -254,7 +259,7 @@ describe("client checkpoint", () => {
     assert.equal(restored.state.body.toString(), b.state.body.toString());
     assert.deepEqual(restored.checkpoint().pendingBatches, []);
     const withoutHistory = createServer(Board, { checkpoint: server.checkpoint(), historyLimit: 0 });
-    const stillPending = createClient(Board, { clientId: "a", checkpoint, onBatch: () => {} });
+    const stillPending = createClient(Board, { clientId: "client-1", checkpoint, onBatch: () => {} });
     assert.equal(withoutHistory.commitsSince(checkpoint.snapshot.serverSeq), null);
     assert.deepEqual(stillPending.checkpoint(), checkpoint);
     restored.state.count.value = 9;
@@ -262,10 +267,10 @@ describe("client checkpoint", () => {
   });
 
   it("rejects conflicting options and checkpoints during transactions without losing ID progress", () => {
-    const doc = createClient(Board, { clientId: "a", onBatch: () => {} });
+    const doc = createClient(Board, { clientId: "client-1", onBatch: () => {} });
     const checkpoint = doc.checkpoint();
     assert.throws(() => createClient(Board, {
-      clientId: "a", snapshot: checkpoint.snapshot, checkpoint, onBatch: () => {},
+      clientId: "client-1", snapshot: checkpoint.snapshot, checkpoint, onBatch: () => {},
     }), /both snapshot and checkpoint/);
     assert.throws(() => createClient(Board, {
       clientId: "other", checkpoint, onBatch: () => {},
@@ -282,10 +287,10 @@ describe("client checkpoint", () => {
 
   it("restores exhausted batch sequences and rejects mutations before state or ID changes", () => {
     const max = Number.MAX_SAFE_INTEGER;
-    const fresh = createClient(Board, { clientId: "a", onBatch: () => {} }).checkpoint();
+    const fresh = createClient(Board, { clientId: "client-1", onBatch: () => {} }).checkpoint();
     const batches: BoardBatch[] = [];
     const doc = createClient(Board, {
-      clientId: "a",
+      clientId: "client-1",
       checkpoint: {
         ...fresh, lastLocalSeq: max - 1,
         snapshot: { ...fresh.snapshot, serverSeq: max - 1 },
@@ -295,7 +300,7 @@ describe("client checkpoint", () => {
     doc.state.count.value = 1;
     assert.equal(batches[0]!.seq, max);
     const restored = createClient(Board, {
-      clientId: "a", checkpoint: roundTrip(doc.checkpoint()),
+      clientId: "client-1", checkpoint: roundTrip(doc.checkpoint()),
       onBatch: () => assert.fail("must not send"),
     });
     for (const client of [doc, restored]) {
@@ -314,7 +319,7 @@ describe("client checkpoint", () => {
       client.transact(() => {});
       assert.deepEqual(client.checkpoint(), before);
       client.receive({
-        serverSeq: max, source: { clientId: "a", seq: max },
+        serverSeq: max, source: { clientId: "client-1", seq: max },
         operations: batches[0]!.operations,
       });
       assert.equal(client.checkpoint().lastLocalSeq, max);
@@ -325,10 +330,10 @@ describe("client checkpoint", () => {
 
   it("preserves exhausted bunch progress without preventing Value edits or deletions", () => {
     const max = Number.MAX_SAFE_INTEGER;
-    const base = createClient(Board, { clientId: "a", onBatch: () => {} }).checkpoint();
+    const base = createClient(Board, { clientId: "client-1", onBatch: () => {} }).checkpoint();
     const batches: BoardBatch[] = [];
     const doc = createClient(Board, {
-      clientId: "a",
+      clientId: "client-1",
       checkpoint: { ...base, lastBunchSeqs: { items: max - 1, body: max - 1 } },
       onBatch: (batch) => batches.push(batch),
     });
@@ -338,9 +343,10 @@ describe("client checkpoint", () => {
     });
     assert.deepEqual(doc.checkpoint().lastBunchSeqs, { items: max, body: max });
     const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
     doc.receive(server.receive(batches[0]!).commit);
     const restored = createClient(Board, {
-      clientId: "a", checkpoint: roundTrip(doc.checkpoint()),
+      clientId: "client-1", checkpoint: roundTrip(doc.checkpoint()),
       onBatch: (batch) => batches.push(batch),
     });
     const before = restored.checkpoint();
@@ -360,7 +366,7 @@ describe("client checkpoint", () => {
 
 describe("client checkpoint decoding", () => {
   it("rejects malformed structure and inconsistent metadata at both restore boundaries", () => {
-    const doc = createClient(Board, { clientId: "a", onBatch: () => {} });
+    const doc = createClient(Board, { clientId: "client-1", onBatch: () => {} });
     doc.state.count.value = 1;
     doc.state.count.value = 2;
     const checkpoint = doc.checkpoint();
@@ -401,7 +407,7 @@ describe("client checkpoint decoding", () => {
   });
 
   it("validates pending ID namespaces and preserves stateful replay conflicts", () => {
-    const doc = createClient(Board, { clientId: "a", onBatch: () => {} });
+    const doc = createClient(Board, { clientId: "client-1", onBatch: () => {} });
     doc.transact(() => {
       doc.state.items.push("first");
       doc.state.body.insert(0, "A😀");
@@ -418,7 +424,7 @@ describe("client checkpoint decoding", () => {
     const path = "/pendingBatches/0/operations/0";
     const assertBlocked = (input: unknown): void => {
       const decoded = decodeClientCheckpoint(Board, input);
-      const restored = createClient(Board, { clientId: "a", checkpoint: decoded, onBatch: () => {} });
+      const restored = createClient(Board, { clientId: "client-1", checkpoint: decoded, onBatch: () => {} });
       assert.equal(restored.replayConflict?.operationIndex, 0);
       assert.deepEqual(restored.checkpoint(), decoded);
     };
@@ -427,9 +433,9 @@ describe("client checkpoint decoding", () => {
     for (const bunchId of [
       "foreign",
       JSON.stringify(["other", "items", 1]),
-      JSON.stringify(["a", "body", 1]),
-      JSON.stringify(["a", "items", 1]) + " ",
-      JSON.stringify(["a", "items", 0]),
+      JSON.stringify(["client-1", "body", 1]),
+      JSON.stringify(["client-1", "items", 1]) + " ",
+      JSON.stringify(["client-1", "items", 0]),
     ]) {
       assertInvalid(withOperation({ ...insert, id: { ...insert.id, bunchId } }), path + "/id/bunchId");
     }
@@ -457,8 +463,9 @@ describe("client checkpoint decoding", () => {
       }),
       items: list<{ label: string }>(), body: text(),
     });
-    const doc = createClient(Data, { clientId: "a", onBatch: () => {} });
+    const doc = createClient(Data, { clientId: "client-1", onBatch: () => {} });
     const server = createServer(Data);
+    assert.equal(server.openClient(), "client-1");
     doc.transact(() => {
       doc.state.meta.value = { flags: { enabled: true }, tags: ["saved"] };
       doc.state.items.push({ label: "saved" });
@@ -484,7 +491,7 @@ describe("client checkpoint decoding", () => {
     };
     const checkpoint = decodeClientCheckpoint(Data, input);
     assertDeepFrozen(checkpoint);
-    const restored = createClient(Data, { clientId: "a", checkpoint, onBatch: () => {} });
+    const restored = createClient(Data, { clientId: "client-1", checkpoint, onBatch: () => {} });
     const expected = JSON.stringify(checkpoint);
     input.snapshot.data.meta.flags.enabled = false;
     input.snapshot.data.meta.tags[0] = "changed";

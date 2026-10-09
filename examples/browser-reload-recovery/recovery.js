@@ -37,7 +37,7 @@ export function createSessionCheckpointStore(storage) {
   };
 }
 
-/** Restore before any request, or save a fresh identity after fetching the snapshot.
+/** Restore before any request, or register and save a fresh writer identity.
  * @param {string} url
  * @param {{storage?: CheckpointStorage, fetch?: typeof globalThis.fetch}} [options]
  */
@@ -53,8 +53,8 @@ export async function connectPersistentBrowserClient(url, options = {}) {
     if (documentId !== undefined) headers.set(header, documentId);
     const response = await fetch(input, { ...init, headers });
     const received = response.headers.get(header);
-    // A failed fresh snapshot is handled by the wrapper's ordinary HTTP error path.
-    if (documentId === undefined && response.status !== 200) return response;
+    // Failed registration follows the wrapper's ordinary HTTP error path.
+    if (documentId === undefined && response.status !== 201) return response;
     if (!isDocumentId(received) || (documentId !== undefined && received !== documentId)) {
       const error = new Error("Document lineage mismatch; preserve the recovery checkpoint");
       try { await response.body?.cancel(); }
@@ -64,7 +64,7 @@ export async function connectPersistentBrowserClient(url, options = {}) {
     documentId = received;
     return response;
   }
-  const connection = await connectBrowserHttpClient(url, checkpoint?.clientId ?? "browser-recovery-" + crypto.randomUUID(), {
+  const connection = await connectBrowserHttpClient(url, {
     fetch: guardedFetch,
     ...(checkpoint === null ? {} : { checkpoint }),
     saveClientCheckpoint(nextCheckpoint) {
