@@ -2,6 +2,35 @@
 
 Use a snapshot for a new client, checkpoints to restore retired writers, and catch-up to deliver missing commits before resubmitting pending work. Recovery orchestration and persistence remain application code.
 
+## Upgrading from 0.1
+
+The unpublished 0.2 beta requires an explicitly opened server session before a writer submits its first batch:
+
+```ts
+const fresh = createClient(Board, {
+  clientId: server.openClient(),
+  snapshot: server.snapshot(),
+  onBatch: sendLater,
+});
+```
+
+To resume, stop the old writer and restore its original identity against the same server document. Do not open another session:
+
+```ts
+const saved = decodeClientCheckpoint(Board, JSON.parse(savedMessage));
+const restored = createClient(Board, {
+  clientId: saved.clientId,
+  checkpoint: saved,
+  onBatch: sendLater,
+});
+```
+
+Disconnect, offline work and reload keep the session open. `server.closeClient(id)` permanently retires it; call it only after stopping the writer and handling its pending work. `maxClients` now counts open sessions, including those with no batch, rather than all previously processed writers.
+
+Server checkpoints changed from `{ snapshot, replays, history }` to `{ snapshot, lastClientNumber, clients, history }`. Old server checkpoints are rejected; there is no automatic migration or fresh fallback. If your application has 0.1 data, preserve its original files and compatible 0.1 server, and plan data transfer in a separate environment before upgrading. Do not delete the server checkpoint and attach old client checkpoints to a fresh 0.2 server.
+
+Batch, commit and client checkpoint shapes are unchanged, but that does not make them portable across document lineages. A client restore requires the matching schema/document and its original still-open server session. See the [core reference](reference.md#snapshots-checkpoints-and-catch-up) for the checkpoint contract.
+
 ## Late join: a snapshot
 
 ```ts
