@@ -10,13 +10,13 @@ The baseline includes:
 - Synchronous server policy and explicit rejection, last-batch retry deduplication and bounded commit catch-up.
 - Strict wire decoders, snapshots, and client/server checkpoint restore with sequence and ID allocation progress.
 
-This checkout prepares **0.2.0-beta.0**, not yet published. Breaking changes from 0.1: every server writer must be opened explicitly, `maxClients` counts open sessions, and server checkpoints use `lastClientNumber`/`clients` instead of `replays`. Old server checkpoints are rejected; there is no migration or fresh fallback. Batch, commit and client checkpoint shapes remain unchanged. Do not mix incompatible servers/checkpoints; example helper signatures also changed.
+**0.2.0-beta.0 is published on npm.** Breaking changes from 0.1: every server writer must be opened explicitly, `maxClients` counts open sessions, and server checkpoints use `lastClientNumber`/`clients` instead of `replays`. Old server checkpoints are rejected; there is no migration or fresh fallback. Batch, commit and client checkpoint shapes remain unchanged. Do not mix incompatible servers/checkpoints; example helper signatures also changed.
 
 Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` retains its documented `name`, JSON Pointer `path` and readable message contract, not exact message wording. Transport, storage, authentication, writer coordination, lineage checks and production reconnect orchestration remain application responsibilities.
 
 ## Mixed transaction example
 
-In a checkout, run `pnpm install --frozen-lockfile` and `pnpm build` first. The package uses ESM; the example imports the production entrypoint, not internal source modules.
+In an ESM project (`"type": "module"`), install the package with `pnpm add articollab@0.2.0-beta.0`. Use Node.js 24+, save the snippet as `board.ts` and run `node board.ts`; no repository access or build step is needed. The example imports the installed production entrypoint, not internal source modules.
 
 One writer makes a mixed transaction, buffers its batch, then manually sends the result to itself and a peer:
 
@@ -209,7 +209,7 @@ Runtime errors have readable messages, not a stable error-code hierarchy. `WireD
 
 ## Boundaries
 
-The minimal core now uses explicit sessions; this 0.2 beta checkout is not yet published. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
+The published 0.2 beta uses explicit sessions. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
 
 There is no production transport or storage adapter, background sync, automatic retry/reconnect, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing, move, public stable positions or cursor API. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
 

@@ -4,18 +4,17 @@ Use this example to see exactly when a local edit becomes authoritative. It buff
 
 ## Version
 
-These instructions target the unpublished `0.2.0-beta.0` checkout. Older npm betas use a different session/checkpoint contract; do not mix them. Use an ESM project (`"type": "module"`).
+These instructions target the published `0.2.0-beta.0`. The 0.1 betas use a different session/checkpoint contract; do not mix them. Use an ESM project (`"type": "module"`).
 
-## Run from a local checkout
+## Install and run
 
-With repository access, use Node.js 24+, pnpm `10.34.5` and the repository's TypeScript 7 dependency.
+In an ESM project, use Node.js 24+ and install the matching version from npm. You do not need access to the private repository.
 
 ```sh
-pnpm install --frozen-lockfile
-pnpm build
+pnpm add articollab@0.2.0-beta.0
 ```
 
-Save the following complete snippet as `counter.ts` in the checkout root and run `node counter.ts`. The self-package import resolves the built ESM entrypoint. Outside the checkout, install a matching local tarball made with `pnpm pack`.
+Save the following complete snippet as `counter.ts` in your project and run `node counter.ts`. Node runs this TypeScript example directly; no build step is needed. The import resolves the installed package's production ESM entrypoint.
 
 <!-- checked-counter:start -->
 ```ts

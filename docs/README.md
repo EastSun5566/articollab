@@ -19,13 +19,13 @@ The complete runnable example is on the next page. Later pages introduce mixed c
 
 ## What is included?
 
-The unpublished `0.2.0-beta.0` checkout includes Value/List/Text, synchronous transactions, optimistic reconciliation, policy/rejection, wire decoders, snapshots, checkpoints, last-batch retry and bounded catch-up.
+The published `0.2.0-beta.0` includes Value/List/Text, synchronous transactions, optimistic reconciliation, policy/rejection, wire decoders, snapshots, checkpoints, last-batch retry and bounded catch-up.
 
 The application owns transport, storage, authentication, writer coordination, document lineage and recovery orchestration. Examples demonstrate those responsibilities; they are not exported production adapters.
 
 ## Availability and compatibility
 
-This checkout is not yet published. Build from source or install a matching local tarball; the npm beta may still use the incompatible 0.1 contract. The source repository remains private; repository access is needed for the development tools and examples.
+Install the public npm package with `pnpm add articollab@0.2.0-beta.0`; no source repository access is needed to use the library. The source repository remains private; repository access is needed for the development tools and examples. These docs target 0.2, not the incompatible 0.1 session/checkpoint contract.
 
 The [0.2 breaking notes](reference.md#v02-notes-and-compatibility) describe explicit writer sessions and the new server checkpoint format. Example helpers are not package APIs.
 

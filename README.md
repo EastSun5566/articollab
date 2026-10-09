@@ -6,11 +6,10 @@ Clients edit optimistically; the server orders commits and clients replay unackn
 
 ## Install
 
-This checkout prepares **`0.2.0-beta.0` (not yet published)**, with explicit server-issued writer sessions and a new server checkpoint format. The [npm beta](https://www.npmjs.com/package/articollab) may still be an older, incompatible release. Use an ESM project; the Node.js examples require Node 24+.
+**`0.2.0-beta.0` is published on [npm](https://www.npmjs.com/package/articollab)**, with explicit server-issued writer sessions and a new server checkpoint format. Use an ESM project (`"type": "module"`); the Node.js examples require Node 24+. Do not mix 0.1 servers/checkpoints with the 0.2 contract.
 
 ```sh
-pnpm install --frozen-lockfile
-pnpm build
+pnpm add articollab@0.2.0-beta.0
 ```
 
 ## Quick start

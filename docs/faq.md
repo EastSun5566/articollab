@@ -8,7 +8,7 @@ No. The server orders every new authoritative batch. Clients edit optimistically
 
 ## Can I install it from npm?
 
-An older beta is on npm, but this `0.2.0-beta.0` checkout is not yet published. These docs target its new session/checkpoint contract. Use a matching build or tarball; a public npm package does not grant access to the private source repository.
+Yes. Install `articollab@0.2.0-beta.0` from npm; these docs target its explicit session/checkpoint contract. The library does not require source repository access. The repository remains private, so its development tools and examples require access. Do not mix incompatible 0.1 and 0.2 servers/checkpoints.
 
 ## Why do nested object edits not synchronize?
 
