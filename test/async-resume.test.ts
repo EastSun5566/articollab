@@ -55,8 +55,8 @@ describe("asynchronous wire/resume example", () => {
       return batch.operations;
     } });
     const network = createAsyncExampleNetwork(server);
-    const source = network.connect("a");
-    const peer = network.connect("b");
+    const source = network.connect();
+    const peer = network.connect();
     let changes = 0;
     source.doc.on("change", (event) => { if (event.origin === "server") changes++; });
     source.doc.transact(() => {
@@ -102,9 +102,9 @@ describe("asynchronous wire/resume example", () => {
       }
       return message;
     } });
-    const peer = network.connect("b");
+    const peer = network.connect();
     const operation = { type: "value/set" as const, path: "count" as const, value: 1 };
-    const batch = { clientId: "a", seq: 1, operations: [operation] };
+    const batch = { clientId: server.openClient(), seq: 1, operations: [operation] };
     const submitted = network.submit(batch);
     await requestEntered.promise;
     operation.value = 99;
@@ -128,37 +128,37 @@ describe("asynchronous wire/resume example", () => {
     const seen: string[] = [];
     const server = createServer(Board, { resolve: ({ batch }) => {
       seen.push(batch.clientId + ":" + batch.seq);
-      if (batch.clientId === "b") peerProcessed.resolve();
+      if (batch.clientId === "client-2") peerProcessed.resolve();
       return batch.operations;
     } });
     let paused = false;
     const network = createAsyncExampleNetwork(server, { transfer: async (direction, id, message) => {
-      if (direction === "server-to-client" && id === "a" && !paused) {
+      if (direction === "server-to-client" && id === "client-1" && !paused) {
         paused = true;
         entered.resolve();
         await release.promise;
       }
       return message;
     } });
-    const source = network.connect("a");
-    const peer = network.connect("b");
+    const source = network.connect();
+    const peer = network.connect();
     source.doc.state.count.value = 1;
     await entered.promise;
     source.doc.state.count.value = 2;
     let idleFinished = false;
     const drained = network.idle().then(() => { idleFinished = true; });
-    assert.throws(() => network.connect("c"), /must be idle/);
+    assert.throws(() => network.connect(), /must be idle/);
     await assert.rejects(source.resume(), /must be idle/);
     peer.doc.state.count.value = 8;
     await peerProcessed.promise;
     assert.equal(server.snapshot().serverSeq, 2);
     assert.equal(source.doc.checkpoint().snapshot.serverSeq, 0);
     assert.deepEqual(source.doc.checkpoint().pendingBatches.map((batch) => batch.seq), [1, 2]);
-    assert.deepEqual(seen, ["a:1", "b:1"]);
+    assert.deepEqual(seen, ["client-1:1", "client-2:1"]);
     assert.equal(idleFinished, false);
     release.resolve();
     await drained;
-    assert.deepEqual(seen, ["a:1", "b:1", "a:2"]);
+    assert.deepEqual(seen, ["client-1:1", "client-2:1", "client-1:2"]);
     assert.deepEqual(view(source.doc), view(peer.doc));
     assert.equal(source.doc.state.count.value, 2);
     assert.deepEqual(source.doc.checkpoint().snapshot, server.snapshot());
@@ -170,18 +170,18 @@ describe("asynchronous wire/resume example", () => {
     const release = gate();
     const peerProcessed = gate();
     const server = createServer(Board, { resolve: ({ batch }) => {
-      if (batch.clientId === "b") peerProcessed.resolve();
+      if (batch.clientId === "client-2") peerProcessed.resolve();
       return batch.operations;
     } });
     const network = createAsyncExampleNetwork(server, { transfer: async (direction, id, message) => {
-      if (direction === "client-to-server" && id === "a") {
+      if (direction === "client-to-server" && id === "client-1") {
         entered.resolve();
         await release.promise;
       }
       return message;
     } });
-    const source = network.connect("a");
-    const peer = network.connect("b");
+    const source = network.connect();
+    const peer = network.connect();
     source.doc.state.count.value = 1;
     await entered.promise;
     peer.doc.state.count.value = 2;
@@ -198,8 +198,8 @@ describe("asynchronous wire/resume example", () => {
   it("restores server and mixed client checkpoints, catching up several lost acks before resending", async () => {
     const originalServer = createServer(Board);
     const originalNetwork = createAsyncExampleNetwork(originalServer);
-    const original = originalNetwork.connect("a");
-    const peer = originalNetwork.connect("b");
+    const original = originalNetwork.connect();
+    const peer = originalNetwork.connect();
     original.disconnect();
     original.doc.transact(() => {
       original.doc.state.count.value = 1;
@@ -227,9 +227,9 @@ describe("asynchronous wire/resume example", () => {
       resolve: ({ batch }) => { seen.push(batch.seq); return batch.operations; },
     });
     const network = createAsyncExampleNetwork(server);
-    const restoredPeer = network.connect("b", peerCheckpoint);
+    const restoredPeer = network.connect(peerCheckpoint);
     assert.equal(await restoredPeer.resume(), true);
-    const restored = network.connect("a", checkpoint);
+    const restored = network.connect(checkpoint);
     assert.equal(await restored.resume(), true);
     await network.idle();
     assert.deepEqual(seen, [3]); // Older batches cannot use the last-batch retry cache.
@@ -262,8 +262,8 @@ describe("asynchronous wire/resume example", () => {
           ? { ...operation, value: 5 } : operation);
       } });
       const network = createAsyncExampleNetwork(server);
-      const source = network.connect("a");
-      const peer = network.connect("b");
+      const source = network.connect();
+      const peer = network.connect();
       source.doc.transact(() => {
         source.doc.state.items.push("seed");
         source.doc.state.body.insert(0, "😀");
@@ -278,7 +278,7 @@ describe("asynchronous wire/resume example", () => {
       const checkpoint = roundTrip(source.doc.checkpoint());
       await network.submit(checkpoint.pendingBatches[0]!);
       await network.idle();
-      const restored = network.connect("a", checkpoint);
+      const restored = network.connect(checkpoint);
       assert.equal(await restored.resume(), true);
       await network.idle();
       assert.equal(calls, 2);
@@ -300,15 +300,15 @@ describe("asynchronous wire/resume example", () => {
       return batch.seq === 1 ? [] : batch.operations;
     } });
     const network = createAsyncExampleNetwork(server);
-    const original = network.connect("a");
-    const peer = network.connect("b");
+    const original = network.connect();
+    const peer = network.connect();
     original.disconnect();
     original.doc.state.count.value = 10;
     original.doc.transact(() => {
       original.doc.state.items.push("older");
       original.doc.state.body.insert(0, "older");
     });
-    const restored = network.connect("a", roundTrip(original.doc.checkpoint()));
+    const restored = network.connect(roundTrip(original.doc.checkpoint()));
     let edited = false;
     const invalidResumes: Promise<void>[] = [];
     restored.doc.on("change", (event) => {
@@ -336,27 +336,27 @@ describe("asynchronous wire/resume example", () => {
     const seenA: number[] = [];
     const incomingA: number[] = [];
     const server = createServer(Board, { resolve: ({ batch }) => {
-      if (batch.clientId === "a") seenA.push(batch.seq);
-      if (batch.clientId === "b" && batch.seq === 3) liveProcessed.resolve();
+      if (batch.clientId === "client-1") seenA.push(batch.seq);
+      if (batch.clientId === "client-2" && batch.seq === 3) liveProcessed.resolve();
       return batch.operations;
     } });
     let pause = true;
     const network = createAsyncExampleNetwork(server, { transfer: async (direction, id, message) => {
-      if (direction === "server-to-client" && id === "a") {
+      if (direction === "server-to-client" && id === "client-1") {
         incomingA.push(decodeServerCommit(Board, JSON.parse(message)).serverSeq);
         if (pause) { pause = false; entered.resolve(); await release.promise; }
       }
       return message;
     } });
-    const original = network.connect("a");
-    const peer = network.connect("b");
+    const original = network.connect();
+    const peer = network.connect();
     original.disconnect();
     original.doc.state.items.push("pending");
     peer.doc.state.count.value = 1;
     await network.idle();
     peer.doc.state.count.value = 2;
     await network.idle();
-    const restored = network.connect("a", roundTrip(original.doc.checkpoint()));
+    const restored = network.connect(roundTrip(original.doc.checkpoint()));
     let edited = false;
     restored.doc.on("change", (event) => {
       if (event.origin === "server" && !edited) {
@@ -366,7 +366,7 @@ describe("asynchronous wire/resume example", () => {
     });
     let peerEdited = false;
     peer.doc.on("change", (event) => {
-      if (event.origin === "server" && event.commit.source.clientId === "a" && !peerEdited) {
+      if (event.origin === "server" && event.commit.source.clientId === "client-1" && !peerEdited) {
         peerEdited = true;
         peer.doc.state.count.value = 11;
       }
@@ -397,25 +397,25 @@ describe("asynchronous wire/resume example", () => {
       let paused = false;
       const server = createServer(Board);
       const network = createAsyncExampleNetwork(server, { transfer: async (direction, id, message) => {
-        if (id === "a" && direction === pausedDirection && !paused) {
+        if (id === "client-1" && direction === pausedDirection && !paused) {
           paused = true; entered.resolve(); await release.promise;
         }
         return message;
       } });
-      const original = network.connect("a");
-      const peer = network.connect("b");
+      const original = network.connect();
+      const peer = network.connect();
       original.doc.state.count.value = 1;
       await entered.promise;
       original.doc.state.count.value = 2;
       original.disconnect();
-      assert.throws(() => network.connect("a", original.doc.checkpoint()), /must be idle/);
+      assert.throws(() => network.connect(original.doc.checkpoint()), /must be idle/);
       release.resolve();
       await network.idle();
       assert.equal(server.snapshot().serverSeq, 1);
       assert.equal(original.doc.checkpoint().snapshot.serverSeq, 0);
       assert.deepEqual(original.doc.checkpoint().pendingBatches.map((batch) => batch.seq), [1, 2]);
       const checkpoint = roundTrip(original.doc.checkpoint());
-      const restored = network.connect("a", checkpoint);
+      const restored = network.connect(checkpoint);
       assert.equal(await restored.resume(), true);
       await network.idle();
       assert.equal(server.snapshot().serverSeq, 2);
@@ -433,11 +433,11 @@ describe("asynchronous wire/resume example", () => {
       calls++; return batch.operations;
     } });
     const network = createAsyncExampleNetwork(server, { transfer: async (direction, id, message) => {
-      if (direction === "server-to-client" && id === "b") peerDeliveries++;
+      if (direction === "server-to-client" && id === "client-2") peerDeliveries++;
       return message;
     } });
-    const original = network.connect("a");
-    const peer = network.connect("b");
+    const original = network.connect();
+    const peer = network.connect();
     original.disconnect();
     original.doc.state.count.value = 1;
     const checkpoint = roundTrip(original.doc.checkpoint());
@@ -449,7 +449,7 @@ describe("asynchronous wire/resume example", () => {
     assert.equal(peer.doc.checkpoint().snapshot.serverSeq, 0);
     peer.disconnect();
     assert.equal(await peer.resume(), true);
-    const restored = network.connect("a", checkpoint);
+    const restored = network.connect(checkpoint);
     assert.equal(await restored.resume(), true);
     const saved = server.checkpoint();
     await network.submit(batch);
@@ -465,18 +465,18 @@ describe("asynchronous wire/resume example", () => {
     let sourceSubmissions = 0;
     const server = createServer(Board, { historyLimit: 0 });
     const network = createAsyncExampleNetwork(server, { transfer: async (direction, id, message) => {
-      if (direction === "client-to-server" && id === "a") sourceSubmissions++;
+      if (direction === "client-to-server" && id === "client-1") sourceSubmissions++;
       return message;
     } });
-    const original = network.connect("a");
-    const peer = network.connect("b");
+    const original = network.connect();
+    const peer = network.connect();
     original.disconnect();
     original.doc.state.count.value = 1;
     const checkpoint = roundTrip(original.doc.checkpoint());
     peer.doc.state.count.value = 2;
     await network.idle();
     const saved = server.checkpoint();
-    const restored = network.connect("a", checkpoint);
+    const restored = network.connect(checkpoint);
     assert.equal(await restored.resume(), false);
     assert.deepEqual(restored.doc.checkpoint(), checkpoint);
     restored.doc.state.count.value = 3;
@@ -503,7 +503,7 @@ describe("asynchronous wire/resume example", () => {
           if (kind === "request transfer") throw expected;
           if (kind === "request parse") return "{";
           if (kind === "request decode") return JSON.stringify({ ...JSON.parse(message), extra: true });
-        } else if (id === "a") {
+        } else if (id === "client-1") {
           if (kind === "commit transfer") throw expected;
           if (kind === "commit parse") return "{";
           if (kind === "commit decode") return JSON.stringify({ ...JSON.parse(message), extra: true });
@@ -511,8 +511,8 @@ describe("asynchronous wire/resume example", () => {
         }
         return message;
       } });
-      const source = network.connect("a");
-      network.connect("b");
+      const source = network.connect();
+      network.connect();
       source.doc.on("change", (event) => {
         if (kind === "listener" && event.origin === "server") throw expected;
       });
@@ -535,7 +535,7 @@ describe("asynchronous wire/resume example", () => {
       await assert.rejects(network.idle(), (error: unknown) => error === firstError);
       await assert.rejects(network.submit(batch), (error: unknown) => error === firstError);
       await assert.rejects(source.resume(), (error: unknown) => error === firstError);
-      assert.throws(() => network.connect("c"), (error: unknown) => error === firstError);
+      assert.throws(() => network.connect(), (error: unknown) => error === firstError);
     }
   });
 
@@ -546,25 +546,25 @@ describe("asynchronous wire/resume example", () => {
       const returned = gate();
       const expected = new Error("peer policy failure");
       const server = createServer(Board, { resolve: ({ batch }) => {
-        if (batch.clientId === "b") throw expected;
+        if (batch.clientId === "client-2") throw expected;
         return batch.operations;
       } });
       const network = createAsyncExampleNetwork(server, { transfer: async (direction, id, message) => {
-        if (direction === "server-to-client" && id === "a") {
+        if (direction === "server-to-client" && id === "client-1") {
           entered.resolve();
           try { await release.promise; }
           finally { returned.resolve(); }
         }
         return message;
       } });
-      const original = network.connect("a");
-      const peer = network.connect("b");
+      const original = network.connect();
+      const peer = network.connect();
       original.disconnect();
       original.doc.state.count.value = 1;
       const checkpoint = roundTrip(original.doc.checkpoint());
       await network.submit(checkpoint.pendingBatches[0]!);
       await network.idle();
-      const restored = network.connect("a", checkpoint);
+      const restored = network.connect(checkpoint);
       const resumed = restored.resume().then(() => assert.fail("resume should reject"), (error: unknown) => error);
       await entered.promise;
       const drained = network.idle().then(() => assert.fail("idle should reject"), (error: unknown) => error);

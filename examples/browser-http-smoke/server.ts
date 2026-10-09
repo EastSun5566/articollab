@@ -15,7 +15,7 @@ export async function startBrowserHttpSmokeServer() {
     ["/http-sync-controller.js", { file: join(directory, "../http-sync-controller.js"), type: "text/javascript; charset=utf-8" }],
   ]));
   const server = createServer(Board, {
-    resolve: ({ batch }) => batch.clientId.startsWith("reject-") && batch.seq === 1 ? [] : batch.operations,
+    resolve: ({ batch }) => batch.seq === 1 && batch.operations.some((operation) => operation.type === "list/insert" && operation.value === "Discarded") ? [] : batch.operations,
   });
   return startHttpExampleServer(server, { serveAsset });
 }

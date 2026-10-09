@@ -6,7 +6,7 @@ Use a snapshot for a new client, checkpoints to restore retired writers, and cat
 
 ```ts
 const late = createClient(Board, {
-  clientId: "new-writer",
+  clientId: server.openClient(),
   snapshot: server.snapshot(),
   onBatch: sendLater,
 });
@@ -27,7 +27,7 @@ const restored = createClient(Board, {
 
 Restore rebuilds optimistic state/conflict without sending or emitting changes. Retire the old writer first: one active writer per client ID. Use the same schema and document lineage.
 
-Server checkpoint restore additionally retains per-client last results and bounded history; supply the resolver again. Do not substitute a client snapshot for a server checkpoint.
+Server checkpoint restore additionally retains the client allocation counter, all open sessions (including those with no batch), last results and bounded history; supply the resolver again. Disconnect/reload does not close the session. Never call `openClient()` to restore an existing identity. Do not substitute a client snapshot for a server checkpoint.
 
 ## Catch up before resubmitting
 
@@ -55,6 +55,12 @@ if (conflict !== null) {
 A rejected insertion may leave a dependent pending deletion with an unknown target. The authoritative commit still advances. Visible state contains only the complete replayable batch prefix; original pending work stays intact.
 
 Blocked clients can read, checkpoint and receive, but cannot make actual edits. Trusted application code can acknowledge abandoned original batches with `server.reject()`. Catch up first, then cancel only the chosen range; already accepted effects are not undone. See [rejection examples](examples.md#manual-pending-rejection).
+
+## Permanently retiring a writer
+
+After its writer is stopped and its pending work is handled, call `server.closeClient(saved.clientId)` and persist the new server checkpoint. Closure removes that session and its retry payload, releases a `maxClients` slot, and prevents all future submissions/retries from it. It is not disconnect, undo or pending recovery. Open a new session for a new writer; issued IDs are never reused in normal same-lineage restore.
+
+Old 0.1 server checkpoints are rejected without migration or fresh fallback. Retained history may still include a closed writer; state, tombstones, history and caller-owned checkpoints are not purged by close.
 
 ## Persistence and lineage
 

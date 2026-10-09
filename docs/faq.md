@@ -8,7 +8,7 @@ No. The server orders every new authoritative batch. Clients edit optimistically
 
 ## Can I install it from npm?
 
-Yes. The first beta, `articollab@0.1.0-beta.0`, is available with `pnpm add articollab@beta`. The source repository remains private; a public npm package does not grant repository access.
+An older beta is on npm, but this `0.2.0-beta.0` checkout is not yet published. These docs target its new session/checkpoint contract. Use a matching build or tarball; a public npm package does not grant access to the private source repository.
 
 ## Why do nested object edits not synchronize?
 

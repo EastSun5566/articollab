@@ -14,7 +14,7 @@ type Mutable<T> = T extends object ? { -readonly [K in keyof T]: Mutable<T[K]> }
 type Shape = typeof Board.definition;
 type Batch = ClientBatch<DocumentOperation<Shape>>;
 
-function setup(clientId = "a") {
+function setup(clientId = "client-1") {
   const batches: Batch[] = [];
   const doc = createClient(Board, { clientId, onBatch: (batch) => batches.push(batch) });
   return { doc, batches };
@@ -43,16 +43,17 @@ describe("explicit server rejection", () => {
       doc.state.body.insert(0, "Hi 😀");
     });
     const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
     const before = server.snapshot();
     const receipt: ServerReceipt<DocumentOperation<Shape>> = server.reject(batches[0]!);
     assert.equal(receipt.replayed, false);
-    assert.deepEqual(receipt.commit, { serverSeq: 1, source: { clientId: "a", seq: 1 }, operations: [] });
+    assert.deepEqual(receipt.commit, { serverSeq: 1, source: { clientId: "client-1", seq: 1 }, operations: [] });
     for (const value of [receipt, receipt.commit, receipt.commit.source, receipt.commit.operations]) {
       assert.ok(Object.isFrozen(value));
     }
     assert.deepEqual(server.snapshot(), { ...before, serverSeq: 1 });
     assert.deepEqual(server.commitsSince(0), [receipt.commit]);
-    assert.deepEqual(server.checkpoint().replays[0]!.batch, batches[0]);
+    assert.deepEqual(server.checkpoint().clients[0]!.replay!.batch, batches[0]);
     doc.receive(receipt.commit);
     assert.deepEqual(doc.checkpoint().pendingBatches, []);
     assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
@@ -67,7 +68,8 @@ describe("explicit server rejection", () => {
       if (fail) throw new Error("Policy must not run");
       return batch.operations;
     } });
-    const { doc, batches } = setup("seed");
+    assert.equal(server.openClient(), "client-1");
+    const { doc, batches } = setup("client-1");
     doc.transact(() => { doc.state.items.push("A"); doc.state.body.insert(0, "AB"); });
     doc.receive(server.receive(batches[0]!).commit);
     const listInsert = batches[0]!.operations[0]!, textInsert = batches[0]!.operations[1]!;
@@ -88,7 +90,7 @@ describe("explicit server rejection", () => {
       { type: "text/delete", path: "body", ranges: [{ start: unknown, count: Number.MAX_SAFE_INTEGER }] },
     ];
     for (const [index, operation] of operations.entries()) {
-      const batch = decodeClientBatch(Board, { clientId: "rejected-" + index, seq: 1, operations: [operation] });
+      const batch = decodeClientBatch(Board, { clientId: server.openClient(), seq: 1, operations: [operation] });
       assert.equal(server.reject(batch).commit.serverSeq, index + 3);
       assert.deepEqual(server.snapshot().data, before.data);
     }
@@ -103,7 +105,8 @@ describe("explicit server rejection", () => {
         calls++;
         return mode === "transform" ? countBatch(batch.clientId, batch.seq, 5).operations : batch.operations;
       } });
-      const batch = countBatch("a", 1, 1);
+      assert.equal(server.openClient(), "client-1");
+      const batch = countBatch("client-1", 1, 1);
       const first = mode === "reject" ? server.reject(batch) : server.receive(batch);
       const before = server.checkpoint();
       for (const entrypoint of ["reject", "receive", "reject"] as const) {
@@ -119,24 +122,27 @@ describe("explicit server rejection", () => {
 
   it("keeps sequences, replay cache and history atomic on sequence, payload and copy failures", () => {
     const server = createServer(Board);
-    server.reject(countBatch("a", 1));
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    assert.equal(server.openClient(), "client-3");
+    server.reject(countBatch("client-1", 1));
     const before = server.checkpoint();
     for (const batch of [
-      countBatch("a", 1, 99), countBatch("a", 3), countBatch("new", 2),
+      countBatch("client-1", 1, 99), countBatch("client-1", 3), countBatch("client-3", 2),
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
-      { ...countBatch("a", 2), operations: [{ type: "bad", path: "count" }] } as unknown as Batch,
+      { ...countBatch("client-1", 2), operations: [{ type: "bad", path: "count" }] } as unknown as Batch,
     ]) {
       assert.throws(() => server.reject(batch));
       assert.deepEqual(server.checkpoint(), before);
     }
-    const next = server.reject(countBatch("a", 2));
+    const next = server.reject(countBatch("client-1", 2));
     assert.equal(next.commit.serverSeq, 2);
     const after = server.checkpoint();
     for (const entrypoint of ["receive", "reject"] as const) {
-      assert.throws(() => server[entrypoint](countBatch("a", 1)), /Expected client sequence 3/);
+      assert.throws(() => server[entrypoint](countBatch("client-1", 1)), /Expected client sequence 3/);
       assert.deepEqual(server.checkpoint(), after);
     }
-    assert.equal(server.receive(countBatch("a", 3)).commit.serverSeq, 3);
+    assert.equal(server.receive(countBatch("client-1", 3)).commit.serverSeq, 3);
   });
 
   it("owns rejected batch containers, IDs and Text ranges without modifying the caller", () => {
@@ -148,9 +154,10 @@ describe("explicit server rejection", () => {
     ] })) as Mutable<Batch>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
     const original = decodeClientBatch(Board, input);
     const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
     const receipt = server.reject(input);
     assert.equal(Object.isFrozen(input), false);
-    const saved = server.checkpoint().replays[0]!.batch;
+    const saved = server.checkpoint().clients[0]!.replay!.batch;
     for (const value of [saved, saved.operations, ...saved.operations]) assert.ok(Object.isFrozen(value));
     const insert = saved.operations[1]!, deletion = saved.operations[3]!;
     assert.equal(insert.type, "list/insert"); assert.equal(deletion.type, "text/delete");
@@ -175,26 +182,31 @@ describe("explicit server rejection", () => {
     for (const nested of ["receive", "reject"] as const) {
       let reenter = true;
       const server = createServer(Board, { resolve: ({ batch }) => {
-        if (reenter) server[nested](countBatch("nested", 1));
+        if (reenter) server[nested](countBatch("client-2", 1));
         return batch.operations;
       } });
+      assert.equal(server.openClient(), "client-1");
+      assert.equal(server.openClient(), "client-2");
       const before = server.checkpoint();
-      assert.throws(() => server.receive(countBatch("a", 1)), /reentrantly/);
+      assert.throws(() => server.receive(countBatch("client-1", 1)), /reentrantly/);
       assert.deepEqual(server.checkpoint(), before);
-      assert.equal(server.reject(countBatch("a", 1)).commit.serverSeq, 1);
+      assert.equal(server.reject(countBatch("client-1", 1)).commit.serverSeq, 1);
       reenter = false;
-      assert.equal(server.receive(countBatch("a", 2)).commit.serverSeq, 2);
+      assert.equal(server.receive(countBatch("client-1", 2)).commit.serverSeq, 2);
     }
   });
 
   it("restores explicit rejection, bounded history and retry ownership from JSON", () => {
     const server = createServer(Board, { historyLimit: 2 });
-    const accepted = countBatch("a", 1, 7);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    assert.equal(server.openClient(), "client-3");
+    const accepted = countBatch("client-1", 1, 7);
     server.receive(accepted);
-    const rejected = countBatch("a", 2, 99);
+    const rejected = countBatch("client-1", 2, 99);
     const result = server.reject(rejected);
     const saved = server.checkpoint();
-    server.reject(countBatch("peer", 1));
+    server.reject(countBatch("client-2", 1));
     assert.equal(saved.snapshot.serverSeq, 2);
     assert.equal(saved.history.length, 2);
     const restored = createServer(Board, {
@@ -206,8 +218,8 @@ describe("explicit server rejection", () => {
       assert.deepEqual(restored[entrypoint](rejected), { commit: result.commit, replayed: true });
       assert.deepEqual(restored.checkpoint(), saved);
     }
-    assert.equal(restored.reject(countBatch("a", 3)).commit.serverSeq, 3);
-    assert.equal(restored.reject(countBatch("new", 1)).commit.serverSeq, 4);
+    assert.equal(restored.reject(countBatch("client-1", 3)).commit.serverSeq, 3);
+    assert.equal(restored.reject(countBatch("client-3", 1)).commit.serverSeq, 4);
     assert.equal(restored.snapshot().data.count, 7);
     assert.deepEqual(server.commitsSince(1)?.map((commit) => commit.serverSeq), [2, 3]);
     assert.equal(server.commitsSince(0), null);
@@ -215,20 +227,22 @@ describe("explicit server rejection", () => {
 
   it("rejects new batches at global sequence exhaustion but still replays either entrypoint", () => {
     const max = Number.MAX_SAFE_INTEGER;
-    const previous = countBatch("a", max - 1, 0);
+    const previous = countBatch("client-1", max - 1, 0);
     const server = createServer(Board, { checkpoint: {
       snapshot: { ...createServer(Board).snapshot(), serverSeq: max - 1 }, history: [],
-      replays: [{ batch: previous, commit: {
-        serverSeq: max - 1, source: { clientId: "a", seq: max - 1 }, operations: [],
-      } }],
+      lastClientNumber: 4, clients: [{ batch: previous, commit: {
+        serverSeq: max - 1, source: { clientId: "client-1", seq: max - 1 }, operations: [],
+      } }].map((replay) => ({ clientId: replay.batch.clientId, replay })),
     } });
-    const last = countBatch("a", max, 1);
+    const last = countBatch("client-1", max, 1);
     const receipt = server.reject(last);
     const checkpoint = server.checkpoint();
     assert.equal(receipt.commit.serverSeq, max);
     for (const document of [server, createServer(Board, { checkpoint })]) {
-      assert.throws(() => document.reject(countBatch("new", 1)), /Server sequence exhausted/);
-      assert.deepEqual(document.checkpoint(), checkpoint);
+      const id = document.openClient();
+      const opened = document.checkpoint();
+      assert.throws(() => document.reject(countBatch(id, 1)), /Server sequence exhausted/);
+      assert.deepEqual(document.checkpoint(), opened);
       for (const entrypoint of ["receive", "reject"] as const) {
         assert.deepEqual(document[entrypoint](last), { commit: receipt.commit, replayed: true });
       }
@@ -239,8 +253,10 @@ describe("explicit server rejection", () => {
 describe("manual pending rejection example", () => {
   it("unblocks mixed pending work, converges peers and preserves sequences and ID allocation", () => {
     const { doc, batches } = setup(); dependentEdits(doc);
-    const peer = setup("b").doc;
+    const peer = setup("client-2").doc;
     const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     doc.receive(server.reject(batches[0]!).commit);
     assert.equal(doc.replayConflict?.batch.seq, 2);
     const allocations = doc.checkpoint().lastBunchSeqs;
@@ -250,7 +266,7 @@ describe("manual pending rejection example", () => {
     assert.deepEqual(doc.checkpoint().lastBunchSeqs, allocations);
     assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
     assert.equal(doc.state.count.value, 0); // The replayable Value suffix was cancelled too.
-    const restored = createClient(Board, { clientId: "a", onBatch() {},
+    const restored = createClient(Board, { clientId: "client-1", onBatch() {},
       checkpoint: decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(doc.checkpoint()))),
     });
     restored.transact(() => { restored.state.items.push("new"); restored.state.body.insert(0, "😀"); });
@@ -269,6 +285,7 @@ describe("manual pending rejection example", () => {
       calls++;
       return countBatch(batch.clientId, batch.seq, batch.seq * 10).operations;
     } });
+    assert.equal(server.openClient(), "client-1");
     const { doc, batches } = setup();
     doc.state.count.value = 1; doc.state.count.value = 2; doc.state.count.value = 3;
     server.receive(batches[0]!); server.receive(batches[1]!); // Both acknowledgements are lost.
@@ -280,18 +297,20 @@ describe("manual pending rejection example", () => {
     assert.equal(server.snapshot().data.count, 20);
     assert.equal(doc.state.count.value, 20);
     assert.deepEqual(doc.checkpoint().pendingBatches, []);
-    assert.deepEqual(server.checkpoint().replays[0]!.batch, batches[2]);
-    assert.deepEqual(server.checkpoint().replays[0]!.commit.operations, []);
+    assert.deepEqual(server.checkpoint().clients[0]!.replay!.batch, batches[2]);
+    assert.deepEqual(server.checkpoint().clients[0]!.replay!.commit.operations, []);
   });
 
   it("retains listener-created edits during catch-up and while cancelling the original suffix", () => {
     for (const phase of ["catch-up", "reject"] as const) {
       const { doc, batches } = setup();
       const server = createServer(Board);
+      assert.equal(server.openClient(), "client-1");
+      assert.equal(server.openClient(), "client-2");
       if (phase === "catch-up") {
         doc.state.count.value = 1; doc.state.count.value = 2;
         server.receive(batches[0]!);
-        const { doc: peer, batches: peerBatches } = setup("peer");
+        const { doc: peer, batches: peerBatches } = setup("client-2");
         peer.state.body.insert(0, "remote");
         server.receive(peerBatches[0]!);
       } else {
@@ -311,8 +330,8 @@ describe("manual pending rejection example", () => {
       const pending = doc.checkpoint().pendingBatches;
       assert.deepEqual(pending.map((batch) => batch.seq), [cutoff + 1]);
       assert.equal(doc.state.count.value, 100);
-      assert.equal(server.checkpoint().replays.find((entry) => entry.batch.clientId === "a")!.batch.seq, cutoff);
-      assert.deepEqual(server.checkpoint().replays.find((entry) => entry.batch.clientId === "a")!.commit.operations, []);
+      assert.equal(server.checkpoint().clients.find((entry) => entry.clientId === "client-1")!.replay!.batch.seq, cutoff);
+      assert.deepEqual(server.checkpoint().clients.find((entry) => entry.clientId === "client-1")!.replay!.commit.operations, []);
       doc.receive(server.receive(pending[0]!).commit);
       assert.deepEqual(doc.checkpoint().pendingBatches, []);
       assert.equal(server.snapshot().data.count, 100);
@@ -321,8 +340,10 @@ describe("manual pending rejection example", () => {
 
   it("does not submit anything or replace pending state when catch-up history is insufficient", () => {
     const server = createServer(Board, { historyLimit: 0 });
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const { doc } = setup(); dependentEdits(doc);
-    server.receive(countBatch("peer", 1));
+    server.receive(countBatch("client-2", 1));
     const clientBefore = doc.checkpoint(), serverBefore = server.checkpoint();
     assert.equal(rejectPending(server, doc), false);
     assert.deepEqual(doc.checkpoint(), clientBefore);
@@ -331,17 +352,19 @@ describe("manual pending rejection example", () => {
 
   it("preserves a new dependent listener edit even when cancellation makes it blocked", () => {
     const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const { doc, batches } = setup();
     doc.state.items.push("A");
-    server.receive(countBatch("peer", 1)); // Catch-up emits a visible remote Value change.
+    server.receive(countBatch("client-2", 1)); // Catch-up emits a visible remote Value change.
     const unsubscribe = doc.on("change", (event) => {
-      if (event.origin === "server" && event.commit.source.clientId === "peer") doc.state.items.push("B");
+      if (event.origin === "server" && event.commit.source.clientId === "client-2") doc.state.items.push("B");
     });
     assert.equal(rejectPending(server, doc), true);
     unsubscribe();
     assert.equal(doc.replayConflict?.batch, batches[1]);
     assert.deepEqual(doc.checkpoint().pendingBatches, [batches[1]]);
-    assert.equal(server.checkpoint().replays.find((entry) => entry.batch.clientId === "a")!.batch.seq, 1);
+    assert.equal(server.checkpoint().clients.find((entry) => entry.clientId === "client-1")!.replay!.batch.seq, 1);
     assert.equal(rejectPending(server, doc), true); // A separate explicit decision cancels the new edit.
     assert.equal(doc.replayConflict, null);
     assert.deepEqual(doc.checkpoint().pendingBatches, []);
@@ -349,7 +372,9 @@ describe("manual pending rejection example", () => {
 
   it("guards both server and document against reentrant recovery and releases the guard", () => {
     const server = createServer(Board), otherServer = createServer(Board);
-    const { doc } = setup(), peer = setup("peer").doc;
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    const { doc } = setup(), peer = setup("client-2").doc;
     doc.state.count.value = 1;
     doc.transact(() => {
       assert.throws(() => rejectPending(server, doc), /Cannot checkpoint during a transaction/);
@@ -366,6 +391,7 @@ describe("manual pending rejection example", () => {
 
   it("preserves completed rejection and remaining pending when a listener throws", () => {
     const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
     const { doc, batches } = setup(); dependentEdits(doc);
     const error = new Error("Listener failed");
     const unsubscribe = doc.on("change", (event) => { if (event.origin === "server") throw error; });

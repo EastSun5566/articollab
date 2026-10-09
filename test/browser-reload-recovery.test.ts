@@ -28,7 +28,7 @@ let recovery: {
   createSessionCheckpointStore(storage: Storage): { load(): Record | null; save(record: Record): undefined };
   connectPersistentBrowserClient(url: string, options?: { storage?: Storage; fetch?: typeof globalThis.fetch }): Promise<Connection>;
 };
-let browser: { connectBrowserHttpClient(url: string, clientId: string, options?: {
+let browser: { connectBrowserHttpClient(url: string, options?: {
   checkpoint?: Checkpoint; saveClientCheckpoint?: (checkpoint: Checkpoint) => undefined;
 }): Promise<Connection> };
 
@@ -78,12 +78,12 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
       paths.push(new URL((input instanceof Request ? input.url : input.toString())).pathname);
       return fetch(input, init);
     } });
-    assert.deepEqual(paths, ["/snapshot"]);
+    assert.deepEqual(paths, ["/clients"]);
     assert.equal(storage.writes.length, 1);
-    assert.match(a.doc.checkpoint().clientId, /^browser-recovery-/);
+    assert.match(a.doc.checkpoint().clientId, /^client-[1-9]\d*$/);
     mixed(a.doc);
     mixed(a.doc);
-    assert.deepEqual(paths, ["/snapshot"]);
+    assert.deepEqual(paths, ["/clients"]);
     assert.equal(server.snapshot().serverSeq, 0);
     const saved = recovery.createSessionCheckpointStore(storage).load()!.checkpoint;
     assert.deepEqual(saved, a.doc.checkpoint());
@@ -95,7 +95,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
     assert.deepEqual(b.doc.checkpoint(), saved);
     assert.deepEqual(visible(b.doc), visible(a.doc));
     assert.equal(storage.writes.length, 4); // Creation, two local batches, restored creation.
-    assert.deepEqual(paths, ["/snapshot"]);
+    assert.deepEqual(paths, ["/clients"]);
   });
 
   it("saves silent acks and tombstones, then continues sequences and IDs after restore", async (t) => {
@@ -135,7 +135,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
     const failure = new Error("Accepted POST response lost");
     const a = await recovery.connectPersistentBrowserClient(url, { storage, fetch: async (input, init) => {
       const response = await fetch(input, init);
-      if (init?.method === "POST") { await response.text(); throw failure; }
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) { await response.text(); throw failure; }
       return response;
     } });
     mixed(a.doc);
@@ -146,7 +146,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
     assert.deepEqual(recovery.createSessionCheckpointStore(storage).load()!.checkpoint.pendingBatches.map((batch) => batch.seq), [1, 2]);
     const posts: number[] = [];
     const b = await recovery.connectPersistentBrowserClient(url, { storage, fetch: async (input, init) => {
-      if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
       return fetch(input, init);
     } });
     assert.equal(await b.sync(), true);
@@ -169,7 +169,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
       storage.setItem(name, message);
     } };
     const a = await recovery.connectPersistentBrowserClient(url, { storage: failing, fetch: async (input, init) => {
-      if (init?.method === "POST") posts++;
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts++;
       return fetch(input, init);
     } });
     mixed(a.doc);
@@ -216,7 +216,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
       await assert.rejects(a.sync(), (error: unknown) => error === failure);
       let posts = 0;
       const b = await recovery.connectPersistentBrowserClient(url, { storage, fetch: async (input, init) => {
-        if (init?.method === "POST") posts++;
+        if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts++;
         return fetch(input, init);
       } });
       assert.equal(await b.sync(), true);
@@ -248,11 +248,11 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
       getItem: () => null, setItem() { throw writeFailure; },
     }, fetch: async (input, init) => { paths.push(new URL((input instanceof Request ? input.url : input.toString())).pathname); return fetch(input, init); } }),
     (error: unknown) => error === writeFailure);
-    assert.deepEqual(paths, ["/snapshot"]);
+    assert.deepEqual(paths, ["/clients"]);
     assert.equal(server.snapshot().serverSeq, 0);
     const storage = memory();
     const callbackFailure = new Error("Synchronous callback failed");
-    await assert.rejects(browser.connectBrowserHttpClient(url, "callback", { saveClientCheckpoint() { throw callbackFailure; } }),
+    await assert.rejects(browser.connectBrowserHttpClient(url, { saveClientCheckpoint() { throw callbackFailure; } }),
       (error: unknown) => error === callbackFailure);
     const restored = await recovery.connectPersistentBrowserClient(url, { storage });
     const serialized = new Error("Serialization failed");
@@ -270,7 +270,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
       const storage = memory();
       let a = await recovery.connectPersistentBrowserClient(url, { storage });
       mixed(a.doc);
-      server.receive({ clientId: "peer", seq: 1, operations: [{ type: "value/set", path: "count", value: 10 }] });
+      server.receive({ clientId: server.openClient(), seq: 1, operations: [{ type: "value/set", path: "count", value: 10 }] });
       a = await recovery.connectPersistentBrowserClient(url, { storage });
       const saved = storage.getItem(key);
       assert.equal(await a.sync(), false);

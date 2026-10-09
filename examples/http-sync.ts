@@ -16,7 +16,7 @@ import {
   type ServerDocument,
 } from "../src/index.ts";
 import { Board } from "./resume.ts";
-import { createHttpSyncController, readHttpResponse } from "./http-sync-controller.js";
+import { createHttpSyncController, readClientRegistration } from "./http-sync-controller.js";
 
 type Shape = typeof Board.definition;
 type Batch = ClientBatch<DocumentOperation<Shape>>;
@@ -71,8 +71,8 @@ export async function startHttpExampleServer(
     if (failed) { reject(503, "Checkpoint storage failed; restart this host"); return; }
 
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    const method = url.pathname === "/batches" || url.pathname === "/rejections" ? "POST" : "GET";
-    if (!["/snapshot", "/batches", "/rejections", "/commits"].includes(url.pathname)) {
+    const method = ["/clients", "/batches", "/rejections"].includes(url.pathname) ? "POST" : "GET";
+    if (!["/snapshot", "/clients", "/batches", "/rejections", "/commits"].includes(url.pathname)) {
       if (options.serveAsset?.(request, response)) return;
       reject(404, "Unknown route");
       return;
@@ -86,7 +86,7 @@ export async function startHttpExampleServer(
       json(response, 200, server.snapshot());
       return;
     }
-    if (documentId !== undefined && request.headers["x-articollab-document-id"] !== documentId) {
+    if (url.pathname !== "/clients" && documentId !== undefined && request.headers["x-articollab-document-id"] !== documentId) {
       reject(409, "Document lineage mismatch");
       return;
     }
@@ -114,6 +114,25 @@ export async function startHttpExampleServer(
     if (message === null) {
       response.setHeader("Connection", "close");
       reject(413, "Batch body exceeds 1 MiB");
+      return;
+    }
+    if (url.pathname === "/clients") {
+      try {
+        const input: unknown = JSON.parse(message);
+        if (input === null || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== 0) {
+          throw new Error("Expected empty registration object");
+        }
+      } catch { reject(400, "Invalid registration JSON"); return; }
+      let clientId: string;
+      try { clientId = server.openClient(); }
+      catch { reject(409, "Client session could not be opened"); return; }
+      try { options.saveServerCheckpoint?.(server.checkpoint()); }
+      catch {
+        failed = true;
+        reject(500, "Checkpoint could not be saved");
+        return;
+      }
+      json(response, 201, { clientId, snapshot: server.snapshot() });
       return;
     }
     let batch: Batch;
@@ -172,7 +191,6 @@ export async function startHttpExampleServer(
 /** Example-only manual sync. The client knows only a URL, never a server object. */
 export async function connectHttpExampleClient(
   url: string,
-  clientId: string,
   options: {
     readonly fetch?: typeof globalThis.fetch;
     readonly checkpoint?: ClientCheckpoint<Shape>;
@@ -180,12 +198,13 @@ export async function connectHttpExampleClient(
   } = {}
 ) {
   const fetch = options.fetch ?? globalThis.fetch;
-  // Restore before making any request; only fresh clients fetch a snapshot.
+  // Restore before making any request; only fresh writers open a session.
+  const registration = options.checkpoint === undefined ? await readClientRegistration(url, fetch) : undefined;
   const initial = options.checkpoint === undefined
-    ? { snapshot: decodeSnapshot(Board, JSON.parse(await readHttpResponse(url, fetch, "/snapshot", 200))) }
+    ? { snapshot: decodeSnapshot(Board, registration!.snapshot) }
     : { checkpoint: options.checkpoint };
   const doc = createClient(Board, {
-    clientId,
+    clientId: options.checkpoint?.clientId ?? registration!.clientId,
     ...initial,
     onBatch() { saveClient(); }, // Pending is already present; save without automatically sending.
   });
@@ -213,12 +232,12 @@ async function runDemo(): Promise<void> {
   const host = await startHttpExampleServer(server);
   try {
     const lostResponse = new Error("POST response lost after server acceptance");
-    let a = await connectHttpExampleClient(host.url, "a", { fetch: async (input, init) => {
+    let a = await connectHttpExampleClient(host.url, { fetch: async (input, init) => {
       const response = await fetch(input, init);
-      if (init?.method === "POST") { await response.text(); throw lostResponse; }
+      if ((input instanceof Request ? input.url : input.toString()).endsWith("/batches")) { await response.text(); throw lostResponse; }
       return response;
     } });
-    const b = await connectHttpExampleClient(host.url, "b");
+    const b = await connectHttpExampleClient(host.url);
     a.doc.transact(() => {
       a.doc.state.count.value = 1;
       a.doc.state.items.push("Saved");
@@ -234,7 +253,7 @@ async function runDemo(): Promise<void> {
     const checkpoint = decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(a.doc.checkpoint())));
     assert.equal(checkpoint.pendingBatches.length, 2);
     // Retire the old writer. Catch-up confirms batch 1 before submitting batch 2.
-    a = await connectHttpExampleClient(host.url, "a", { checkpoint });
+    a = await connectHttpExampleClient(host.url, { checkpoint });
     assert.equal(await a.sync(), true);
     assert.equal(await b.sync(), true);
     assert.equal(await a.sync(), true); // Poll the peer's update; there is no live broadcast.

@@ -38,8 +38,8 @@ export function rejectPending(server: ServerDocument<Shape>, doc: ClientDocument
 
 function runDemo(): void {
   const server = createServer(Board);
-  const doc = createClient(Board, { clientId: "a", onBatch() {} });
-  const peer = createClient(Board, { clientId: "b", onBatch() {} });
+  const doc = createClient(Board, { clientId: server.openClient(), onBatch() {} });
+  const peer = createClient(Board, { clientId: server.openClient(), onBatch() {} });
   doc.transact(() => {
     doc.state.count.value = 1;
     doc.state.items.push("A");

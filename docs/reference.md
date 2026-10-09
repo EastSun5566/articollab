@@ -2,7 +2,7 @@
 
 Complete public API and core contracts for Articollab. For a step-by-step introduction, start with the [Counter quick start](quick-start.md).
 
-## v0.1 notes and compatibility
+## v0.2 notes and compatibility
 
 The baseline includes:
 
@@ -10,7 +10,7 @@ The baseline includes:
 - Synchronous server policy and explicit rejection, last-batch retry deduplication and bounded commit catch-up.
 - Strict wire decoders, snapshots, and client/server checkpoint restore with sequence and ID allocation progress.
 
-The `0.1.x` line preserves the public API behavior documented in this reference and the existing wire/checkpoint formats. Under the same schema and document lineage, upgrading within `0.1.x` must preserve the ability to restore existing valid checkpoints. Incompatible changes require `0.2.0` and explicit change notes; automatic migration across schemas or incompatible versions is not promised.
+This checkout prepares **0.2.0-beta.0**, not yet published. Breaking changes from 0.1: every server writer must be opened explicitly, `maxClients` counts open sessions, and server checkpoints use `lastClientNumber`/`clients` instead of `replays`. Old server checkpoints are rejected; there is no migration or fresh fallback. Batch, commit and client checkpoint shapes remain unchanged. Do not mix incompatible servers/checkpoints; example helper signatures also changed.
 
 Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` retains its documented `name`, JSON Pointer `path` and readable message contract, not exact message wording. Transport, storage, authentication, writer coordination, lineage checks and production reconnect orchestration remain application responsibilities.
 
@@ -35,11 +35,11 @@ type Batch = ClientBatch<DocumentOperation<typeof Board.definition>>;
 const outbound: Batch[] = [];
 const server = createServer(Board);
 const doc = createClient(Board, {
-  clientId: "client-a",
+  clientId: server.openClient(),
   onBatch: (batch) => { outbound.push(batch); },
 });
 const peer = createClient(Board, {
-  clientId: "client-b",
+  clientId: server.openClient(),
   onBatch() {}, // This peer does not edit in this example.
 });
 
@@ -81,7 +81,8 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.on("change", listener)` | Subscribes to document-level events; returns an unsubscribe function. |
 | `doc.receive(commit)` | Applies the next authoritative commit, acknowledges own pending work and replays the rest. |
 | `doc.replayConflict`, `doc.checkpoint()` | Read the first replay failure or save authoritative state and pending work. |
-| `createServer(schema, options?)` | Optional synchronous `resolve`, restore `checkpoint`, and `historyLimit` (default 1000). |
+| `createServer(schema, options?)` | Optional synchronous `resolve`, restore `checkpoint`, `historyLimit` (default 1000), and `maxClients` (optional open-session bound). |
+| `server.openClient()`, `server.closeClient(clientId)` | Issue a writer ID or permanently retire it; neither creates a commit. |
 | `server.receive(batch)`, `server.reject(batch)` | Process a batch or replay its original result; return `{ commit, replayed }`. |
 | `server.snapshot()`, `server.checkpoint()`, `server.commitsSince(watermark)` | Late join, server restore, and complete ordered catch-up or `null`. |
 | `decodeClientBatch`, `decodeServerCommit`, `decodeSnapshot`, `decodeClientCheckpoint`, `decodeServerCheckpoint` | Each takes `(schema, unknown)`, validates parsed wire data and returns an owned frozen object. |
@@ -160,9 +161,11 @@ Reusing an incoming Text insertion's start ID for a transform should preserve it
 
 Only the last processed batch per client is retained for retry. The same payload/sequence returns its saved commit with `replayed: true` across either entrypoint, without rerunning policy or advancing state/history. Acceptance cannot become rejection or vice versa. Older retries, gaps and changed payloads throw; JSON object key order is ignored, but array and operation order matters.
 
-`createServer(schema, { maxClients: 1000 })` optionally limits distinct client IDs ever successfully processed. Omitted/undefined means unlimited; a supplied limit must be a non-negative safe integer. Zero admits no new clients. Accept, policy reject, explicit reject and transform each occupy one entry for a new client; further batches from the same client do not add entries. Failed processing does not consume a slot. At capacity, `receive()` and `reject()` throw for new clients before copying operations or calling policy, without changing state, sequences, retry entries or history. Existing clients can still submit and retry. This failure produces no commit or ack: the source's pending work remains unconfirmed.
+`server.openClient()` returns sequential canonical IDs (`client-1`, `client-2`, …), reserves a session even before its first batch, and throws without mutation at capacity or allocation exhaustion. Both `receive()` and `reject()` require an open issued ID; unknown/closed writers fail before operation copying, policy or sequence changes. Client construction alone does not register a writer.
 
-Client capacity is an admission bound, not garbage collection, an online-client limit or a byte quota. Disconnect and history eviction do not release slots. Payloads, tombstones and client pending work still require application quotas; client IDs are not authorization. To admit more clients, an application may replace its server from a checkpoint with a higher limit while preserving document lineage and retiring the old server; no dynamic-limit or retirement API is provided.
+`server.closeClient(id)` permanently removes the session and latest retry result. Closing an already-issued closed ID is a no-op; malformed or never-issued IDs throw `TypeError`. IDs are never reused within normal same-lineage restore. Closure changes no authoritative state, sequence, history or tombstones and cannot run reentrantly from a resolver. Disconnect/offline/reload is not closure: keep the session for resume, and stop the writer and handle pending work before closing it.
+
+`maxClients` is a non-negative safe integer; omitted means unlimited, zero permits no opens. It bounds open sessions, not connections, historical IDs or payload bytes. Close releases capacity; failed batches and history eviction do not. Removing the retry entry does not purge state/history/tombstones or payloads retained by callers. Registration is not authentication, a writer lock or deletion authorization.
 
 Broadcast new commits to all relevant clients, including their source. Route a replay only to the source still awaiting it, after any earlier missing commits; never redeliver an already-consumed commit. Retry does not catch up peers. Sequences and allocation counters stay within safe integers; exhaustion prevents new relevant work, while retained server retries remain available.
 
@@ -184,7 +187,9 @@ To cancel a namespace-invalid original batch, trusted application code must veri
 
 `doc.checkpoint()` is `{ clientId, snapshot, lastLocalSeq, pendingBatches, lastBunchSeqs }`: authoritative state, original pending work and allocation progress, not a separate optimistic snapshot. `createClient(schema, { clientId, checkpoint, onBatch })` validates restore data and matching identity, reconstructs optimistic state/conflict, and emits neither changes nor outgoing batches. `snapshot` and `checkpoint` options are mutually exclusive.
 
-`server.checkpoint()` is `{ snapshot, replays, history }`; each replay entry is `{ batch, commit }`. Restore validates the complete checkpoint before trimming history, preserving authoritative state, sequences and original retry results. Resolver callbacks, history capacity and `maxClients` are not serialized. Supply policy again; a saved retry result still wins over the new policy. A specified `maxClients` below the restored replay-entry count makes construction fail, without trimming entries or changing the checkpoint; an equal or higher limit succeeds. Restoring without a limit is unlimited, even if the previous server had a limit.
+`server.checkpoint()` is `{ snapshot, lastClientNumber, clients, history }`. Each open client entry is `{ clientId, replay }`: `replay` is `null` until its first successful batch, then `{ batch, commit }`. The counter is a non-negative safe integer; entries must be unique canonical issued IDs no greater than that counter. Closed sessions are absent. Restore preserves authoritative state, allocation progress, open sessions, retries and history; callbacks, history capacity and `maxClients` are not serialized. A limit below the restored open-session count fails without truncation. Old 0.1 checkpoints fail validation.
+
+History must be a consecutive suffix ending at the snapshot watermark. Its sources may be closed but must be issued IDs; each source sequence is consecutive. For an open source, its latest retained commit must match its replay, and a null replay cannot have history. Retained metadata supplies necessary batch-count lower bounds, not equality with all global commits: closed writers may have no metadata. Restore does not reapply history operations.
 
 `historyLimit` defaults to 1000, is a non-negative safe integer and counts commits, not bytes. Zero disables history. Accept/reject/transform enter history; retry and failed processing do not. `commitsSince(watermark)` returns a frozen complete ascending suffix, `[]` if current, or `null` if a gap cannot be filled. Invalid/future watermarks throw. Capacity cannot recover evicted commits, and history eviction does not remove last-batch retry entries.
 
@@ -204,7 +209,7 @@ Runtime errors have readable messages, not a stable error-code hierarchy. `WireD
 
 ## Boundaries
 
-The intended minimal core and v0.1 compatibility baseline are established; the first public beta is available on npm. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
+The minimal core now uses explicit sessions; this 0.2 beta checkout is not yet published. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
 
 There is no production transport or storage adapter, background sync, automatic retry/reconnect, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing, move, public stable positions or cursor API. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
 

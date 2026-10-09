@@ -14,6 +14,23 @@ export async function readHttpResponse(url, fetch, path, status, init) {
   return message;
 }
 
+/** Fresh writers register once; restore never uses this request.
+ * @param {string} url @param {typeof globalThis.fetch} fetch
+ */
+export async function readClientRegistration(url, fetch) {
+  /** @type {unknown} */
+  const input = JSON.parse(await readHttpResponse(url, fetch, "/clients", 201, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  }));
+  if (input === null || typeof input !== "object" || Array.isArray(input) ||
+      Object.keys(input).sort().join(",") !== "clientId,snapshot" ||
+      !("clientId" in input) || typeof input.clientId !== "string" ||
+      !/^client-[1-9]\d*$/.test(input.clientId) || !Number.isSafeInteger(Number(input.clientId.slice(7))) ||
+      input.clientId !== `client-${Number(input.clientId.slice(7))}` ||
+      !("snapshot" in input)) throw new Error("Invalid client registration response");
+  return { clientId: input.clientId, snapshot: input.snapshot };
+}
+
 /**
  * Example-only manual synchronization, independent of document class identity.
  * @template {import("../src/index.ts").Operation} O

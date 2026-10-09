@@ -134,7 +134,7 @@ describe("client runtime", () => {
     const depth = 20_000;
     const payload: JsonValue = JSON.parse('{"a/~":'.repeat(depth) + '0' + '}'.repeat(depth)) as JsonValue; // oxlint-disable-line typescript/no-unsafe-type-assertion -- The fixture is generated entirely from valid JSON tokens.
     const schema = defineDocument({ data: valueSchema<JsonValue>(payload) });
-    const doc = createClient(schema, { clientId: "deep", onBatch() {} });
+    const doc = createClient(schema, { clientId: "client-1", onBatch() {} });
     assert.strictEqual(doc.state.data.value, payload);
     doc.state.data.set(payload);
     assert.strictEqual(doc.state.data.value, payload);
@@ -222,10 +222,12 @@ describe("client runtime", () => {
   it("skips unchanged collection iteration while retaining equal own acks and real changes", (t) => {
     const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
     const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const outgoing: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
     const remote: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
-    const doc = createClient(Board, { clientId: "a", onBatch: (batch) => outgoing.push(batch) });
-    const peer = createClient(Board, { clientId: "b", onBatch: (batch) => remote.push(batch) });
+    const doc = createClient(Board, { clientId: "client-1", onBatch: (batch) => outgoing.push(batch) });
+    const peer = createClient(Board, { clientId: "client-2", onBatch: (batch) => remote.push(batch) });
     let changes = 0;
     doc.on("change", () => changes++);
     doc.transact(() => {
@@ -760,6 +762,8 @@ describe("client runtime", () => {
 describe("server runtime", () => {
   it("orders batches and converges two clients", () => {
     const server = createServer(Counter);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const commits: CounterCommit[] = [];
     const receivers: Array<(commit: CounterCommit) => void> = [];
     const commitQueue: CounterCommit[] = [];
@@ -813,6 +817,8 @@ describe("server runtime", () => {
 
   it("finishes broadcasting a commit before a listener creates the next one", () => {
     const server = createServer(Counter);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const receivers: Array<(commit: CounterCommit) => void> = [];
     const commitQueue: CounterCommit[] = [];
     let broadcasting = false;
@@ -860,6 +866,8 @@ describe("server runtime", () => {
 
   it("uses server receive order for concurrent optimistic writes", () => {
     const server = createServer(Counter);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const client1Batches: ClientBatch<CounterOperation>[] = [];
     const client2Batches: ClientBatch<CounterOperation>[] = [];
     const client1 = createClient(Counter, {
@@ -891,6 +899,8 @@ describe("server runtime", () => {
 
   it("rejects invalid batches without consuming sequence numbers", () => {
     const server = createServer(Counter);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
 
     assert.throws(
       () =>
@@ -939,6 +949,7 @@ describe("server runtime", () => {
 
   it("owns an immutable snapshot of accepted operations", () => {
     const server = createServer(Counter);
+    assert.equal(server.openClient(), "client-1");
     const operations = [
       { type: "value/set" as const, path: "count" as const, value: 1 },
     ];
@@ -968,8 +979,9 @@ describe("server policy", () => {
     const server = createServer(Board, {
       resolve: (context) => { contexts.push(context); return context.batch.operations; },
     });
+    assert.equal(server.openClient(), "client-1");
     const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
-    const doc = createClient(Board, { clientId: "a", onBatch: (batch) => batches.push(batch) });
+    const doc = createClient(Board, { clientId: "client-1", onBatch: (batch) => batches.push(batch) });
     doc.transact(() => {
       doc.state.count.value = 1;
       doc.state.items.push("a");
@@ -1032,6 +1044,8 @@ describe("server policy", () => {
         return transformedOperations;
       },
     });
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const batches: ClientBatch<CounterOperation>[] = [];
     const client1 = createClient(Counter, {
       clientId: "client-1",
@@ -1065,6 +1079,7 @@ describe("server policy", () => {
 
   it("uses an empty authoritative operation list to reject a batch", () => {
     const server = createServer(Counter, { resolve: () => [] });
+    assert.equal(server.openClient(), "client-1");
     const batches: ClientBatch<CounterOperation>[] = [];
     const client = createClient(Counter, {
       clientId: "client-1",
@@ -1120,7 +1135,7 @@ describe("server policy", () => {
             ] as unknown as readonly CounterOperation[]; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
           case "reentrant":
             server.receive({
-              clientId: "nested",
+              clientId: "client-2",
               seq: 1,
               operations: [{ type: "value/set", path: "count", value: 9 }],
             });
@@ -1130,6 +1145,8 @@ describe("server policy", () => {
         }
       },
     });
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const batch: ClientBatch<CounterOperation> = {
       clientId: "client-1",
       seq: 1,
@@ -1158,7 +1175,7 @@ describe("server policy", () => {
     mode = "accept";
     const firstCommit = server.receive(batch).commit;
     const secondCommit = server.receive({
-      clientId: "nested",
+      clientId: "client-2",
       seq: 1,
       operations: [{ type: "value/set", path: "count", value: 2 }],
     }).commit;
@@ -1181,6 +1198,8 @@ describe("snapshot hydration", () => {
 
   it("hydrates a late client and continues from the snapshot watermark", () => {
     const server = createServer(Counter);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const firstCommit = server.receive({
       clientId: "client-1",
       seq: 1,
@@ -1209,6 +1228,8 @@ describe("snapshot hydration", () => {
 
   it("starts a late client's sequence at one and converges all clients", () => {
     const server = createServer(Counter);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     let firstBatch: ClientBatch<CounterOperation> | undefined;
     const firstClient = createClient(Counter, {
       clientId: "client-1",
@@ -1242,6 +1263,8 @@ describe("snapshot hydration", () => {
 
   it("keeps snapshots point-in-time and rejects invalid hydration data", () => {
     const server = createServer(Counter);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const snapshot = server.snapshot();
     server.receive({
       clientId: "client-1",
@@ -1304,12 +1327,13 @@ describe("server checkpoint", () => {
     assert.deepEqual(checkpoint, {
       snapshot: { serverSeq: 0, data: { count: 0 } },
       history: [],
-      replays: [],
+      lastClientNumber: 0, clients: [],
     });
     assert.ok(Object.isFrozen(checkpoint));
     assert.ok(Object.isFrozen(checkpoint.snapshot));
-    assert.ok(Object.isFrozen(checkpoint.replays));
+    assert.ok(Object.isFrozen(checkpoint.clients));
 
+    assert.equal(server.openClient(), "client-1");
     server.receive({
       clientId: "client-1",
       seq: 1,
@@ -1318,7 +1342,7 @@ describe("server checkpoint", () => {
     assert.deepEqual(checkpoint, {
       snapshot: { serverSeq: 0, data: { count: 0 } },
       history: [],
-      replays: [],
+      lastClientNumber: 0, clients: [],
     });
   });
 
@@ -1327,6 +1351,8 @@ describe("server checkpoint", () => {
       resolve: ({ batch }) =>
         batch.clientId === "client-2" ? [] : batch.operations,
     });
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     server.receive({
       clientId: "client-1",
       seq: 1,
@@ -1345,7 +1371,7 @@ describe("server checkpoint", () => {
         replay("client-1", 1, 1, 1).commit,
         { serverSeq: 2, source: { clientId: "client-2", seq: 1 }, operations: [] },
       ],
-      replays: [
+      lastClientNumber: 2, clients: [
         replay("client-1", 1, 1, 1),
         {
           ...replay("client-2", 1, 2, 2),
@@ -1355,9 +1381,9 @@ describe("server checkpoint", () => {
             operations: [],
           },
         },
-      ],
+      ].map((savedReplay) => ({ clientId: savedReplay.batch.clientId, replay: savedReplay })),
     });
-    assert.ok(Object.isFrozen(checkpoint.replays[0]));
+    assert.ok(Object.isFrozen(checkpoint.clients[0]!.replay));
 
     const restored = createServer(Counter, {
       checkpoint,
@@ -1399,7 +1425,7 @@ describe("server checkpoint", () => {
       operations: [{ type: "value/set", path: "count", value: 4 }],
     }).commit;
     const newClientCommit = restored.receive({
-      clientId: "client-3",
+      clientId: restored.openClient(),
       seq: 1,
       operations: [{ type: "value/set", path: "count", value: 3 }],
     }).commit;
@@ -1424,21 +1450,21 @@ describe("server checkpoint", () => {
     assert.throws(
       () =>
         restore({
-          snapshot: { serverSeq: 1, data: { count: 0 } },
+          snapshot: { serverSeq: 0, data: { count: 0 } },
           history: [],
-          replays: [],
+          lastClientNumber: 0, clients: [{ clientId: "client-1", replay: null }],
         }),
-      /must sum to snapshot serverSeq/
+      /client ID must have been allocated/
     );
     assert.throws(
       () =>
         restore({
           snapshot: { serverSeq: 2, data: { count: 0 } },
           history: [],
-          replays: [
+          lastClientNumber: 4, clients: [
             replay("client-1", 1, 1),
             replay("client-1", 1, 2),
-          ],
+          ].map((savedReplay) => ({ clientId: savedReplay.batch.clientId, replay: savedReplay })),
         }),
       /clientId must not be duplicated/
     );
@@ -1447,7 +1473,7 @@ describe("server checkpoint", () => {
         restore({
           snapshot: { serverSeq: 0, data: { count: 0 } },
           history: [],
-          replays: [replay("client-1", 0, 1)],
+          lastClientNumber: 4, clients: [replay("client-1", 0, 1)].map((savedReplay) => ({ clientId: savedReplay.batch.clientId, replay: savedReplay })),
         }),
       /safe integer greater than or equal to 1/
     );
@@ -1479,7 +1505,7 @@ describe("server checkpoint", () => {
               },
             },
             history: [],
-            replays: [],
+            lastClientNumber: 0, clients: [],
           },
         }),
       /ranges must not overlap/

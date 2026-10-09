@@ -56,7 +56,8 @@ function setup(historyLimit = 1000) {
 
   function note(action: string): void { trace.push(action); coverage.add(action.split(" ", 1)[0]!); }
 
-  function client(clientId: string) {
+  function client() {
+    const clientId = server.openClient();
     const emitted: Batch[] = [];
     let changes = 0;
     function create(checkpoint?: ClientCheckpoint<Shape>) {
@@ -85,7 +86,7 @@ function setup(historyLimit = 1000) {
     return { clientId, emitted, doc: create(), create, watermark: 0,
       lastBunchSeqs: { items: 0, body: 0 }, get changes() { return changes; } };
   }
-  const clients = [client("a"), client("b"), client("c")];
+  const clients = [client(), client(), client()];
   type Client = typeof clients[number];
 
   function deliver(target: Client, count = Infinity): boolean {
@@ -182,8 +183,8 @@ function setup(historyLimit = 1000) {
     assert.equal(checkpoint.snapshot.serverSeq, commits.length);
     assert.deepEqual(checkpoint.snapshot, snapshots.at(-1));
     assert.deepEqual(checkpoint.history, historyLimit === 0 ? [] : commits.slice(-historyLimit));
-    assert.equal(checkpoint.replays.length, latest.size);
-    for (const replay of checkpoint.replays) assert.deepEqual(replay, latest.get(replay.batch.clientId));
+    assert.equal(checkpoint.clients.length, clients.length);
+    for (const entry of checkpoint.clients) assert.deepEqual(entry.replay, latest.get(entry.clientId) ?? null);
     assert.equal([...latest.values()].reduce((sum, entry) => sum + entry.batch.seq, 0), commits.length);
     let authoritativeCount = 0;
     for (const commit of commits) {

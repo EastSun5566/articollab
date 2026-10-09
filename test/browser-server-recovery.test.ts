@@ -162,7 +162,7 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     assert.deepEqual(store.loadRecoveryServer()?.checkpoint, authoritative);
     const requests: string[] = [];
     a = await connect(origin, { storage, fetch: async (input, init) => {
-      requests.push(init?.method === "POST" ? "POST" : new URL((input instanceof Request ? input.url : input.toString())).pathname);
+      requests.push(init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients") ? "POST" : new URL((input instanceof Request ? input.url : input.toString())).pathname);
       return fetch(input, init);
     } });
     assert.deepEqual(requests, []);
@@ -201,7 +201,8 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     assert.equal(a.doc.replayConflict?.batch.seq, 2);
     const saved = a.doc.checkpoint();
     const allocation = saved.lastBunchSeqs;
-    const peer: Batch = { clientId: "peer", seq: 1, operations: [{ type: "value/set", path: "count", value: 10 }] };
+    const peerConnection = await connect(host.url, { storage: memory() });
+    const peer: Batch = { clientId: peerConnection.doc.checkpoint().clientId, seq: 1, operations: [{ type: "value/set", path: "count", value: 10 }] };
     assert.equal(await post(host.url, "/batches", peer, a.documentId), 204);
     const before = store.loadRecoveryServer()?.checkpoint;
     assert.equal(await post(host.url, "/batches", first, a.documentId), 204); // A rejection cannot become acceptance.
@@ -239,7 +240,7 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     const lost = new Error("Accepted POST response lost");
     let a = await connect(origin, { storage, fetch: async (input, init) => {
       const response = await fetch(input, init);
-      if (init?.method === "POST") { await response.text(); throw lost; }
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) { await response.text(); throw lost; }
       return response;
     } });
     mixed(a.doc);
@@ -254,7 +255,7 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     const posts: number[] = [];
     let gets = 0;
     a = await connect(origin, { storage, fetch: async (input, init) => {
-      if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
       else gets++;
       return fetch(input, init);
     } });
@@ -342,12 +343,12 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     const origin = host.url;
     await host.close();
     const server = createServer(Board, { historyLimit: 0 });
-    server.receive({ clientId: "peer", seq: 1, operations: [{ type: "value/set", path: "count", value: 10 }] });
+    server.receive({ clientId: server.openClient(), seq: 1, operations: [{ type: "value/set", path: "count", value: 10 }] });
     store.saveRecoveryServer({ documentId: a.documentId, checkpoint: server.checkpoint() }); // Same lineage; deliberately retained no catch-up history.
     host = await start(portFromUrl(origin));
     let posts = 0;
     a = await connect(origin, { storage, fetch: async (input, init) => {
-      if (init?.method === "POST") posts++;
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts++;
       return fetch(input, init);
     } });
     const saved = storage.getItem(key);

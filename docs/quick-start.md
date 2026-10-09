@@ -2,9 +2,9 @@
 
 Use this example to see exactly when a local edit becomes authoritative. It buffers one batch, submits it manually, then delivers the commit to the writer and a peer.
 
-## Install the beta
+## Version
 
-In an ESM project (`"type": "module"`), install `articollab@beta` with `pnpm add articollab@beta`. Save the example below as `counter.ts` and run it with Node.js 24+: `node counter.ts`.
+These instructions target the unpublished `0.2.0-beta.0` checkout. Older npm betas use a different session/checkpoint contract; do not mix them. Use an ESM project (`"type": "module"`).
 
 ## Run from a local checkout
 
@@ -15,7 +15,7 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-Save the following complete snippet as `counter.ts` in the checkout root and run `node counter.ts`. The self-package import resolves the built ESM entrypoint. Outside the checkout, use the npm beta or a local tarball made with `pnpm pack`.
+Save the following complete snippet as `counter.ts` in the checkout root and run `node counter.ts`. The self-package import resolves the built ESM entrypoint. Outside the checkout, install a matching local tarball made with `pnpm pack`.
 
 <!-- checked-counter:start -->
 ```ts
@@ -29,10 +29,10 @@ type Batch = ClientBatch<DocumentOperation<typeof Counter.definition>>;
 const outgoing: Batch[] = [];
 const server = createServer(Counter);
 const doc = createClient(Counter, {
-  clientId: "writer",
+  clientId: server.openClient(),
   onBatch: (batch) => { outgoing.push(batch); },
 });
-const peer = createClient(Counter, { clientId: "peer", onBatch() {} });
+const peer = createClient(Counter, { clientId: server.openClient(), onBatch() {} });
 
 doc.transact(() => {
   doc.state.count.value = 2;
@@ -67,7 +67,7 @@ Pending: 0
 
 ## Follow the data
 
-The two assignments take effect immediately and become **one batch with two operations**. `onBatch` only buffers that batch; it does not provide a built-in transport.
+`openClient()` issues one writer identity and reserves its server session. The two assignments take effect immediately and become **one batch with two operations**. `onBatch` only buffers that batch; it does not provide a built-in transport.
 
 `server.receive(batch)` creates a receipt containing the authoritative commit. Deliver **the commit**, not the receipt, to every relevant client in global sequence order. At the writer, that commit also acknowledges its pending batch. The final value remains 3, so the own ack need not produce another change event.
 

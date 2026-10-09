@@ -21,7 +21,7 @@ Use one writer per client ID/document lineage and one writer per checkpoint file
 
 ## In-memory broadcast walkthrough
 
-This fuller version of the quick start applies a synchronous policy and queues commit delivery before handling listener-created commits. The registry is application-owned; the library does not manage clients. Fresh clients hydrate from the current snapshot. Retry routing assumes the source is still registered and waiting for that commit; applications must avoid duplicate delivery and catch up earlier commits first.
+This fuller version of the quick start applies a synchronous policy and queues commit delivery before handling listener-created commits. The delivery registry is application-owned; the library separately retains open writer sessions. Fresh clients hydrate from the current snapshot. Retry routing assumes the source is still registered and waiting for that commit; applications must avoid duplicate delivery and catch up earlier commits first.
 
 ```ts
 import {
@@ -75,7 +75,8 @@ function send(batch: ClientBatch<DocumentOperation<Shape>>): void {
   }
 }
 
-function connect(clientId: string): ClientDocument<Shape> {
+function connect(): ClientDocument<Shape> {
+  const clientId = server.openClient();
   const doc = createClient(Board, {
     clientId,
     snapshot: server.snapshot(),
@@ -85,7 +86,7 @@ function connect(clientId: string): ClientDocument<Shape> {
   return doc;
 }
 
-const doc = connect(crypto.randomUUID());
+const doc = connect();
 
 doc.state.count.value = 1;
 doc.state.items.push("Write tests");
@@ -102,7 +103,7 @@ const unsubscribe = doc.on("change", (event) => {
   console.log(event.origin, doc.state.count.value);
 });
 
-const lateDoc = connect(crypto.randomUUID());
+const lateDoc = connect();
 console.log(lateDoc.state.count.value); // 3
 console.log(lateDoc.state.items.toArray()); // ["Design API", "Write tests"]
 console.log(lateDoc.state.body.toString()); // "Hello😀"
@@ -126,13 +127,13 @@ import { Board, createExampleNetwork } from "./examples/resume.ts";
 
 const server = createServer(Board, { checkpoint: serverCheckpoint });
 const network = createExampleNetwork(server);
-const connection = network.connect(clientCheckpoint.clientId, clientCheckpoint);
+const connection = network.connect(clientCheckpoint);
 if (!connection.resume()) {
   // Preserve connection.doc.checkpoint(); inspect replayConflict or handle a history gap.
 }
 ```
 
-Without a checkpoint, `connect(clientId)` starts live from the server snapshot. With a checkpoint, it starts disconnected and does not resend anything. `disconnect()` stops incoming and outgoing delivery; local mutations remain in the document's pending batches.
+Without a checkpoint, `connect()` starts live from the server snapshot. With a checkpoint, it starts disconnected and does not resend anything. `disconnect()` stops incoming and outgoing delivery; local mutations remain in the document's pending batches.
 
 `resume()` first checks whether the server can fill the document's watermark gap. If not, it returns `false`, leaves the connection disconnected, and neither submits pending work nor replaces the snapshot. Otherwise it enables incoming delivery, applies the entire catch-up in one queue job, and repeatedly reads the **current** checkpoint's earliest pending batch, submitting and completing delivery before selecting the next one. After the complete catch-up, and before each submission, a remaining `replayConflict` returns `false` and leaves recovery offline without discarding pending work. A later resume can try catch-up again. Temporary conflicts within the prefix do not interrupt it: a later own commit may clear them. An accepted batch whose acknowledgement was lost is removed during catch-up rather than submitted again. Own acknowledgements need not emit a change for this loop to continue.
 
@@ -168,7 +169,7 @@ import { Board } from "./examples/resume.ts";
 import { createAsyncExampleNetwork } from "./examples/async-resume.ts";
 
 const network = createAsyncExampleNetwork(createServer(Board));
-const connection = network.connect("client-a");
+const connection = network.connect();
 connection.doc.state.count.value = 1; // Optimistic state changes immediately.
 await network.idle(); // Includes acknowledgement delivery and listener-created work.
 
@@ -186,7 +187,7 @@ Each live client has at most one outbound pump. It selects the earliest **curren
 
 Both in-memory networks pause automatic outbound work while blocked, but keep incoming delivery active for live clients and leave peers usable. Queued sends recheck current pending state before server application. A subsequent incoming commit that clears the conflict restarts live pumping. Explicit `submit(batch)` remains an application/test action, not automatic conflict repair. Already-accepted work cannot be recalled.
 
-`connect(clientId, checkpoint?)` is synchronous and requires the network to be idle. Without a checkpoint it creates a live client from a JSON-decoded snapshot; with one it restores a disconnected client. Initial snapshot creation is in-process, not an asynchronous network handshake. `disconnect()` stops subsequent sends and incoming application, but an already-started request may still reach the server. Await `network.idle()` after disconnecting before replacing the stopped writer with its latest checkpoint.
+`connect(checkpoint?)` is synchronous and requires the network to be idle. Without a checkpoint it creates a live client from a JSON-decoded snapshot; with one it restores a disconnected client. Fresh creation first opens the server session and, when configured, saves it before returning the client. Restore uses the saved ID without reopening. `disconnect()` stops subsequent sends and incoming application, but an already-started request may still reach the server. Await `network.idle()` after disconnecting before replacing the stopped writer with its latest checkpoint.
 
 `resume(): Promise<boolean>` also requires idle at entry. It buffers local edits while the server atomically obtains catch-up, queues the entire prefix, and enables subscription. That server job contains no delivery awaits: peers may generate new commits while catch-up delivery is paused, but those commits queue after the prefix in the recovering client's inbox. Resume drains queued incoming updates before checking for blocked replay and submitting the latest pending work. Insufficient history or a remaining replay conflict returns `false` and leaves recovery offline without submitting or replacing pending work; conflict is not network failure and a later resume can try again. Reentrant resume and disconnect during recovery are rejected.
 
@@ -221,21 +222,21 @@ const network = createAsyncExampleNetwork(server, {
   saveClientCheckpoint: store.saveClient,
   saveServerCheckpoint: store.saveServer,
 });
-const savedClient = store.loadClient("client-a");
-const connection = network.connect("client-a", savedClient ?? undefined);
+const savedClient = store.loadClient("client-1");
+const connection = network.connect(savedClient ?? undefined);
 if (savedClient !== null && !(await connection.resume())) {
   // Keep the saved pending work; inspect replayConflict or handle a history gap.
 }
 await network.idle();
 ```
 
-The example-only `createCheckpointStore(directory)` requires an existing directory. It provides `loadServer()`, `saveServer(checkpoint)`, `loadClient(clientId)`, and `saveClient(checkpoint)`. Loads read only final checkpoint files, parse JSON, and use the existing checkpoint decoders; only a missing file returns `null`. Corrupt JSON, invalid checkpoints, mismatched client IDs, and other filesystem errors throw rather than silently starting fresh. Use a new client ID for a genuinely new client. If an existing writer's client file is missing, do not reset its identity or discard its pending work.
+The example-only `createCheckpointStore(directory)` requires an existing directory. It provides `loadServer()`, `saveServer(checkpoint)`, `loadClient(clientId)`, and `saveClient(checkpoint)`. Loads read only final checkpoint files, parse JSON, and use the existing checkpoint decoders; only a missing file returns `null`. Corrupt JSON, invalid checkpoints, mismatched client IDs, and other filesystem errors throw rather than silently starting fresh. Open a new session for a genuinely new client; restore an existing writer with its saved issued ID. If an existing writer's client file is missing, do not reset its identity or discard its pending work.
 
 The asynchronous helper accepts optional `saveClientCheckpoint` and `saveServerCheckpoint` callbacks. They synchronously return `undefined`, so an async callback fails type checking. They are trusted application code: save only, without reentering the network or mutating documents. When omitted, the helper behaves as before.
 
 Saving happens at these boundaries:
 
-- Connect saves the initial or restored client before registering it.
+- Fresh connect opens and saves the server session before saving the initial client. Restore saves the client without reopening it.
 - Every local batch saves the complete current client checkpoint before starting a send, including offline and recovery edits.
 - Successful incoming application saves the latest client checkpoint, even for a silent own acknowledgement. Already-consumed commits are skipped.
 - Each new server result is saved before any delivery is queued, including rejection and transformation. A replay receipt does not save the server again.
@@ -243,6 +244,8 @@ Saving happens at these boundaries:
 Local state changes optimistically before saving, and a save failure may throw from the mutation itself; the batch and visible state are not rolled back. Saving failures stop the network and reject waiting operations. Do not reuse an advanced in-memory server after its save fails: rebuild from the last successfully saved files. If an incoming listener throws, preserve that error and do not attempt an extra save that could mask it. Only successfully saved work is promised recoverable.
 
 Files are `server.json` and `client-<hex>.json`, where `<hex>` is the lowercase hex encoding of the client ID's UTF-16LE bytes. For example, `a` uses `client-6100.json` and `A` uses `client-4100.json`. This lossless encoding avoids case and Unicode-normalization collisions on local filesystems. Each save serializes completely, writes a same-directory `<target>.tmp` file, then renames it over the final checkpoint file; newly created files use mode `0o600`. Orphan temporary files are ignored on load. Writes block the event loop and require one writer per file in a trusted local directory. This verifies process interruption and restart, not power-loss durability: there is no fsync/directory-sync protocol, cross-file transaction, lock, migration, production storage adapter, or recovery beyond retained history.
+
+Fresh HTTP registration is not idempotent. If its response or initial client save is lost, an unused open session may remain; the trusted application owns eventual closure. Disconnect/reload does not close sessions. There is no HTTP close endpoint; call `server.closeClient(id)` only after stopping the writer and handling its work, then save the server.
 
 ## Localhost HTTP sync example
 
@@ -259,7 +262,7 @@ import { startHttpExampleServer, connectHttpExampleClient } from "./examples/htt
 
 const host = await startHttpExampleServer(createServer(Board));
 try {
-  const client = await connectHttpExampleClient(host.url, "client-a");
+  const client = await connectHttpExampleClient(host.url);
   client.doc.state.items.push("Saved"); // Optimistic and pending; no automatic send.
   if (!(await client.sync())) {
     // Preserve client.doc.checkpoint(); inspect replayConflict or handle a history gap.
@@ -273,6 +276,7 @@ The host listens only on `127.0.0.1`, using an automatically assigned port. Its 
 
 | Endpoint | Successful response |
 | --- | --- |
+| `POST /clients` | `201`: `{ clientId, snapshot }`, body must be `{}`; saves registration before responding |
 | `GET /snapshot` | `200`: the current document snapshot |
 | `POST /batches` | `204`: no body, including for a valid retry |
 | `POST /rejections` | `204`: no body, including for a valid retry; the original batch is passed to `server.reject()` |
@@ -280,7 +284,7 @@ The host listens only on `127.0.0.1`, using an automatically assigned port. Its 
 
 Both POST routes require `application/json` and at most 1 MiB of actual UTF-8 bytes, including chunked bodies. JSON and wire validation use the existing decoder before runtime handling. Invalid JSON/wire/watermarks return `400`; runtime receive/reject failures return `409` without distinguishing their causes. Oversized bodies return `413`, unsupported content types `415`, unknown routes `404`, incorrect methods `405`, and unexpected handler errors `500`. Error bodies contain only `{ error: string }`, not stack traces. The server's total order is synchronous `receive()`/`reject()` call order after reading each body, not initial HTTP request arrival. There is no subscription registry or broadcast. Neither POST route authenticates or authorizes callers: `clientId` is not proof of identity, and the host is only for trusted localhost use.
 
-`connectHttpExampleClient(url, clientId, options?)` fetches and decodes a snapshot for a fresh client. With `options.checkpoint`, it instead restores the complete client checkpoint using the existing runtime validation, without making any HTTP requests or automatically submitting pending work. The checkpoint must match `clientId`. Its optional `fetch` override is for controlling requests in tests; by default it uses native fetch. The client knows only the URL, not the server object. Updates after the snapshot or checkpoint watermark are caught by the first sync.
+`connectHttpExampleClient(url, options?)` registers a fresh writer through `POST /clients`, then decodes its issued identity and snapshot. With `options.checkpoint`, it instead restores the complete client checkpoint using the existing runtime validation, without making any HTTP requests or automatically submitting pending work. The restored identity comes from the checkpoint; its server session must remain open. Its optional `fetch` override is for controlling requests in tests; by default it uses native fetch. The client knows only the URL, not the server object. Updates after the snapshot or checkpoint watermark are caught by the first sync.
 
 `sync(): Promise<boolean>` first fetches catch-up from the latest checkpoint watermark, validates and applies the whole ordered prefix, then posts the earliest current pending batch. It fetches catch-up again to acknowledge that batch before rereading pending work. Listener-created mutations wait behind earlier batches; silent acknowledgements do not depend on change events. POST success alone never applies a commit: an own result at sequence 12 must not bypass missing sequence 11. A successful submission without a subsequent catch-up acknowledgement throws instead of looping.
 
@@ -319,7 +323,7 @@ const checkpoint = decodeClientCheckpoint(
   Board,
   JSON.parse(JSON.stringify(client.doc.checkpoint()))
 );
-const restored = await connectHttpExampleClient(host.url, "client-a", { checkpoint });
+const restored = await connectHttpExampleClient(host.url, { checkpoint });
 // Optimistic state and pending edits are already restored, but nothing has been sent.
 if (!(await restored.sync())) {
   // Preserve restored.doc.checkpoint(); do not discard pending with a fresh snapshot.
@@ -356,8 +360,8 @@ const server = createServer(Board, {
 });
 const host = await startHttpExampleServer(server, { saveServerCheckpoint: store.saveServer });
 try {
-  const savedClient = store.loadClient("client-a");
-  const client = await connectHttpExampleClient(host.url, "client-a", {
+  const savedClient = store.loadClient("client-1");
+  const client = await connectHttpExampleClient(host.url, {
     ...(savedClient === null ? {} : { checkpoint: savedClient }),
     saveClientCheckpoint: store.saveClient,
   });
@@ -410,7 +414,7 @@ node examples/browser-http-smoke/server.ts
 
 Open the printed localhost URL in your browser. Unlike the core smoke above, the authoritative server runs in Node; the two browser clients use native `fetch` for snapshots, batch submission, ordered commit catch-up and explicit rejection. The page and fixed ESM assets share the API's origin, so no CORS, CDN, bundler or Node polyfill is needed. Both Node and browser wrappers use the same example-only synchronization controller; their initialization remains separate so source-based Node tests do not require a production build.
 
-Three fixed scenarios check mixed optimistic edits and silent acknowledgements, JSON checkpoint restore with tombstones and pending work, and rejection followed by blocked recovery and resumed editing. Each reports client/server state, watermarks, pending sequences and conflicts; failures stop the run and appear on the page. **Run again** and reload create new UUID client namespaces and start from the current server snapshot, not a reset document. The demo policy rejects only the first batch of each `reject-` client, then accepts later work. Assume no other writers while a smoke run is in progress.
+Three fixed scenarios check mixed optimistic edits and silent acknowledgements, JSON checkpoint restore with tombstones and pending work, and rejection followed by blocked recovery and resumed editing. Each reports client/server state, watermarks, pending sequences and conflicts; failures stop the run and appear on the page. **Run again** and reload open new server-issued writer sessions and start from the current server snapshot, not a reset document. The demo policy rejects a first batch inserting `"Discarded"`, then accepts later work. Assume no other writers while a smoke run is in progress.
 
 ```sh
 pnpm build
@@ -437,11 +441,11 @@ node examples/browser-reload-recovery/server.ts /existing/checkpoint-directory 3
 
 Stop and restart using exactly the same directory and port, then reload the original tab and manually sync. The host restores `server.json`, including authoritative state, tombstones, retry results and retained commit history. Client checkpoints remain in sessionStorage, not server-side files. Keeping the port preserves the browser origin; the recovery envelope separately identifies the document, but neither coordinates writers. With no arguments the host remains in-memory with an automatically assigned port. Persistent CLI mode requires both arguments and a decimal port from 1 to 65535; occupied ports fail rather than silently changing the origin. Example-only host helpers additionally accept `port: 0` for initial automatic allocation; callers must reuse the returned port on restart.
 
-This recovery example saves `{ documentId, checkpoint }` in both `server.json` and the existing sessionStorage key. `documentId` is a canonical lowercase UUID v4: a fresh host creates it once and a persistent restart keeps it. The ID and server checkpoint are replaced together in one file, not separate metadata files. The page displays the ID and complete client recovery envelope for export. Core checkpoint and wire formats are unchanged. The store's example-only `loadRecoveryServer()` / `saveRecoveryServer()` handle this envelope; the original `loadServer()` / `saveServer()` still handle raw checkpoints for other demos. Use separate directories for these incompatible example formats. Legacy raw recovery checkpoints, missing or invalid IDs, extra fields and corrupt data throw without migration, overwriting or fresh fallback; preserve old data separately rather than attaching it to a fresh document.
+This recovery example saves `{ documentId, checkpoint }` in both `server.json` and the existing sessionStorage key. `documentId` is a canonical lowercase UUID v4: a fresh host creates it once and a persistent restart keeps it. The ID and server checkpoint are replaced together in one file, not separate metadata files. The page displays the ID and complete client recovery envelope for export. The envelope adds no fields to the core checkpoint itself; server checkpoints use the new 0.2 writer-session format described in the reference. The store's example-only `loadRecoveryServer()` / `saveRecoveryServer()` handle this envelope; the original `loadServer()` / `saveServer()` still handle raw checkpoints for other demos. Use separate directories for these incompatible example formats. Legacy raw recovery checkpoints, missing or invalid IDs, extra fields and corrupt data throw without migration, overwriting or fresh fallback; preserve old data separately rather than attaching it to a fresh document.
 
-The recovery host enables the HTTP helper's optional `documentId` guard. API responses carry `X-Articollab-Document-Id`; a fresh client learns it from `/snapshot`, and requests to `/commits`, `/batches` and `/rejections` must carry the same ID. Missing or mismatched request IDs return `409` before history access, resolver execution or batch processing. The recovery client's injected fetch wrapper checks response identity before decoding, including `204` responses; missing, invalid or different IDs stop the connection and preserve pending and stored work. Restore still makes no initialization request: identity is verified on the next manual sync or cancellation. Other HTTP demos remain unguarded and unchanged. The shared synchronization controller is not duplicated or modified.
+The recovery host enables the HTTP helper's optional `documentId` guard. API responses carry `X-Articollab-Document-Id`; a fresh client learns it from `/clients`, and requests to `/commits`, `/batches` and `/rejections` must carry the same ID. Missing or mismatched request IDs return `409` before history access, resolver execution or batch processing. The recovery client's injected fetch wrapper checks response identity before decoding, including `204` responses; missing, invalid or different IDs stop the connection and preserve pending and stored work. Restore still makes no initialization request: identity is verified on the next manual sync or cancellation. Other HTTP demos remain unguarded and unchanged. The shared synchronization controller is not duplicated or modified.
 
-A fresh client has no expected ID: it trusts the first valid snapshot header as its initial identity. A different valid UUID substituted there cannot be identified at initialization; the next request to a correctly guarded host rejects the mismatch before pending submission. This is accidental-lineage protection, not protection against a malicious server or response rewriting.
+A fresh client has no expected ID: it trusts the first valid registration header as its initial identity. A different valid UUID substituted there cannot be identified at initialization; the next request to a correctly guarded host rejects the mismatch before pending submission. This is accidental-lineage protection, not protection against a malicious server or response rewriting.
 
 Bootstrap loads and validates the checkpoint, saves it, then starts listening. Only a missing `server.json` creates a fresh server; malformed JSON, invalid checkpoints and filesystem errors stop startup without fresh fallback. Every new accepted or rejected batch is saved before HTTP success; retries do not write again. A server save failure returns an error and disables that host. Close it and build a new host from the last successfully saved file; the advanced in-memory state must not be reused. This uses the existing synchronous temporary-file replacement without fsync or power-loss durability guarantees.
 

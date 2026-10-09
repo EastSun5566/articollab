@@ -3,7 +3,7 @@ import {
   createClient, decodeClientCheckpoint, decodeServerCommit, decodeSnapshot,
   defineDocument, list, text, value,
 } from "articollab";
-import { createHttpSyncController, readHttpResponse } from "../http-sync-controller.js";
+import { createHttpSyncController, readHttpResponse, readClientRegistration } from "../http-sync-controller.js";
 
 export const Board = defineDocument({
   count: value(0),
@@ -27,15 +27,18 @@ function encoded(input) {
 function same(actual, expected, message) { check(encoded(actual) === encoded(expected), message); }
 
 /** Browser-only initialization; the manual synchronization loop is shared with Node.
- * @param {string} url @param {string} clientId
+ * @param {string} url
  * @param {{fetch?: typeof globalThis.fetch, checkpoint?: Checkpoint,
  *   saveClientCheckpoint?: (checkpoint: Checkpoint) => undefined}} [options]
  */
-export async function connectBrowserHttpClient(url, clientId, options = {}) {
+export async function connectBrowserHttpClient(url, options = {}) {
   const fetch = options.fetch ?? globalThis.fetch;
+  const registration = options.checkpoint === undefined ? await readClientRegistration(url, fetch) : undefined;
   const initial = options.checkpoint === undefined
-    ? { snapshot: decodeSnapshot(Board, JSON.parse(await readHttpResponse(url, fetch, "/snapshot", 200))) }
+    ? { snapshot: decodeSnapshot(Board, registration?.snapshot) }
     : { checkpoint: options.checkpoint };
+  const clientId = options.checkpoint?.clientId ?? registration?.clientId;
+  if (clientId === undefined) throw new Error("Missing client registration");
   const doc = createClient(Board, { clientId, ...initial,
     onBatch() { saveClient(); }, // Save offline pending; no automatic submission.
   });
@@ -75,10 +78,9 @@ function serverView(saved) {
  */
 export async function runBrowserHttpSmoke(url, options = {}) {
   const fetch = options.fetch ?? globalThis.fetch;
-  const namespace = crypto.randomUUID(); // A rerun must not reuse an old writer's identity.
-  /** @param {string} id @param {Checkpoint} [checkpoint] */
-  function connect(id, checkpoint) {
-    return connectBrowserHttpClient(url, id, { fetch, ...(checkpoint === undefined ? {} : { checkpoint }) });
+  /** @param {Checkpoint} [checkpoint] */
+  function connect(checkpoint) {
+    return connectBrowserHttpClient(url, { fetch, ...(checkpoint === undefined ? {} : { checkpoint }) });
   }
   async function snapshot() {
     return decodeSnapshot(Board, JSON.parse(await readHttpResponse(url, fetch, "/snapshot", 200)));
@@ -106,10 +108,11 @@ export async function runBrowserHttpSmoke(url, options = {}) {
     return saved;
   }
 
-  const mixed = report("Mixed optimistic edits and HTTP catch-up", ["mixed-a-" + namespace, "mixed-b-" + namespace]);
+  const mixed = report("Mixed optimistic edits and HTTP catch-up", []);
   {
-    const a = await connect(mixed.clientIds[0]);
-    const b = await connect(mixed.clientIds[1]);
+    const a = await connect();
+    const b = await connect();
+    mixed.clientIds.push(a.doc.checkpoint().clientId, b.doc.checkpoint().clientId);
     const baseline = await snapshot();
     await record(mixed, "Fresh HTTP snapshots", a.doc, b.doc);
     let ownChanges = 0;
@@ -143,10 +146,11 @@ export async function runBrowserHttpSmoke(url, options = {}) {
     await record(mixed, "Converged through ordered HTTP acknowledgements", a.doc, b.doc);
   }
 
-  const restored = report("JSON checkpoint restore over HTTP", ["restore-a-" + namespace, "restore-b-" + namespace]);
+  const restored = report("JSON checkpoint restore over HTTP", []);
   {
-    let a = await connect(restored.clientIds[0]);
-    const b = await connect(restored.clientIds[1]);
+    let a = await connect();
+    const b = await connect();
+    restored.clientIds.push(a.doc.checkpoint().clientId, b.doc.checkpoint().clientId);
     const baseline = await snapshot();
     a.doc.transact(() => {
       a.doc.state.items.push("Temporary");
@@ -169,7 +173,7 @@ export async function runBrowserHttpSmoke(url, options = {}) {
     await record(restored, "Tombstones saved; mixed pending not submitted", a.doc, b.doc);
     const checkpoint = decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(a.doc.checkpoint())));
     const before = view(a.doc);
-    a = await connect(restored.clientIds[0], checkpoint); // Retire the old writer; no pump is running.
+    a = await connect(checkpoint); // Retire the old writer; no pump is running.
     same(a.doc.checkpoint(), checkpoint, "restored checkpoint changed");
     same(view(a.doc), before, "restore changed optimistic state or ID progress");
     await record(restored, "New writer hydrated from JSON checkpoint", a.doc, b.doc);
@@ -186,10 +190,11 @@ export async function runBrowserHttpSmoke(url, options = {}) {
     await record(restored, "Pending drained; later IDs and sequences accepted", a.doc, b.doc);
   }
 
-  const rejected = report("HTTP rejection and blocked recovery", ["reject-" + namespace, "recovery-peer-" + namespace]);
+  const rejected = report("HTTP rejection and blocked recovery", []);
   {
-    const a = await connect(rejected.clientIds[0]);
-    const b = await connect(rejected.clientIds[1]);
+    const a = await connect();
+    const b = await connect();
+    rejected.clientIds.push(a.doc.checkpoint().clientId, b.doc.checkpoint().clientId);
     const baseline = await snapshot();
     a.doc.transact(() => {
       a.doc.state.count.value = baseline.data.count + 1;

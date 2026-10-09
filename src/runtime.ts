@@ -26,6 +26,7 @@ import type {
   ValueSchema,
 } from "./schema.ts";
 import { decodeClientCheckpoint, decodeServerCheckpoint } from "./wire.ts";
+import { clientNumber } from "./client-id.ts";
 import {
   applyOperations,
   initialStates,
@@ -129,7 +130,11 @@ export interface ServerCheckpoint<
   S extends SchemaShape = SchemaShape,
 > {
   readonly snapshot: DocumentSnapshot<S>;
-  readonly replays: readonly ServerReplayEntry<DocumentOperation<S>>[];
+  readonly lastClientNumber: number;
+  readonly clients: readonly {
+    readonly clientId: string;
+    readonly replay: ServerReplayEntry<DocumentOperation<S>> | null;
+  }[];
   readonly history: readonly ServerCommit<DocumentOperation<S>>[];
 }
 
@@ -165,7 +170,7 @@ export interface CreateServerOptions<S extends SchemaShape> {
   readonly resolve?: ServerResolver<S>;
   readonly checkpoint?: ServerCheckpoint<S>;
   readonly historyLimit?: number;
-  /** Maximum distinct clients ever successfully processed; undefined is unlimited. */
+  /** Maximum open writer sessions, including those without a batch. */
   readonly maxClients?: number;
 }
 
@@ -238,7 +243,8 @@ function restoreServerCheckpoint<S extends SchemaShape>(
   checkpoint: ServerCheckpoint<S>
 ): {
   readonly states: Map<string, CollectionState>;
-  readonly replays: Map<string, ServerReplayEntry<DocumentOperation<S>>>;
+  readonly clients: Map<string, ServerReplayEntry<DocumentOperation<S>> | null>;
+  readonly lastClientNumber: number;
   readonly history: readonly ServerCommit<DocumentOperation<S>>[];
   readonly nextServerSeq: number;
 } {
@@ -246,7 +252,8 @@ function restoreServerCheckpoint<S extends SchemaShape>(
   const owned = decodeServerCheckpoint(schema, checkpoint);
   return {
     states: initialStates(schema, owned.snapshot),
-    replays: new Map(owned.replays.map((entry) => [entry.batch.clientId, entry])),
+    clients: new Map(owned.clients.map((entry) => [entry.clientId, entry.replay])),
+    lastClientNumber: owned.lastClientNumber,
     history: owned.history,
     nextServerSeq: owned.snapshot.serverSeq + 1,
   };
@@ -639,7 +646,8 @@ export class ClientDocument<S extends SchemaShape> {
 /** A synchronous authoritative document that resolves and orders client batches. */
 export class ServerDocument<S extends SchemaShape> {
   private authoritativeStates: Map<string, CollectionState>;
-  private readonly replays: Map<string, ServerReplayEntry<DocumentOperation<S>>>;
+  private readonly clients: Map<string, ServerReplayEntry<DocumentOperation<S>> | null>;
+  private lastClientNumber: number;
   private readonly historyLimit: number;
   private readonly maxClients: number | undefined;
   private history: readonly ServerCommit<DocumentOperation<S>>[];
@@ -666,12 +674,13 @@ export class ServerDocument<S extends SchemaShape> {
       options.checkpoint === undefined
         ? undefined
         : restoreServerCheckpoint(schema, options.checkpoint);
-    if (maxClients !== undefined && restored !== undefined && restored.replays.size > maxClients) {
+    if (maxClients !== undefined && restored !== undefined && restored.clients.size > maxClients) {
       throw new Error("Checkpoint exceeds maxClients");
     }
     this.authoritativeStates =
       restored?.states ?? initialStates(schema, undefined);
-    this.replays = restored?.replays ?? new Map<string, ServerReplayEntry<DocumentOperation<S>>>();
+    this.clients = restored?.clients ?? new Map<string, ServerReplayEntry<DocumentOperation<S>> | null>();
+    this.lastClientNumber = restored?.lastClientNumber ?? 0;
     this.history =
       historyLimit === 0 ? [] : (restored?.history ?? []).slice(-historyLimit);
     this.nextServerSeq = restored?.nextServerSeq ?? 1;
@@ -683,11 +692,39 @@ export class ServerDocument<S extends SchemaShape> {
     return saveSnapshot<S>(this.authoritativeStates, this.nextServerSeq - 1);
   }
 
+  /** Opens a writer session. Disconnecting does not close it. */
+  openClient(): string {
+    if (this.receiving) throw new Error("Cannot call server.openClient() reentrantly");
+    if (this.maxClients !== undefined && this.clients.size >= this.maxClients) {
+      throw new Error("Server client capacity exhausted");
+    }
+    if (this.lastClientNumber === Number.MAX_SAFE_INTEGER) {
+      throw new Error("Client ID allocation exhausted");
+    }
+    const clientId = `client-${this.lastClientNumber + 1}`;
+    this.clients.set(clientId, null);
+    this.lastClientNumber++;
+    return clientId;
+  }
+
+  /** Permanently closes this writer session; pending work is caller-owned. */
+  closeClient(clientId: string): void {
+    if (this.receiving) throw new Error("Cannot call server.closeClient() reentrantly");
+    const number = clientNumber(clientId);
+    if (number === undefined || number > this.lastClientNumber) {
+      throw new TypeError("Unknown client ID");
+    }
+    this.clients.delete(clientId);
+  }
+
   /** Returns the state needed to restore this authoritative server. */
   checkpoint(): ServerCheckpoint<S> {
     return Object.freeze({
       snapshot: this.snapshot(),
-      replays: Object.freeze([...this.replays.values()]),
+      lastClientNumber: this.lastClientNumber,
+      clients: Object.freeze(
+        [...this.clients].map(([clientId, replay]) => Object.freeze({ clientId, replay }))
+      ),
       history: Object.freeze([...this.history]),
     });
   }
@@ -732,9 +769,10 @@ export class ServerDocument<S extends SchemaShape> {
 
     this.receiving = true;
     try {
-      const previous = this.replays.get(batch.clientId);
+      const previous = this.clients.get(batch.clientId);
+      if (previous === undefined) throw new Error("Client session is not open");
       const expectedClientSeq = (previous?.batch.seq ?? 0) + 1;
-      if (previous !== undefined && batch.seq === previous.batch.seq) {
+      if (previous !== null && batch.seq === previous.batch.seq) {
         if (!jsonEquals(batch.operations, previous.batch.operations)) {
           throw new Error(
             `Retry batch differs from the saved batch for ${batch.clientId} sequence ${batch.seq}`
@@ -749,9 +787,6 @@ export class ServerDocument<S extends SchemaShape> {
       }
       if (!Number.isSafeInteger(this.nextServerSeq)) {
         throw new Error("Server sequence exhausted");
-      }
-      if (previous === undefined && this.maxClients !== undefined && this.replays.size >= this.maxClients) {
-        throw new Error("Server client capacity exhausted");
       }
 
       const incomingOperations = freezeOperations(batch.operations);
@@ -796,7 +831,7 @@ export class ServerDocument<S extends SchemaShape> {
           : [...this.history, commit].slice(-this.historyLimit);
 
       this.authoritativeStates = nextAuthoritativeStates;
-      this.replays.set(
+      this.clients.set(
         ownedBatch.clientId,
         Object.freeze({ batch: ownedBatch, commit })
       );

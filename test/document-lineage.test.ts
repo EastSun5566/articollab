@@ -56,7 +56,7 @@ describe("browser recovery document lineage", { timeout: 30_000 }, () => {
 
   it("rejects missing and wrong request identities before runtime, while preserving cross-entry retry", async (t) => {
     const h = await host(t);
-    const batch = { clientId: "a", seq: 1, operations: [{ type: "value/set", path: "count", value: 5 }] };
+    const batch = { clientId: h.server.openClient(), seq: 1, operations: [{ type: "value/set", path: "count", value: 5 }] };
     const before = h.server.checkpoint();
     for (const id of [undefined, "invalid", crypto.randomUUID()]) {
       for (const path of ["/commits?since=0", "/batches", "/rejections"]) {
@@ -103,7 +103,7 @@ describe("browser recovery document lineage", { timeout: 30_000 }, () => {
     for (const action of ["sync", "rejectPending"] as const) {
       let posts = 0;
       const restored = await recovery.connectPersistentBrowserClient(next.url, { storage, fetch: async (input, init) => {
-        if (init?.method === "POST") posts++;
+        if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts++;
         return fetch(input, init);
       } });
       const message = storage.getItem(key);
@@ -121,7 +121,7 @@ describe("browser recovery document lineage", { timeout: 30_000 }, () => {
   });
 
   it("rejects missing, invalid and changed response IDs before snapshot, catch-up or acknowledgement", async (t) => {
-    for (const stage of ["snapshot", "catch-up", "POST"] as const) {
+    for (const stage of ["registration", "catch-up", "POST"] as const) {
       for (const replacement of [null, "invalid", crypto.randomUUID()]) {
         const h = await host(t);
         const storage = memory();
@@ -129,17 +129,17 @@ describe("browser recovery document lineage", { timeout: 30_000 }, () => {
         let badResponse: Response | undefined;
         const injected: typeof fetch = async (input, init) => {
           const response = await fetch(input, init);
-          if (init?.method === "POST") posts++;
+          if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts++;
           const path = new URL((input instanceof Request ? input.url : input.toString())).pathname;
-          if ((stage === "snapshot" && path === "/snapshot") || (stage === "catch-up" && path === "/commits") ||
-            (stage === "POST" && init?.method === "POST")) {
+          if ((stage === "registration" && path === "/clients") || (stage === "catch-up" && path === "/commits") ||
+            (stage === "POST" && init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients"))) {
             const headers = new Headers(response.headers);
             if (replacement === null) headers.delete(header); else headers.set(header, replacement);
             return badResponse = new Response(response.body, { status: response.status, headers });
           }
           return response;
         };
-        if (stage === "snapshot") {
+        if (stage === "registration") {
           if (replacement === null || replacement === "invalid") {
             await assert.rejects(recovery.connectPersistentBrowserClient(h.url, { storage, fetch: injected }), /lineage mismatch/);
             assert.equal(storage.getItem(key), null);
@@ -158,14 +158,14 @@ describe("browser recovery document lineage", { timeout: 30_000 }, () => {
           mixed(a.doc); mixed(a.doc);
           const saved = a.doc.checkpoint();
           const message = storage.getItem(key);
-          if (stage === "catch-up") h.server.receive({ clientId: "peer", seq: 1, operations: [{ type: "value/set", path: "count", value: 99 }] });
+          if (stage === "catch-up") h.server.receive({ clientId: h.server.openClient(), seq: 1, operations: [{ type: "value/set", path: "count", value: 99 }] });
           await assert.rejects(a.sync(), /lineage mismatch/);
           await assert.rejects(a.rejectPending(), /lineage mismatch/);
           assert.deepEqual(a.doc.checkpoint(), saved);
           assert.equal(storage.getItem(key), message);
         }
         assert.equal(posts, stage === "POST" ? 1 : 0);
-        assert.equal(h.resolves(), stage === "snapshot" ? 0 : 1); // Catch-up peer or accepted-but-unacknowledged POST.
+        assert.equal(h.resolves(), stage === "registration" ? 0 : 1); // Catch-up peer or accepted-but-unacknowledged POST.
         assert.ok(badResponse !== undefined);
         assert.ok(badResponse.body === null || badResponse.bodyUsed); // The rejected response cannot leak its body.
       }
@@ -218,7 +218,7 @@ describe("browser recovery document lineage", { timeout: 30_000 }, () => {
     const failure = new Error("Lost response");
     const a = await recovery.connectPersistentBrowserClient(origin, { storage, fetch: async (input, init) => {
       const response = await fetch(input, init);
-      if (init?.method === "POST") { await response.text(); throw failure; }
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) { await response.text(); throw failure; }
       return response;
     } });
     mixed(a.doc); mixed(a.doc);
@@ -230,7 +230,7 @@ describe("browser recovery document lineage", { timeout: 30_000 }, () => {
     http = await startBrowserReloadRecoveryServer({ directory: path, port: Number(new URL(origin).port) });
     const posts: number[] = [];
     const b = await recovery.connectPersistentBrowserClient(origin, { storage, fetch: async (input, init) => {
-      if (init?.method === "POST") posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts.push(decodeClientBatch(Board, JSON.parse(typeof init.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
       return fetch(input, init);
     } });
     assert.equal(b.documentId, a.documentId);

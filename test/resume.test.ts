@@ -46,8 +46,8 @@ describe("in-memory resume example", () => {
       return batch.operations;
     } });
     const network = createExampleNetwork(server);
-    const original = network.connect("a");
-    const peer = network.connect("b");
+    const original = network.connect();
+    const peer = network.connect();
     original.disconnect();
     original.doc.transact(() => {
       original.doc.state.count.value = 1;
@@ -62,14 +62,14 @@ describe("in-memory resume example", () => {
     const checkpoint = roundTrip(original.doc.checkpoint());
     network.submit(checkpoint.pendingBatches[0]!);
     peer.doc.state.count.value = 7;
-    const restored = network.connect("a", checkpoint);
+    const restored = network.connect(checkpoint);
     let changes = 0;
     restored.doc.on("change", () => changes++);
-    assert.deepEqual(received, ["a:1", "b:1"]);
+    assert.deepEqual(received, ["client-1:1", "client-2:1"]);
     assert.deepEqual(view(restored.doc), { count: 2, items: ["saved", "unsent"], body: "A😀!" });
     assert.equal(restored.resume(), true);
     assert.equal(changes, 0); // Own acks still remove pending batches.
-    assert.deepEqual(received, ["a:1", "b:1", "a:2"]);
+    assert.deepEqual(received, ["client-1:1", "client-2:1", "client-1:2"]);
     assert.deepEqual(restored.doc.checkpoint().pendingBatches, []);
     assert.deepEqual(view(restored.doc), view(peer.doc));
     assert.deepEqual(restored.doc.checkpoint().snapshot, server.snapshot());
@@ -78,7 +78,7 @@ describe("in-memory resume example", () => {
       restored.doc.state.items.push("live");
       restored.doc.state.body.insert(3, "B");
     });
-    assert.deepEqual(received, ["a:1", "b:1", "a:2", "a:3"]);
+    assert.deepEqual(received, ["client-1:1", "client-2:1", "client-1:2", "client-1:3"]);
     assert.deepEqual(restored.doc.checkpoint().lastBunchSeqs, { items: 2, body: 2 });
     assert.deepEqual(view(restored.doc), view(peer.doc));
     assert.deepEqual(peer.doc.checkpoint().snapshot, server.snapshot());
@@ -89,8 +89,8 @@ describe("in-memory resume example", () => {
   it("resumes after both server and client checkpoints have been restored from JSON", () => {
     const originalServer = createServer(Board);
     const originalNetwork = createExampleNetwork(originalServer);
-    const original = originalNetwork.connect("a");
-    const peer = originalNetwork.connect("b");
+    const original = originalNetwork.connect();
+    const peer = originalNetwork.connect();
     original.doc.transact(() => {
       original.doc.state.count.value = 1;
       original.doc.state.items.push("seed");
@@ -118,9 +118,9 @@ describe("in-memory resume example", () => {
       resolve: ({ batch }) => { calls++; return batch.operations; },
     });
     const network = createExampleNetwork(server);
-    const restoredPeer = network.connect("b", peerCheckpoint);
+    const restoredPeer = network.connect(peerCheckpoint);
     assert.equal(restoredPeer.resume(), true);
-    const restored = network.connect("a", clientCheckpoint);
+    const restored = network.connect(clientCheckpoint);
     assert.equal(restored.resume(), true);
     assert.equal(calls, 1); // Catch-up uses the saved result, not the new resolver.
     assert.deepEqual(view(restored.doc), { count: 3, items: ["restored"], body: "B😀" });
@@ -137,21 +137,21 @@ describe("in-memory resume example", () => {
       return batch.operations;
     } });
     const network = createExampleNetwork(server);
-    const original = network.connect("a");
-    const peer = network.connect("b");
+    const original = network.connect();
+    const peer = network.connect();
     original.disconnect();
     for (const value of [1, 2, 3]) original.doc.state.count.value = value;
     const checkpoint = roundTrip(original.doc.checkpoint());
     for (const batch of checkpoint.pendingBatches) network.submit(batch);
-    assert.equal(server.checkpoint().replays[0]!.batch.seq, 3);
-    const restored = network.connect("a", checkpoint);
+    assert.equal(server.checkpoint().clients[0]!.replay!.batch.seq, 3);
+    const restored = network.connect(checkpoint);
     assert.equal(restored.resume(), true);
     assert.equal(calls, 3);
     assert.deepEqual(restored.doc.checkpoint().pendingBatches, []);
     assert.deepEqual(view(restored.doc), view(peer.doc));
     restored.doc.state.count.value = 4;
     assert.equal(calls, 4);
-    assert.equal(server.checkpoint().replays[0]!.batch.seq, 4);
+    assert.equal(server.checkpoint().clients[0]!.replay!.batch.seq, 4);
   });
 
   it("uses accepted, rejected and transformed results without rerunning policy during catch-up", () => {
@@ -165,12 +165,12 @@ describe("in-memory resume example", () => {
           ? { ...operation, value: 5 } : operation);
       } });
       const network = createExampleNetwork(server);
-      const original = network.connect("a");
+      const original = network.connect();
       original.doc.transact(() => {
         original.doc.state.items.push("saved");
         original.doc.state.body.insert(0, "😀");
       });
-      const peer = network.connect("b");
+      const peer = network.connect();
       original.disconnect();
       original.doc.transact(() => {
         original.doc.state.count.value = 10;
@@ -179,7 +179,7 @@ describe("in-memory resume example", () => {
       });
       const checkpoint = roundTrip(original.doc.checkpoint());
       network.submit(checkpoint.pendingBatches[0]!);
-      const restored = network.connect("a", checkpoint);
+      const restored = network.connect(checkpoint);
       assert.equal(restored.resume(), true);
       assert.equal(calls, 2);
       assert.deepEqual(restored.doc.checkpoint().pendingBatches, []);
@@ -200,12 +200,12 @@ describe("in-memory resume example", () => {
       return batch.operations;
     } });
     const network = createExampleNetwork(server);
-    const original = network.connect("a");
-    const peer = network.connect("b");
+    const original = network.connect();
+    const peer = network.connect();
     original.disconnect();
     original.doc.state.items.push("pending");
     peer.doc.state.count.value = 7;
-    const restored = network.connect("a", roundTrip(original.doc.checkpoint()));
+    const restored = network.connect(roundTrip(original.doc.checkpoint()));
     let edited = false;
     restored.doc.on("change", (event) => {
       if (event.origin === "server" && !edited) {
@@ -223,7 +223,7 @@ describe("in-memory resume example", () => {
     assert.equal(restored.resume(), true);
     assert.equal(edited, true);
     assert.equal(peerEdited, true);
-    assert.deepEqual(received, ["b:1", "a:1", "b:2", "a:2"]);
+    assert.deepEqual(received, ["client-2:1", "client-1:1", "client-2:2", "client-1:2"]);
     assert.deepEqual(view(restored.doc), { count: 9, items: ["pending"], body: "" });
     assert.deepEqual(view(restored.doc), view(peer.doc));
     assert.equal(restored.doc.checkpoint().snapshot.serverSeq, 4);
@@ -234,15 +234,15 @@ describe("in-memory resume example", () => {
     const received: string[] = [];
     const server = createServer(Board, { resolve: ({ batch }) => {
       received.push(batch.clientId + ":" + batch.seq);
-      return batch.clientId === "a" && batch.seq === 1 ? [] : batch.operations;
+      return batch.clientId === "client-1" && batch.seq === 1 ? [] : batch.operations;
     } });
     const network = createExampleNetwork(server);
-    const original = network.connect("a");
-    const peer = network.connect("b");
+    const original = network.connect();
+    const peer = network.connect();
     original.disconnect();
     original.doc.state.count.value = 10;
     original.doc.state.items.push("older pending");
-    const restored = network.connect("a", roundTrip(original.doc.checkpoint()));
+    const restored = network.connect(roundTrip(original.doc.checkpoint()));
     let edited = false;
     restored.doc.on("change", (event) => {
       if (event.origin === "server" && !edited) {
@@ -253,7 +253,7 @@ describe("in-memory resume example", () => {
     });
     assert.equal(restored.resume(), true);
     assert.equal(edited, true);
-    assert.deepEqual(received, ["a:1", "a:2", "a:3"]);
+    assert.deepEqual(received, ["client-1:1", "client-1:2", "client-1:3"]);
     assert.deepEqual(view(restored.doc), { count: 30, items: ["older pending"], body: "" });
     assert.deepEqual(view(restored.doc), view(peer.doc));
     assert.deepEqual(restored.doc.checkpoint().pendingBatches, []);
@@ -262,12 +262,12 @@ describe("in-memory resume example", () => {
   it("finishes the entire catch-up before processing peer work created by a catch-up listener", () => {
     const server = createServer(Board);
     const network = createExampleNetwork(server);
-    const original = network.connect("a");
-    const peer = network.connect("b");
+    const original = network.connect();
+    const peer = network.connect();
     original.disconnect();
     peer.doc.state.count.value = 1;
     peer.doc.state.count.value = 2;
-    const restored = network.connect("a", roundTrip(original.doc.checkpoint()));
+    const restored = network.connect(roundTrip(original.doc.checkpoint()));
     const observed: number[] = [];
     restored.doc.on("change", (event) => {
       if (event.origin !== "server") return;
@@ -287,8 +287,8 @@ describe("in-memory resume example", () => {
       return batch.operations;
     } });
     const network = createExampleNetwork(server);
-    const original = network.connect("a");
-    const peer = network.connect("b");
+    const original = network.connect();
+    const peer = network.connect();
     original.disconnect();
     original.doc.state.count.value = 1;
     const checkpoint = roundTrip(original.doc.checkpoint());
@@ -301,7 +301,7 @@ describe("in-memory resume example", () => {
     const serverCheckpoint = server.checkpoint();
     network.submit(batch);
     assert.deepEqual(server.checkpoint(), serverCheckpoint);
-    const restored = network.connect("a", checkpoint);
+    const restored = network.connect(checkpoint);
     assert.equal(restored.resume(), true);
     const sourceCheckpoint = restored.doc.checkpoint();
     const peerCheckpoint = peer.doc.checkpoint();
@@ -319,14 +319,14 @@ describe("in-memory resume example", () => {
       return batch.operations;
     } });
     const network = createExampleNetwork(server);
-    const original = network.connect("a");
-    const peer = network.connect("b");
+    const original = network.connect();
+    const peer = network.connect();
     original.disconnect();
     original.doc.state.count.value = 1;
     const checkpoint = roundTrip(original.doc.checkpoint());
     peer.doc.state.count.value = 2;
     const serverCheckpoint = server.checkpoint();
-    const restored = network.connect("a", checkpoint);
+    const restored = network.connect(checkpoint);
     assert.equal(restored.resume(), false);
     assert.deepEqual(restored.doc.checkpoint(), checkpoint);
     restored.doc.state.count.value = 3;
@@ -345,12 +345,12 @@ describe("in-memory resume example", () => {
       return batch.operations;
     } });
     const network = createExampleNetwork(server);
-    const original = network.connect("a");
-    network.connect("b");
+    const original = network.connect();
+    network.connect();
     original.disconnect();
     original.doc.state.count.value = 1;
     original.doc.state.count.value = 2;
-    const restored = network.connect("a", roundTrip(original.doc.checkpoint()));
+    const restored = network.connect(roundTrip(original.doc.checkpoint()));
     assert.throws(() => restored.resume(), /policy failure/);
     const latest = roundTrip(restored.doc.checkpoint());
     assert.equal(latest.snapshot.serverSeq, 1);
@@ -359,7 +359,7 @@ describe("in-memory resume example", () => {
     assert.deepEqual(latest.pendingBatches.map((batch) => batch.seq), [2]);
     assert.throws(() => restored.resume(), /network stopped/);
     assert.throws(() => network.submit(latest.pendingBatches[0]!), /network stopped/);
-    assert.throws(() => network.connect("c"), /network stopped/);
+    assert.throws(() => network.connect(), /network stopped/);
     assert.deepEqual(received, [1, 2]);
     assert.equal(server.snapshot().serverSeq, 1);
   });
@@ -371,12 +371,12 @@ describe("in-memory resume example", () => {
       return batch.operations;
     } });
     const network = createExampleNetwork(server);
-    const original = network.connect("a");
-    const peer = network.connect("b");
+    const original = network.connect();
+    const peer = network.connect();
     original.disconnect();
     original.doc.state.count.value = 1;
     original.doc.state.count.value = 2;
-    const restored = network.connect("a", roundTrip(original.doc.checkpoint()));
+    const restored = network.connect(roundTrip(original.doc.checkpoint()));
     peer.doc.on("change", (event) => {
       if (event.origin === "server") {
         peer.doc.state.count.value = 9;
@@ -384,7 +384,7 @@ describe("in-memory resume example", () => {
       }
     });
     assert.throws(() => restored.resume(), /listener failure/);
-    assert.deepEqual(received, ["a:1"]);
+    assert.deepEqual(received, ["client-1:1"]);
     assert.equal(server.snapshot().serverSeq, 1);
     const sourceCheckpoint = roundTrip(restored.doc.checkpoint());
     const peerCheckpoint = roundTrip(peer.doc.checkpoint());
@@ -395,16 +395,16 @@ describe("in-memory resume example", () => {
     assert.equal(restored.doc.state.count.value, 2);
     assert.equal(peer.doc.state.count.value, 9);
     assert.throws(() => network.submit(peerCheckpoint.pendingBatches[0]!), /network stopped/);
-    assert.deepEqual(received, ["a:1"]);
+    assert.deepEqual(received, ["client-1:1"]);
   });
 
   it("lets the runtime reject future gaps and stops the network", () => {
     const server = createServer(Board);
     const network = createExampleNetwork(server);
-    const source = network.connect("a");
-    const peer = network.connect("b");
+    const source = network.connect();
+    const peer = network.connect();
     const missed: Batch = {
-      clientId: "external", seq: 1,
+      clientId: server.openClient(), seq: 1,
       operations: [{ type: "value/set", path: "count", value: 4 }],
     };
     server.receive(missed); // Bypass routing to deliberately create a gap.

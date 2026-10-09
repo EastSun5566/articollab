@@ -55,8 +55,9 @@ const visible = (doc) => ({ count: doc.state.count.value,
   items: doc.state.items.toArray(), body: doc.state.body.toString() });
 let server = createServer(Board);
 const outgoing = [];
-let source = createClient(Board, { clientId: "source", onBatch: (batch) => outgoing.push(batch) });
-const peer = createClient(Board, { clientId: "peer", onBatch() {} });
+const sourceId = server.openClient();
+let source = createClient(Board, { clientId: sourceId, onBatch: (batch) => outgoing.push(batch) });
+const peer = createClient(Board, { clientId: server.openClient(), onBatch() {} });
 const insertionIds = new Set();
 function submit(batch) {
   for (const operation of batch.operations) {
@@ -69,7 +70,7 @@ function submit(batch) {
     }
   }
   const decoded = decodeClientBatch(Board, roundTrip(batch));
-  assert.equal(assertClientBatchNamespace(decoded, "source"), undefined);
+  assert.equal(assertClientBatchNamespace(decoded, sourceId), undefined);
   assert.throws(() => assertClientBatchNamespace(decoded, "other-writer"), TypeError);
   const receipt = server.receive(decoded);
   for (const doc of [source, peer]) doc.receive(decodeServerCommit(Board, roundTrip(receipt.commit)));
@@ -105,7 +106,7 @@ assert.equal(savedClient.snapshot.serverSeq, 1);
 const beforeRestore = visible(source);
 const restoredOutgoing = [];
 server = createServer(Board, { checkpoint: savedServer });
-source = createClient(Board, { clientId: "source", checkpoint: savedClient,
+source = createClient(Board, { clientId: sourceId, checkpoint: savedClient,
   onBatch: (batch) => restoredOutgoing.push(batch) });
 assert.deepEqual(source.checkpoint(), savedClient);
 assert.deepEqual(visible(source), beforeRestore);
@@ -132,6 +133,12 @@ for (const doc of [source, peer]) {
   assert.deepEqual(doc.checkpoint().pendingBatches, []);
   assert.equal(doc.replayConflict, null);
 }
+const beforeClose = server.snapshot();
+server.closeClient(sourceId);
+assert.equal(server.checkpoint().clients.some((entry) => entry.clientId === sourceId), false);
+assert.deepEqual(server.snapshot(), beforeClose);
+assert.throws(() => server.receive(restoredOutgoing[0]));
+assert.notEqual(server.openClient(), sourceId);
 `;
 
 const typesFixture = `
@@ -141,7 +148,7 @@ import {
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeSnapshot,
   type Value, type List, type Text, type DocumentOperation, type DocumentSnapshot,
   type ListSnapshotData, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
-  type CreateServerOptions,
+  type CreateServerOptions, type ClientBatch, type ServerCommit,
 } from "articollab";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
@@ -175,6 +182,15 @@ type SnapshotData = Expect<Equal<typeof snapshot.data, Readonly<{
 }>>>;
 type ClientSave = Expect<Equal<typeof checkpoint, ClientCheckpoint<Shape>>>;
 type ServerSave = Expect<Equal<ReturnType<typeof server.checkpoint>, ServerCheckpoint<Shape>>>;
+type ClientId = Expect<Equal<ReturnType<typeof server.openClient>, string>>;
+type CloseResult = Expect<Equal<ReturnType<typeof server.closeClient>, void>>;
+type AllocationCounter = Expect<Equal<ServerCheckpoint<Shape>["lastClientNumber"], number>>;
+type Replay = Expect<Equal<ServerCheckpoint<Shape>["clients"][number]["replay"],
+  Readonly<{ batch: ClientBatch<Operation>; commit: ServerCommit<Operation> }> | null>>;
+// @ts-expect-error Closing requires an issued string identity.
+server.closeClient(123);
+// @ts-expect-error Legacy replay-array checkpoints are not accepted.
+createServer(Board, { checkpoint: { snapshot, replays: [], history: [] } });
 type BunchCounters = Expect<Equal<typeof checkpoint.lastBunchSeqs, Readonly<{ items: number; body: number }>>>;
 
 doc.state.count.value = 1;

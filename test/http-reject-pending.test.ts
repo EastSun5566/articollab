@@ -20,7 +20,7 @@ async function host(t: TestContext, server: ServerDocument<Shape>, options: Host
   return result;
 }
 
-function makeBatch(clientId = "a", seq = 1, value = 1) {
+function makeBatch(clientId = "client-1", seq = 1, value = 1) {
   return { clientId, seq, operations: [{ type: "value/set", path: "count", value }] };
 }
 
@@ -68,8 +68,8 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
       return batch.seq === 1 ? [] : batch.operations;
     } });
     const { url } = await host(t, server);
-    const a = await connectHttpExampleClient(url, "a");
-    const peer = await connectHttpExampleClient(url, "peer");
+    const a = await connectHttpExampleClient(url);
+    const peer = await connectHttpExampleClient(url);
     a.doc.transact(() => {
       a.doc.state.count.value = 1;
       a.doc.state.items.push("A");
@@ -106,11 +106,11 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
     } });
     const { url } = await host(t, server);
     const rejected: number[] = [];
-    const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
+    const a = await connectHttpExampleClient(url, { fetch: async (input, init) => {
       if ((input instanceof Request ? input.url : input.toString()).endsWith("/rejections")) {
         rejected.push(decodeClientBatch(Board, JSON.parse(typeof init?.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
         // A remote commit races the rejection after the initial catch-up response.
-        assert.equal(await post(url, "/batches", { clientId: "peer", seq: 1, operations: [
+        assert.equal(await post(url, "/batches", { clientId: server.openClient(), seq: 1, operations: [
           { type: "list/insert", path: "items", before: null, id: { bunchId: "peer-list", counter: 0 }, value: "Peer" },
         ] }), 204);
       }
@@ -133,14 +133,14 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
   it("captures the cutoff before catch-up and retains listener-created higher sequences", async (t) => {
     const server = createServer(Board);
     const { url } = await host(t, server);
-    const a = await connectHttpExampleClient(url, "a");
+    const a = await connectHttpExampleClient(url);
     a.doc.state.items.push("A");
     a.doc.on("change", (event) => {
       if (event.origin !== "server") return;
-      if (event.commit.source.clientId === "peer") a.doc.state.count.value = 7;
-      if (event.commit.source.clientId === "a") a.doc.state.count.value = 8;
+      if (event.commit.source.clientId === "client-2") a.doc.state.count.value = 7;
+      if (event.commit.source.clientId === "client-1") a.doc.state.count.value = 8;
     });
-    assert.equal(await post(url, "/batches", { clientId: "peer", seq: 1, operations: [
+    assert.equal(await post(url, "/batches", { clientId: server.openClient(), seq: 1, operations: [
       { type: "list/insert", path: "items", before: null, id: { bunchId: "peer-list", counter: 0 }, value: "Peer" },
     ] }), 204);
     assert.equal(await a.rejectPending(), true);
@@ -153,12 +153,12 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
   it("keeps a new dependent listener batch even when cancellation blocks it", async (t) => {
     const server = createServer(Board);
     const { url } = await host(t, server);
-    const a = await connectHttpExampleClient(url, "a");
+    const a = await connectHttpExampleClient(url);
     a.doc.state.items.push("A");
-    assert.equal(await post(url, "/batches", makeBatch("peer")), 204);
+    assert.equal(await post(url, "/batches", makeBatch(server.openClient())), 204);
     const guards: Promise<void>[] = [];
     a.doc.on("change", (event) => {
-      if (event.origin !== "server" || event.commit.source.clientId !== "peer") return;
+      if (event.origin !== "server" || event.commit.source.clientId !== "client-2") return;
       a.doc.state.items.push("B");
       guards.push(assert.rejects(a.sync(), /concurrently or reentrantly/));
       guards.push(assert.rejects(a.rejectPending(), /concurrently or reentrantly/));
@@ -180,7 +180,7 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
       const release = gate();
       t.after(() => release.resolve());
       let hold = true;
-      const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
+      const a = await connectHttpExampleClient(url, { fetch: async (input, init) => {
         if (hold && (input instanceof Request ? input.url : input.toString()).includes("/commits?")) {
           hold = false;
           entered.resolve();
@@ -207,7 +207,7 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
     const server = createServer(Board);
     const { url } = await host(t, server);
     const saves: ClientCheckpoint<Shape>[] = [];
-    const a = await connectHttpExampleClient(url, "a", { saveClientCheckpoint: (entry) => { saves.push(entry); } });
+    const a = await connectHttpExampleClient(url, { saveClientCheckpoint: (entry) => { saves.push(entry); } });
     let changes = 0;
     a.doc.on("change", (event) => { if (event.origin === "server") changes++; });
     a.doc.state.count.value = 0;
@@ -223,13 +223,13 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
     const server = createServer(Board, { historyLimit: 0 });
     const { url } = await host(t, server);
     let posts = 0;
-    const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
-      if (init?.method === "POST") posts++;
+    const a = await connectHttpExampleClient(url, { fetch: async (input, init) => {
+      if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts++;
       return fetch(input, init);
     } });
     a.doc.state.count.value = 2;
     const saved = a.doc.checkpoint();
-    assert.equal(await post(url, "/batches", makeBatch("peer")), 204);
+    assert.equal(await post(url, "/batches", makeBatch(server.openClient())), 204);
     assert.equal(await a.rejectPending(), false);
     assert.equal(await a.sync(), false);
     assert.equal(await a.rejectPending(), false);
@@ -243,6 +243,8 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
     const saves: number[] = [];
     const server = createServer(Board, { resolve: ({ batch }) => { resolves++; return batch.operations; } });
     const { url } = await host(t, server, { saveServerCheckpoint: (entry) => { saves.push(entry.snapshot.serverSeq); } });
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     for (const [init, status] of [
       [{ method: "GET" }, 405],
       [{ method: "POST", body: "{}" }, 415],
@@ -255,9 +257,9 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
       assert.equal(typeof (await response.json() as { error: string }).error, "string");
     }
     assert.equal(await post(url, "/rejections", { ...makeBatch(), operations: [{ type: "value/set", path: "items", value: 1 }] }), 400);
-    assert.equal(await post(url, "/rejections", makeBatch("a", 2)), 409);
+    assert.equal(await post(url, "/rejections", makeBatch("client-1", 2)), 409);
     assert.equal(server.snapshot().serverSeq, 0);
-    const invalidState = { clientId: "a", seq: 1, operations: [
+    const invalidState = { clientId: "client-1", seq: 1, operations: [
       { type: "list/insert", path: "items", before: { bunchId: "unknown", counter: 0 },
         id: { bunchId: "new", counter: 0 }, value: "A" },
       { type: "text/delete", path: "body", ranges: [{ start: { bunchId: "unknown", counter: 0 }, count: 1 }] },
@@ -267,8 +269,8 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
     assert.equal(await post(url, "/batches", invalidState), 204);
     assert.equal(await post(url, "/rejections", invalidState), 204);
     assert.equal(await post(url, "/rejections", makeBatch()), 409); // Same sequence, different original payload.
-    assert.equal(await post(url, "/batches", makeBatch("b")), 204);
-    assert.equal(await post(url, "/rejections", makeBatch("b")), 204);
+    assert.equal(await post(url, "/batches", makeBatch("client-2")), 204);
+    assert.equal(await post(url, "/rejections", makeBatch("client-2")), 204);
     assert.deepEqual(saves, [0, 1, 2]);
     assert.equal(resolves, 2); // Failed stateful receive + the accepted b batch; reject/retry skip it.
     assert.equal(server.snapshot().data.count, 1);
@@ -280,13 +282,13 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
       const server = createServer(Board);
       const { url } = await host(t, server);
       let posts = 0;
-      const a = await connectHttpExampleClient(url, "a", { fetch: async (input, init) => {
-        if (init?.method === "POST") posts++;
+      const a = await connectHttpExampleClient(url, { fetch: async (input, init) => {
+        if (init?.method === "POST" && !(input instanceof Request ? input.url : input.toString()).endsWith("/clients")) posts++;
         const response = await fetch(input, init);
         if (!(input instanceof Request ? input.url : input.toString()).includes("/commits?") || fault === "listener") return response;
         await response.text();
         return new Response(fault === "malformed" ? "{" : fault === "no-ack" ? "[]" : JSON.stringify([
-          { serverSeq: 2, source: { clientId: "peer", seq: 1 }, operations: [] },
+          { serverSeq: 2, source: { clientId: "client-2", seq: 1 }, operations: [] },
         ]), { status: 200 });
       } });
       a.doc.state.items.push("A");
@@ -325,7 +327,7 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
         store.saveServer(entry);
       } });
       hosts.push(original);
-      const a = await connectHttpExampleClient(original.url, "a", {
+      const a = await connectHttpExampleClient(original.url, {
         saveClientCheckpoint: (entry) => {
           if (fault === "client-save" && entry.snapshot.serverSeq === 1) throw failure;
           store.saveClient(entry);
@@ -339,13 +341,13 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
           return response;
         },
       });
-      await connectHttpExampleClient(original.url, "peer", { saveClientCheckpoint: store.saveClient });
+      await connectHttpExampleClient(original.url, { saveClientCheckpoint: store.saveClient });
       a.doc.transact(() => { a.doc.state.items.push("A"); a.doc.state.body.insert(0, "😀"); });
       a.doc.state.count.value = 9;
       const error = await a.rejectPending().catch((entry: unknown) => entry);
       assert.ok(error instanceof Error);
       if (fault !== "server-save") assert.equal(error, failure);
-      assert.deepEqual(store.loadClient("a")!.pendingBatches.map((entry) => entry.seq), [1, 2]);
+      assert.deepEqual(store.loadClient("client-1")!.pendingBatches.map((entry) => entry.seq), [1, 2]);
       assert.equal(store.loadServer()!.snapshot.serverSeq, fault === "server-save" ? 0 : 1);
       assert.equal(server.snapshot().serverSeq, 1);
       await assert.rejects(a.sync(), (entry: unknown) => entry === error);
@@ -358,17 +360,17 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
       const restored = createServer(Board, { checkpoint: store.loadServer()!, resolve });
       const nextHost = await startHttpExampleServer(restored, { saveServerCheckpoint: store.saveServer });
       hosts.push(nextHost);
-      const source = await connectHttpExampleClient(nextHost.url, "a", {
-        checkpoint: store.loadClient("a")!, saveClientCheckpoint: store.saveClient,
+      const source = await connectHttpExampleClient(nextHost.url, {
+        checkpoint: store.loadClient("client-1")!, saveClientCheckpoint: store.saveClient,
       });
-      const peer = await connectHttpExampleClient(nextHost.url, "peer", {
-        checkpoint: store.loadClient("peer")!, saveClientCheckpoint: store.saveClient,
+      const peer = await connectHttpExampleClient(nextHost.url, {
+        checkpoint: store.loadClient("client-2")!, saveClientCheckpoint: store.saveClient,
       });
       assert.equal(await source.rejectPending(), true);
       assert.equal(resolves, 0); // Confirmed rejection is never resolved or re-submitted.
       assert.equal(restored.snapshot().serverSeq, 2);
       assert.deepEqual(store.loadServer(), restored.checkpoint());
-      assert.deepEqual(store.loadClient("a"), source.doc.checkpoint());
+      assert.deepEqual(store.loadClient("client-1"), source.doc.checkpoint());
       source.doc.transact(() => {
         source.doc.state.count.value = 3;
         source.doc.state.items.push("Recovered");

@@ -86,19 +86,20 @@ function timeTrial(api: Api, kind: Kind, size: number, scenario: Scenario, itera
   const schema = board(api);
   const snapshot = fixture(kind, size);
   const server = api.createServer(schema, {
-    historyLimit: 0, checkpoint: { snapshot, replays: [], history: [] },
+    historyLimit: 0, checkpoint: { snapshot, lastClientNumber: 0, clients: [], history: [] },
     ...(scenario === "unused-policy-snapshot" ? { resolve: ({ batch }: { batch: Batch }) => batch.operations } : {}),
   });
   const batches: Batch[] = [];
   const recipients: Doc[] = [];
-  const doc = api.createClient(schema, { clientId: "writer", snapshot, onBatch(batch) {
+  const writerId = server.openClient(), peerId = server.openClient(), remoteId = server.openClient();
+  const doc = api.createClient(schema, { clientId: writerId, snapshot, onBatch(batch) {
     batches.push(batch);
     if (scenario === "sync-insert") {
       const receipt = server.receive(batch);
       for (const recipient of recipients) recipient.receive(receipt.commit);
     }
   } });
-  const peer = api.createClient(schema, { clientId: "peer", snapshot, onBatch() {} });
+  const peer = api.createClient(schema, { clientId: peerId, snapshot, onBatch() {} });
   recipients.push(doc, peer);
   const midpoint = Math.floor(size / 2);
   if (scenario === "pending-replay") {
@@ -106,7 +107,7 @@ function timeTrial(api: Api, kind: Kind, size: number, scenario: Scenario, itera
   }
   const pendingBefore = doc.checkpoint().pendingBatches;
   // Construct the remote commit outside the receive-only measurement.
-  const remote = scenario === "pending-replay" ? server.receive({ clientId: "remote", seq: 1,
+  const remote = scenario === "pending-replay" ? server.receive({ clientId: remoteId, seq: 1,
     operations: [{ type: "value/set", path: "count", value: 1 }] }).commit : undefined;
   const rounds = scenario === "pending-replay" ? 1 : iterations;
   let materialized: string | string[] | undefined;
@@ -124,7 +125,7 @@ function timeTrial(api: Api, kind: Kind, size: number, scenario: Scenario, itera
       case "materialize": materialized = kind === "list" ? doc.state.items.toArray() : doc.state.body.toString(); break;
       case "snapshot": saved = server.snapshot(); break;
       case "unused-policy-snapshot": case "unchanged-receive": {
-        const receipt = server.receive({ clientId: "remote", seq: index + 1,
+        const receipt = server.receive({ clientId: remoteId, seq: index + 1,
           operations: [{ type: "value/set", path: "count", value: index + 1 }] });
         if (scenario === "unchanged-receive") doc.receive(receipt.commit);
         break;
@@ -191,7 +192,7 @@ function heapTrial(api: Api, kind: Kind, size: number): number {
 
 function serializedSizes(api: Api, kind: Kind, size: number) {
   const server = api.createServer(board(api), { historyLimit: 0,
-    checkpoint: { snapshot: fixture(kind, size), replays: [], history: [] } });
+    checkpoint: { snapshot: fixture(kind, size), lastClientNumber: 0, clients: [], history: [] } });
   return { snapshotBytes: Buffer.byteLength(JSON.stringify(server.snapshot()), "utf8"),
     checkpointBytes: Buffer.byteLength(JSON.stringify(server.checkpoint()), "utf8") };
 }

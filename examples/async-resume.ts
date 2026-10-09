@@ -222,8 +222,13 @@ export function createAsyncExampleNetwork(
     });
   }
 
-  function connect(clientId: string, checkpoint?: Checkpoint) {
+  function connect(checkpoint?: Checkpoint) {
     requireIdle();
+    const clientId = checkpoint?.clientId ?? server.openClient();
+    if (checkpoint === undefined) {
+      try { options.saveServerCheckpoint?.(server.checkpoint()); }
+      catch (error) { stop(error); throw error; }
+    }
     const previous = connections.get(clientId);
     if (previous !== undefined && previous.mode !== "offline") {
       throw new Error("Disconnect the previous writer before replacing it");
@@ -323,8 +328,8 @@ export function createAsyncExampleNetwork(
 async function runDemo(): Promise<void> {
   const server = createServer(Board);
   const network = createAsyncExampleNetwork(server);
-  const original = network.connect("client-a");
-  const peer = network.connect("client-b");
+  const original = network.connect();
+  const peer = network.connect();
   original.disconnect();
   original.doc.transact(() => {
     original.doc.state.count.value = 1;
@@ -342,7 +347,7 @@ async function runDemo(): Promise<void> {
   const checkpoint = decodeClientCheckpoint(
     Board, JSON.parse(JSON.stringify(original.doc.checkpoint()))
   );
-  const restored = network.connect(checkpoint.clientId, checkpoint);
+  const restored = network.connect(checkpoint);
   assert.equal(await restored.resume(), true);
   restored.doc.state.items.push("Live");
   await network.idle();

@@ -53,7 +53,7 @@ function newPair() {
   const server = createServer(Board, { resolve });
   /** @param {"a" | "b"} id @param {Checkpoint} [checkpoint] */
   function client(id, checkpoint) {
-    const doc = createClient(Board, { clientId: id,
+    const doc = createClient(Board, { clientId: checkpoint?.clientId ?? server.openClient(),
       ...(checkpoint === undefined ? { snapshot: decodeSnapshot(Board, json(server.snapshot())) } : { checkpoint }),
       onBatch(batch) { emitted[id].push(decodeClientBatch(Board, json(batch))); } });
     doc.on("change", (event) => { if (event.origin === "server") serverChanges[id]++; });

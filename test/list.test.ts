@@ -228,6 +228,9 @@ describe("list runtime", () => {
 
   it("replays an insertion after a deleted anchor and hydrates its tombstone", () => {
     const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    assert.equal(server.openClient(), "client-3");
     const client1Batches: BoardBatch[] = [];
     const client2Batches: BoardBatch[] = [];
     const client1 = createClient(Board, {
@@ -275,6 +278,8 @@ describe("list runtime", () => {
 
   it("freezes and validates list snapshot data", () => {
     const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const { batches, doc } = setup();
     doc.state.items.push("a");
     const commit = server.receive(batches[0]!).commit;
@@ -307,6 +312,10 @@ describe("list runtime", () => {
 
   it("rejects invalid server list operations atomically", () => {
     const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    assert.equal(server.openClient(), "client-3");
+    assert.equal(server.openClient(), "client-4");
     const id1 = { bunchId: "one", counter: 0 };
     const id2 = { bunchId: "two", counter: 0 };
     const missing = { bunchId: "missing", counter: 0 };
@@ -324,7 +333,7 @@ describe("list runtime", () => {
       value: "x",
     } as unknown as BoardOperation; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
     assert.throws(
-      () => receive("wrong-kind", 1, [wrongKind]),
+      () => receive("client-4", 1, [wrongKind]),
       /does not match document path/
     );
 
@@ -418,6 +427,7 @@ describe("list runtime", () => {
         return batch.operations;
       },
     });
+    assert.equal(server.openClient(), "client-1");
     const { batches, doc } = setup();
 
     doc.state.items.push("base");
@@ -470,6 +480,7 @@ describe("list runtime", () => {
         ] as unknown as readonly BoardOperation[]; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
       },
     });
+    assert.equal(server.openClient(), "client-1");
     const batch: BoardBatch = {
       clientId: "client-1",
       seq: 1,

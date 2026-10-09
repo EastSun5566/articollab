@@ -117,14 +117,16 @@ describe("client batch namespace guard", () => {
 
   it("permits cross-writer insertion anchors and deletion targets", () => {
     const server = createServer(Board);
-    const peer = setup("peer");
-    const writer = setup("writer");
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    const peer = setup("client-2");
+    const writer = setup("client-1");
     peer.doc.transact(() => { peer.doc.state.items.push("peer"); peer.doc.state.body.insert(0, "😀"); });
     const first = server.receive(peer.batches[0]!).commit;
     peer.doc.receive(first);
     writer.doc.receive(first);
     writer.doc.transact(() => {
-      writer.doc.state.items.insert(1, "writer");
+      writer.doc.state.items.insert(1, "client-1");
       writer.doc.state.body.insert(1, "A");
       writer.doc.state.items.delete(0);
       writer.doc.state.body.delete(0);
@@ -134,33 +136,35 @@ describe("client batch namespace guard", () => {
       const id = operation.type === "list/insert" || operation.type === "text/insert" ? operation.before
         : operation.type === "list/delete" ? operation.id
           : operation.type === "text/delete" ? operation.ranges[0]!.start : null;
-      assert.ok(id?.bunchId.startsWith('["peer",'));
+      assert.ok(id?.bunchId.startsWith('["client-2",'));
     }
-    assertClientBatchNamespace(batch, "writer");
+    assertClientBatchNamespace(batch, "client-1");
     const second = server.receive(batch).commit;
     peer.doc.receive(second);
     writer.doc.receive(second);
-    assert.deepEqual(server.snapshot().data.items.values, ["writer"]);
+    assert.deepEqual(server.snapshot().data.items.values, ["client-1"]);
     assert.equal(server.snapshot().data.body.value, "A");
   });
 
   it("prevents preempting another writer's future IDs without advancing the server", () => {
     let calls = 0;
     const server = createServer(Board, { resolve: ({ batch }) => { calls++; return batch.operations; } });
-    const victim = setup("victim");
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
+    const victim = setup("client-1");
     victim.doc.transact(() => { victim.doc.state.items.push("safe"); victim.doc.state.body.insert(0, "😀"); });
     const legitimate = victim.batches[0]!;
-    const attack = decodeClientBatch(Board, { ...legitimate, clientId: "attacker" });
+    const attack = decodeClientBatch(Board, { ...legitimate, clientId: "client-2" });
     const checkpoint = server.checkpoint();
     const history = server.commitsSince(0);
     assert.throws(() => {
-      assertClientBatchNamespace(attack, "attacker");
+      assertClientBatchNamespace(attack, "client-2");
       server.receive(attack);
     }, TypeError);
     assert.deepEqual(server.checkpoint(), checkpoint);
     assert.deepEqual(server.commitsSince(0), history);
     assert.equal(calls, 0);
-    assertClientBatchNamespace(legitimate, "victim");
+    assertClientBatchNamespace(legitimate, "client-1");
     const commit = server.receive(legitimate).commit;
     assert.equal(commit.serverSeq, 1);
     victim.doc.receive(commit);
@@ -168,6 +172,8 @@ describe("client batch namespace guard", () => {
     assert.equal(calls, 1);
 
     const unguarded = createServer(Board);
+    assert.equal(unguarded.openClient(), "client-1");
+    assert.equal(unguarded.openClient(), "client-2");
     unguarded.receive(attack);
     assert.throws(() => unguarded.receive(legitimate), Error);
   });
@@ -176,20 +182,21 @@ describe("client batch namespace guard", () => {
     for (const entrypoint of ["receive", "reject"] as const) {
       let calls = 0;
       const server = createServer(Board, { resolve: ({ batch }) => { calls++; return batch.operations; } });
-      const batch = insertion("writer", JSON.stringify(["writer", "items", 1]));
-      assertClientBatchNamespace(batch, "writer");
+      assert.equal(server.openClient(), "client-1");
+      const batch = insertion("client-1", JSON.stringify(["client-1", "items", 1]));
+      assertClientBatchNamespace(batch, "client-1");
       const first = server[entrypoint](batch);
       const checkpoint = server.checkpoint();
       for (const retryEntrypoint of ["receive", "reject"] as const) {
         const retryBatch = decodeClientBatch(Board, JSON.parse(JSON.stringify(batch)));
-        assertClientBatchNamespace(retryBatch, "writer");
+        assertClientBatchNamespace(retryBatch, "client-1");
         const retry = server[retryEntrypoint](retryBatch);
         assert.equal(retry.replayed, true);
         assert.equal(retry.commit, first.commit);
         assert.deepEqual(server.checkpoint(), checkpoint);
       }
-      const changed = insertion("writer", JSON.stringify(["writer", "items", 2]));
-      assertClientBatchNamespace(changed, "writer");
+      const changed = insertion("client-1", JSON.stringify(["client-1", "items", 2]));
+      assertClientBatchNamespace(changed, "client-1");
       assert.throws(() => server.receive(changed), Error);
       assert.deepEqual(server.checkpoint(), checkpoint);
       assert.equal(calls, entrypoint === "receive" ? 1 : 0);
@@ -197,11 +204,12 @@ describe("client batch namespace guard", () => {
   });
 
   it("allows trusted rejection of an invalid namespace and retains it across restore", () => {
-    const batch = decodeClientBatch(Board, insertion("writer", JSON.stringify(["other", "items", 1])));
-    assert.throws(() => assertClientBatchNamespace(batch, "writer"), TypeError);
+    const batch = decodeClientBatch(Board, insertion("client-1", JSON.stringify(["other", "items", 1])));
+    assert.throws(() => assertClientBatchNamespace(batch, "client-1"), TypeError);
     const server = createServer(Board, { resolve() { assert.fail("reject must skip policy"); } });
+    assert.equal(server.openClient(), "client-1");
     const before = server.snapshot().data;
-    const authenticatedWriterId = "writer";
+    const authenticatedWriterId = "client-1";
     assert.equal(batch.clientId, authenticatedWriterId);
     const receipt = server.reject(batch);
     assert.deepEqual(receipt.commit.operations, []);
@@ -214,9 +222,10 @@ describe("client batch namespace guard", () => {
   });
 
   it("leaves custom incoming namespaces and resolver-generated IDs opt-in", () => {
-    const custom = insertion("application", "application-owned-list");
-    assert.throws(() => assertClientBatchNamespace(custom, "application"), TypeError);
+    const custom = insertion("client-1", "application-owned-list");
+    assert.throws(() => assertClientBatchNamespace(custom, "client-1"), TypeError);
     const unguarded = createServer(Board);
+    assert.equal(unguarded.openClient(), "client-1");
     unguarded.receive(custom);
     assert.deepEqual(unguarded.snapshot().data.items.values, ["item"]);
 
@@ -224,9 +233,10 @@ describe("client batch namespace guard", () => {
       if (operation.type !== "list/insert" && operation.type !== "text/insert") return operation;
       return { ...operation, id: { bunchId: `server-owned-${operation.path}`, counter: 0 } };
     }) });
-    const { doc, batches } = setup("writer");
+    assert.equal(server.openClient(), "client-1");
+    const { doc, batches } = setup("client-1");
     doc.transact(() => { doc.state.items.push("first"); doc.state.body.insert(0, "😀"); });
-    assertClientBatchNamespace(batches[0]!, "writer");
+    assertClientBatchNamespace(batches[0]!, "client-1");
     const receipt = server.receive(batches[0]!);
     doc.receive(receipt.commit);
     assert.deepEqual(doc.checkpoint().pendingBatches, []);

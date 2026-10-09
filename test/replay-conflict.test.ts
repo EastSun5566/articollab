@@ -23,7 +23,7 @@ type Checkpoint = ClientCheckpoint<Shape>;
 
 function setup() {
   const batches: Batch[] = [];
-  const doc = createClient(Board, { clientId: "a", onBatch: (batch) => batches.push(batch) });
+  const doc = createClient(Board, { clientId: "client-1", onBatch: (batch) => batches.push(batch) });
   return { doc, batches };
 }
 
@@ -42,7 +42,7 @@ function invalid(input: unknown, path: string): void {
   const matches = (error: unknown) => error instanceof WireDecodeError && error.path === path;
   assert.throws(() => decodeClientCheckpoint(Board, input), matches);
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
-  assert.throws(() => createClient(Board, { clientId: "a", checkpoint: input as Checkpoint, onBatch() {} }), matches);
+  assert.throws(() => createClient(Board, { clientId: "client-1", checkpoint: input as Checkpoint, onBatch() {} }), matches);
 }
 
 function gate() {
@@ -65,7 +65,9 @@ describe("pending replay conflict", () => {
           if (action === "insert") doc.state.body.insert(1, "B");
           else doc.state.body.delete(0);
         }
-        const server = createServer(Board, { resolve: ({ batch }) => batch.clientId === "a" ? [] : batch.operations });
+        const server = createServer(Board, { resolve: ({ batch }) => batch.clientId === "client-1" ? [] : batch.operations });
+        assert.equal(server.openClient(), "client-1");
+        assert.equal(server.openClient(), "client-2");
         let changes = 0;
         doc.on("change", () => changes++);
         doc.receive(server.receive(batches[0]!).commit);
@@ -77,7 +79,7 @@ describe("pending replay conflict", () => {
         assert.equal(changes, 1); // Even deleting A had already left the optimistic state empty.
         assert.deepEqual(doc.checkpoint().pendingBatches, [batches[1]]);
         assert.equal(doc.checkpoint().snapshot.serverSeq, 1);
-        doc.receive(server.receive({ clientId: "peer", seq: 1,
+        doc.receive(server.receive({ clientId: "client-2", seq: 1,
           operations: [{ type: "value/set", path: "count", value: 7 }] }).commit);
         assert.equal(doc.state.count.value, 7);
         assert.equal(doc.replayConflict, conflict);
@@ -100,7 +102,9 @@ describe("pending replay conflict", () => {
     });
     doc.state.count.value = 99; // Must not replay past the failed batch.
     const server = createServer(Board, { resolve: ({ batch }) =>
-      batch.clientId === "a" && (batch.seq === 1 || batch.seq === 3) ? [] : batch.operations });
+      batch.clientId === "client-1" && (batch.seq === 1 || batch.seq === 3) ? [] : batch.operations });
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     let changes = 0;
     doc.on("change", () => changes++);
     doc.receive(server.receive(batches[0]!).commit);
@@ -123,7 +127,7 @@ describe("pending replay conflict", () => {
     assert.equal(invoked, false);
     doc.state.body.insert(0, ""); doc.state.body.delete(0, 0);
     assert.deepEqual(doc.checkpoint(), before);
-    doc.receive(server.receive({ clientId: "peer", seq: 1,
+    doc.receive(server.receive({ clientId: "client-2", seq: 1,
       operations: [{ type: "value/set", path: "count", value: 5 }] }).commit);
     assert.equal(changes, 1); // Prefix still shows 9; same conflict.
     doc.receive(server.receive(batches[1]!).commit);
@@ -136,7 +140,7 @@ describe("pending replay conflict", () => {
     assert.equal(changes, 2);
     doc.transact(() => { doc.state.items.push("new"); doc.state.body.insert(0, "😀"); });
     assert.equal(batches[4]!.seq, 5);
-    const restored = createClient(Board, { clientId: "a", checkpoint: decodeClientCheckpoint(Board,
+    const restored = createClient(Board, { clientId: "client-1", checkpoint: decodeClientCheckpoint(Board,
       JSON.parse(JSON.stringify(doc.checkpoint()))), onBatch() {} });
     assert.deepEqual(restored.checkpoint().lastBunchSeqs, { items: 2, body: 2 });
     for (const client of [doc, restored]) client.receive(server.receive(batches[4]!).commit);
@@ -150,6 +154,7 @@ describe("pending replay conflict", () => {
     assert.equal(insert.type, "text/insert");
     const server = createServer(Board, { resolve: ({ batch }) => batch.seq === 1 && insert.type === "text/insert"
       ? [{ ...insert, value: "A" }] : [] });
+    assert.equal(server.openClient(), "client-1");
     doc.receive(server.receive(batches[0]!).commit);
     assert.equal(doc.state.body.toString(), "A");
     assert.equal(doc.replayConflict?.batch, batches[1]);
@@ -169,9 +174,9 @@ describe("pending replay conflict", () => {
         /replay is blocked/);
       assert.deepEqual(local.doc.checkpoint(), localBefore);
       const cp = decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(local.doc.checkpoint())));
-      const restored = createClient(Board, { clientId: "a", checkpoint: cp, onBatch() {} });
+      const restored = createClient(Board, { clientId: "client-1", checkpoint: cp, onBatch() {} });
       assert.deepEqual(restored.replayConflict, local.doc.replayConflict);
-      local.doc.receive({ serverSeq: 2, source: { clientId: "a", seq: 1 }, operations: [] });
+      local.doc.receive({ serverSeq: 2, source: { clientId: "client-1", seq: 1 }, operations: [] });
       assert.equal(local.doc.replayConflict, null);
     }
   });
@@ -181,10 +186,12 @@ describe("pending replay conflict", () => {
     doc.state.items.push("A"); doc.state.items.delete(0);
     doc.state.items.push("B"); doc.state.items.delete(0);
     const server = createServer(Board, { resolve: () => [] });
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     const seen: Array<number | null> = [];
     const unsubscribe = doc.on("change", () => seen.push(doc.replayConflict?.batch.seq ?? null));
     doc.receive(server.receive(batches[0]!).commit);
-    doc.receive(server.receive({ clientId: "peer", seq: 1,
+    doc.receive(server.receive({ clientId: "client-2", seq: 1,
       operations: [{ type: "value/set", path: "count", value: 0 }] }).commit);
     assert.deepEqual(seen, [2]);
     doc.receive(server.receive(batches[1]!).commit);
@@ -203,12 +210,14 @@ describe("pending replay conflict", () => {
   it("keeps protocol and unexpected failures atomic rather than classifying them as blocked", () => {
     const { doc, batches } = setup(); dependentEdits(doc);
     const server = createServer(Board, { resolve: () => [] });
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     doc.receive(server.receive(batches[0]!).commit);
     const before = doc.checkpoint(); const conflict = doc.replayConflict;
     for (const commit of [
       { serverSeq: 1, source: { clientId: "peer", seq: 1 }, operations: [] },
       { serverSeq: 3, source: { clientId: "peer", seq: 1 }, operations: [] },
-      { serverSeq: 2, source: { clientId: "a", seq: 9 }, operations: [] },
+      { serverSeq: 2, source: { clientId: "client-1", seq: 9 }, operations: [] },
       { serverSeq: 2, source: { clientId: "peer", seq: 1 }, operations: [{ type: "bad", path: "count" }] },
       { serverSeq: 2, source: { clientId: "peer", seq: 1 }, operations: batches[1]!.operations },
     ]) {
@@ -217,7 +226,7 @@ describe("pending replay conflict", () => {
       assert.deepEqual(doc.checkpoint(), before);
       assert.equal(doc.replayConflict, conflict);
     }
-    assert.throws(() => replayPending(initialStates(Board, undefined), [{ clientId: "a", seq: 1,
+    assert.throws(() => replayPending(initialStates(Board, undefined), [{ clientId: "client-1", seq: 1,
       operations: [{ type: "value/set", path: "missing", value: 1 }] }]), (error) =>
       error instanceof PendingReplayError && error.operationIndex === 0 && /Unknown document path/.test(error.message));
   });
@@ -225,17 +234,17 @@ describe("pending replay conflict", () => {
   it("notifies when the first conflict moves to another batch without visible changes", () => {
     const base = setup().doc.checkpoint();
     const unknown = { bunchId: "unknown", counter: 0 };
-    const pending: Batch[] = [1, 2].map((seq) => ({ clientId: "a", seq,
+    const pending: Batch[] = [1, 2].map((seq) => ({ clientId: "client-1", seq,
       operations: [{ type: "list/delete", path: "items", id: unknown }] }));
-    const doc = createClient(Board, { clientId: "a", onBatch() {}, checkpoint: {
+    const doc = createClient(Board, { clientId: "client-1", onBatch() {}, checkpoint: {
       ...base, lastLocalSeq: 2, pendingBatches: pending,
     } });
     const seen: Array<number | null> = [];
     doc.on("change", () => seen.push(doc.replayConflict?.batch.seq ?? null));
-    doc.receive({ serverSeq: 1, source: { clientId: "a", seq: 1 }, operations: [] });
+    doc.receive({ serverSeq: 1, source: { clientId: "client-1", seq: 1 }, operations: [] });
     assert.deepEqual(seen, [2]);
     assert.deepEqual(doc.state.items.toArray(), []);
-    doc.receive({ serverSeq: 2, source: { clientId: "a", seq: 2 }, operations: [] });
+    doc.receive({ serverSeq: 2, source: { clientId: "client-1", seq: 2 }, operations: [] });
     assert.deepEqual(seen, [2, null]);
   });
 
@@ -243,11 +252,13 @@ describe("pending replay conflict", () => {
     const { doc, batches } = setup(); dependentEdits(doc);
     doc.state.count.value = 3;
     const server = createServer(Board, { resolve: () => [] });
+    assert.equal(server.openClient(), "client-1");
+    assert.equal(server.openClient(), "client-2");
     doc.receive(server.receive(batches[0]!).commit);
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Known JSON fixture is made mutable to verify ownership or inject corruption; production decoders are tested separately.
     const input = JSON.parse(JSON.stringify(doc.checkpoint())) as Mutable<Checkpoint>;
     const cp = decodeClientCheckpoint(Board, input); frozen(cp);
-    const restored = createClient(Board, { clientId: "a", checkpoint: cp,
+    const restored = createClient(Board, { clientId: "client-1", checkpoint: cp,
       onBatch: () => assert.fail("restore cannot send") });
     assert.deepEqual(restored.replayConflict, doc.replayConflict);
     assert.equal(restored.state.count.value, 0);
@@ -280,7 +291,7 @@ describe("pending replay conflict", () => {
       type: "text/delete", path: "body", ranges: [{ start: unknown, count: Number.MAX_SAFE_INTEGER }],
     }] }, second] };
     const decoded = decodeClientCheckpoint(Board, blocked);
-    assert.equal(createClient(Board, { clientId: "a", checkpoint: decoded, onBatch() {} }).replayConflict?.operationIndex, 0);
+    assert.equal(createClient(Board, { clientId: "client-1", checkpoint: decoded, onBatch() {} }).replayConflict?.operationIndex, 0);
     const textInsert = second.operations[1]!;
     assert.equal(textInsert.type, "text/insert");
     if (textInsert.type !== "text/insert") return;
@@ -302,9 +313,9 @@ describe("pending replay conflict", () => {
 describe("blocked resume examples", { timeout: 15_000 }, () => {
   it("keeps synchronous resume offline on conflict and finishes transiently blocked catch-up", () => {
     for (const confirmSecond of [false, true]) {
-      const server = createServer(Board, { resolve: ({ batch }) => batch.clientId === "a" ? [] : batch.operations });
+      const server = createServer(Board, { resolve: ({ batch }) => batch.clientId === "client-1" ? [] : batch.operations });
       const network = createExampleNetwork(server);
-      const source = network.connect("a"); const peer = network.connect("b");
+      const source = network.connect(); const peer = network.connect();
       source.disconnect(); dependentEdits(source.doc);
       const pending = source.doc.checkpoint().pendingBatches;
       network.submit(pending[0]!);
@@ -326,10 +337,10 @@ describe("blocked resume examples", { timeout: 15_000 }, () => {
     const resolved: string[] = [];
     const server = createServer(Board, { resolve: ({ batch }) => {
       resolved.push(batch.clientId + ":" + batch.seq);
-      return batch.clientId === "a" && batch.seq <= 2 ? [] : batch.operations;
+      return batch.clientId === "client-1" && batch.seq <= 2 ? [] : batch.operations;
     } });
     const network = createExampleNetwork(server);
-    const a = network.connect("a"), b = network.connect("b");
+    const a = network.connect(), b = network.connect();
     let edited = false;
     let seed!: Batch;
     b.doc.on("change", (event) => {
@@ -338,16 +349,16 @@ describe("blocked resume examples", { timeout: 15_000 }, () => {
         seed = a.doc.checkpoint().pendingBatches[0]!;
       }
     });
-    network.submit({ clientId: "kick", seq: 1,
+    network.submit({ clientId: server.openClient(), seq: 1,
       operations: [{ type: "value/set", path: "count", value: 1 }] });
     assert.equal(a.doc.replayConflict?.batch.seq, 2);
-    assert.deepEqual(resolved, ["kick:1", "a:1"]);
+    assert.deepEqual(resolved, ["client-3:1", "client-1:1"]);
     b.doc.state.count.value = 2;
     assert.equal(a.doc.state.count.value, 2);
-    network.submit({ clientId: "seed", seq: 1, operations: seed.operations });
+    network.submit({ clientId: server.openClient(), seq: 1, operations: seed.operations });
     assert.equal(a.doc.replayConflict, null);
     a.doc.state.count.value = 3;
-    assert.deepEqual(resolved, ["kick:1", "a:1", "b:1", "seed:1", "a:2", "a:3"]);
+    assert.deepEqual(resolved, ["client-3:1", "client-1:1", "client-2:1", "client-4:1", "client-1:2", "client-1:3"]);
   });
 
   it("keeps async peers live, saves blocked state, and restarts automatic pumping on unblock", async () => {
@@ -355,42 +366,42 @@ describe("blocked resume examples", { timeout: 15_000 }, () => {
     const resolved: string[] = [];
     const server = createServer(Board, { resolve: ({ batch }) => {
       resolved.push(batch.clientId + ":" + batch.seq);
-      return batch.clientId === "a" && batch.seq === 1 ? [] : batch.operations;
+      return batch.clientId === "client-1" && batch.seq === 1 ? [] : batch.operations;
     } });
     const network = createAsyncExampleNetwork(server, { saveClientCheckpoint: (cp) => { saved.push(cp); } });
-    const a = network.connect("a"), b = network.connect("b");
+    const a = network.connect(), b = network.connect();
     dependentEdits(a.doc);
     a.doc.state.count.value = 3;
     await network.idle();
     assert.equal(a.doc.replayConflict?.batch.seq, 2);
-    assert.deepEqual(resolved, ["a:1"]);
-    const cp = saved.filter((entry) => entry.clientId === "a").at(-1)!;
+    assert.deepEqual(resolved, ["client-1:1"]);
+    const cp = saved.filter((entry) => entry.clientId === "client-1").at(-1)!;
     assert.equal(cp.snapshot.serverSeq, 1);
-    assert.ok(createClient(Board, { clientId: "a", checkpoint: decodeClientCheckpoint(Board,
+    assert.ok(createClient(Board, { clientId: "client-1", checkpoint: decodeClientCheckpoint(Board,
       JSON.parse(JSON.stringify(cp))), onBatch() {} }).replayConflict);
     b.doc.state.count.value = 7;
     await network.idle();
     assert.equal(a.doc.state.count.value, 7);
     // Explicit application action introduces A's old IDs; no automatic rebase or repair.
-    const seed = saved.find((entry) => entry.clientId === "a" && entry.lastLocalSeq === 1)!.pendingBatches[0]!;
-    await network.submit({ clientId: "seed", seq: 1, operations: seed.operations });
+    const seed = saved.find((entry) => entry.clientId === "client-1" && entry.lastLocalSeq === 1)!.pendingBatches[0]!;
+    await network.submit({ clientId: server.openClient(), seq: 1, operations: seed.operations });
     await network.idle();
     assert.equal(a.doc.replayConflict, null);
     assert.deepEqual(a.doc.checkpoint().pendingBatches, []);
-    assert.deepEqual(resolved, ["a:1", "b:1", "seed:1", "a:2", "a:3"]);
+    assert.deepEqual(resolved, ["client-1:1", "client-2:1", "client-3:1", "client-1:2", "client-1:3"]);
   });
 
   it("checks async blocked state again before applying a paused automatic send", async (t) => {
     const entered = gate(), release = gate(); t.after(() => release.resolve());
     const server = createServer(Board);
     const network = createAsyncExampleNetwork(server, { transfer: async (direction, clientId, message) => {
-      if (direction === "client-to-server" && clientId === "a") { entered.resolve(); await release.promise; }
+      if (direction === "client-to-server" && clientId === "client-1") { entered.resolve(); await release.promise; }
       return message;
     } });
-    const a = network.connect("a"), b = network.connect("b");
+    const a = network.connect(), b = network.connect();
     a.doc.state.items.push("A");
     await entered.promise;
-    await network.submit({ clientId: "seed", seq: 1,
+    await network.submit({ clientId: server.openClient(), seq: 1,
       operations: a.doc.checkpoint().pendingBatches[0]!.operations });
     // Incoming delivery must complete before releasing a's queued submission.
     const seen = new Promise<void>((resolve) => {
@@ -409,7 +420,7 @@ describe("blocked resume examples", { timeout: 15_000 }, () => {
       const resolved: number[] = [];
       const server = createServer(Board, { resolve: ({ batch }) => { resolved.push(batch.seq); return []; } });
       const network = createAsyncExampleNetwork(server);
-      const a = network.connect("a"); a.disconnect(); dependentEdits(a.doc);
+      const a = network.connect(); a.disconnect(); dependentEdits(a.doc);
       const pending = a.doc.checkpoint().pendingBatches;
       await network.submit(pending[0]!);
       if (confirmSecond) await network.submit(pending[1]!);
@@ -433,24 +444,24 @@ describe("blocked resume examples", { timeout: 15_000 }, () => {
     const server = createServer(Board, { resolve: ({ batch }) => { resolved.push(batch.seq); return []; } });
     const host = await startHttpExampleServer(server, { saveServerCheckpoint: store.saveServer });
     t.after(() => host.close());
-    const a = await connectHttpExampleClient(host.url, "a", { saveClientCheckpoint: store.saveClient });
+    const a = await connectHttpExampleClient(host.url, { saveClientCheckpoint: store.saveClient });
     dependentEdits(a.doc);
-    const before = store.loadClient("a")!;
+    const before = store.loadClient("client-1")!;
     assert.equal(await a.sync(), false);
     assert.deepEqual(resolved, [1]);
-    const blocked = store.loadClient("a")!;
+    const blocked = store.loadClient("client-1")!;
     assert.equal(blocked.snapshot.serverSeq, 1);
     assert.equal(blocked.pendingBatches.length, 1);
-    const restored = await connectHttpExampleClient(host.url, "a", { checkpoint: blocked, saveClientCheckpoint: store.saveClient });
+    const restored = await connectHttpExampleClient(host.url, { checkpoint: blocked, saveClientCheckpoint: store.saveClient });
     assert.equal(await restored.sync(), false);
     assert.deepEqual(resolved, [1]);
     const response = await fetch(host.url + "/batches", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(blocked.pendingBatches[0]) });
     assert.equal(response.status, 204); await response.text();
     assert.equal(await restored.sync(), true);
-    assert.equal(store.loadClient("a")!.pendingBatches.length, 0);
+    assert.equal(store.loadClient("client-1")!.pendingBatches.length, 0);
     // Old checkpoint catches both commits in one response: blocked -> ready.
-    const late = await connectHttpExampleClient(host.url, "a", { checkpoint: before });
+    const late = await connectHttpExampleClient(host.url, { checkpoint: before });
     assert.equal(await late.sync(), true);
     assert.equal(late.doc.replayConflict, null);
     assert.deepEqual(resolved, [1, 2]);
