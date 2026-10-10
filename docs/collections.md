@@ -10,7 +10,7 @@ const Board = defineDocument({
 });
 ```
 
-List and Text start empty. The following examples assume `doc` was created from this schema; imports and construction follow the [quick start](quick-start.md).
+Import `defineDocument`, `value`, `list` and `text` from `"articollab"`. List and Text start empty. The following snippets assume `doc` was created from this schema, with `count = 0` and empty collections; use the [quick start](quick-start.md) for client/server construction.
 
 ## Value: replace the whole payload
 
@@ -20,7 +20,7 @@ doc.state.count.value = 2;
 console.log(doc.state.count.value); // 2
 ```
 
-An accessor intercepts replacement, not nested object mutation. For `value({ done: false })`, replace with `doc.state.task.value = { done: true }`; do not edit `.value.done` in place. JSON payloads must remain immutable after being supplied.
+An accessor intercepts replacement, not nested object mutation. If your schema instead defines `task: value({ done: false })`, assign a new object with `doc.state.task.value = { done: true }`; do not edit `.value.done` in place. JSON payloads must remain immutable after being supplied.
 
 Schema defaults and local Value/List payloads are validated before use. For example, `doc.state.count.set(NaN)` throws `TypeError` without changing state or producing a batch. Validation does not copy or freeze your object and does not check its application-specific shape. Large payloads cost more to validate; unchanged document collections are not scanned.
 

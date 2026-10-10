@@ -1,32 +1,39 @@
 # Articollab
 
-Build collaborative state with ordinary typed collection methods. Clients see their edits immediately; a server decides the authoritative order, and clients replay work that has not been acknowledged.
+Build collaborative state with typed collection methods. A client displays edits immediately; a server decides their shared order and authoritative result.
 
-Articollab is **not a CRDT**. It uses [articulated](https://github.com/mweidner037/articulated) for stable List/Text identities, while the server provides a single total order.
+## When to use it
 
-## Start small
+Use Articollab when you want a server to control shared state while clients remain responsive. Your application can accept, transform or reject a batch without changing the collection API.
 
-Read the [Counter quick start](quick-start.md), then learn the [four stages of an edit](concepts.md). You do not need an HTTP server, editor framework or database to understand the core.
+Articollab is **not a CRDT**. Clients need ordered server commits to reconcile their work. It uses [articulated](https://github.com/mweidner037/articulated) for stable List/Text identities.
 
-```ts
-const Counter = defineDocument({ count: value(0) });
-// After creating a client:
-doc.state.count.value = 1;
-// The client now displays 1. This alone does not update the server.
+Start with the [Counter quick start](quick-start.md). It runs in memory so you can follow an edit from local state to server confirmation before adding networking.
+
+## What you build with
+
+- **Value** replaces an immutable JSON payload.
+- **List** inserts and deletes elements with stable identities.
+- **Text** edits plain text using Unicode code-point indices.
+- **Transactions** group edits into one batch.
+- **Policy, decoders and checkpoints** help you control submissions and recover unconfirmed work.
+
+The [concepts guide](concepts.md) explains how these pieces work together. The [reference](reference.md) defines their exact contracts.
+
+## What your application supplies
+
+You choose the transport, storage, authentication and recovery workflow. You also coordinate one writer per client ID and ensure restored checkpoints belong to the same document.
+
+Articollab provides the collaboration core, not an editor, database or production networking adapter. Read [FAQ and limitations](faq.md) before choosing an integration.
+
+## Install
+
+The library is available on npm:
+
+```sh
+pnpm add articollab@beta
 ```
 
-The complete runnable example is on the next page. Later pages introduce mixed collections, policy and recovery without hiding submission behind automatic networking.
-
-## What is included?
-
-The published `0.2.0-beta.0` includes Value/List/Text, synchronous transactions, optimistic reconciliation, policy/rejection, wire decoders, snapshots, checkpoints, last-batch retry and bounded catch-up.
-
-The application owns transport, storage, authentication, writer coordination, document lineage and recovery orchestration. Examples demonstrate those responsibilities; they are not exported production adapters.
-
-## Availability and compatibility
-
-Install the public npm package with `pnpm add articollab@0.2.0-beta.0`; no source repository access is needed to use the library. The source repository remains private; repository access is needed for the development tools and examples. These docs target 0.2, not the incompatible 0.1 session/checkpoint contract.
-
-The [0.2 breaking notes](reference.md#v02-notes-and-compatibility) describe explicit writer sessions and the new server checkpoint format. Example helpers are not package APIs.
+These docs describe the 0.2 beta API. Use an ESM project; the runnable Node.js examples require Node 24+. You do not need repository access to use the package. Existing applications should read [upgrade guidance](recovery.md#upgrading-from-01) before mixing versions or checkpoints.
 
 [Next: Counter quick start](quick-start.md)

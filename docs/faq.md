@@ -1,26 +1,26 @@
 # FAQ and limitations
 
-Use this page to decide whether the minimal core fits your application before choosing transport or storage.
+Use this page to decide whether the collaboration core fits your application.
 
 ## Is this a CRDT?
 
-No. The server orders every new authoritative batch. Clients edit optimistically, then reconcile and replay pending work. List/Text stable IDs and tombstones do not remove the need for server total order.
+No. The server orders every new authoritative batch. Clients edit optimistically, then reconcile and replay pending operations. Stable IDs and tombstones do not remove the need for server order.
 
-## Can I install it from npm?
+## Can I use the package without repository access?
 
-Yes. Install `articollab@0.2.0-beta.0` from npm; these docs target its explicit session/checkpoint contract. The library does not require source repository access. The repository remains private, so its development tools and examples require access. Do not mix incompatible 0.1 and 0.2 servers/checkpoints.
+Yes. Install `articollab@beta` from npm and follow the [Counter quick start](quick-start.md). Contributor tools and repository demos require a checkout; they are not part of the installed package.
 
 ## Why do nested object edits not synchronize?
 
-Value/List payloads are immutable JSON. Accessors intercept whole replacements, not arbitrary nested writes. For example, replace `{ done: false }` with `{ done: true }`; do not mutate the shared object in place.
+Value/List payloads are immutable JSON. Accessors intercept whole replacements, not arbitrary nested writes. Replace `{ done: false }` with `{ done: true }`; do not mutate the shared object in place. See [Value](collections.md#value-replace-the-whole-payload).
 
 ## Does a change event mean my edit was saved?
 
-No. A local change can precede submission; an own ack can emit no event. Persistence and acknowledgement are separate. Track the successful receive and current checkpoint rather than treating change as a save signal.
+No. Local changes can precede submission, and an acknowledgement can be silent. Read the current checkpoint after a successful receive rather than treating a change event as a save signal. Storage remains your application's responsibility.
 
 ## Can I retry every lost message?
 
-The server retains only each client's latest processed batch. An identical retry returns that result, but older or changed retries fail. First catch up from the saved watermark; preserve original pending payloads. Transport examples stop on failure rather than automatically retrying.
+The server retains only each open client's latest processed batch. An identical retry returns that result; older or changed retries fail. [Catch up first](recovery.md#catch-up-before-resubmitting), because the missing result may already be in history.
 
 ## What if history is too short?
 
@@ -28,16 +28,16 @@ The server retains only each client's latest processed batch. An identical retry
 
 ## Does cancelling pending undo accepted work?
 
-No. Rejection acknowledges abandoned unprocessed batches with an empty authoritative effect. Previously accepted or transformed effects remain. Dependent newer batches may still be blocked.
+No. Rejection acknowledges an unprocessed batch without an authoritative effect. Accepted or transformed effects remain. Later dependent batches may still be blocked. See [cancelling pending](recovery.md#cancel-a-range-of-pending-work).
 
-## What must production applications add?
+## Does the namespace check authenticate a writer?
 
-Transport, quotas, storage barriers, authentication/authorization, one-writer coordination, lineage checks, and explicit recovery after ambiguous outcomes or history gaps. The examples are learning tools, not production adapters.
+No. It prevents a batch from allocating insertion IDs under another writer/path namespace. Your application must still authenticate the caller, enforce one writer per client ID, and decide who can delete elements. See [incoming namespaces](server-wire.md#incoming-insertion-namespaces).
 
-There is no rich text, presence, undo, cursor, bulk List editing, move, automatic migration or background reconnect. Same-ID server rollback/forks and power-loss durability are not promised. See the [canonical boundaries](reference.md#boundaries).
+## What must a production application add?
 
-## How is the documentation deployed?
+Transport, quotas, storage barriers, authentication/authorization, writer coordination, document lineage checks, and recovery after ambiguous outcomes or history gaps.
 
-The local preview does not need GitHub Pages. Deployment runs only after checks pass, on a main push or manual run with the repository variable `PAGES_ENABLED=true`. The workflow does not enable Pages automatically. Before enabling deployment, check your GitHub plan's support for private repositories and review the content that will be published.
+The package has no rich text, presence, undo, cursor, bulk List editing, move, automatic migration or background reconnect. Same-ID server rollback/forks and power-loss durability are not promised. See the [complete boundaries](reference.md#boundaries).
 
-[Previous: Development](development.md) · [Back to Overview](README.md)
+[Previous: Core reference](reference.md) · [Back to Overview](README.md)

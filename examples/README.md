@@ -2,6 +2,8 @@
 
 These are application-layer walkthroughs, not package APIs or production transport/storage adapters. Read the [core contracts](../docs/reference.md#core-contracts) first. Imports of example modules do not run their demos; direct CLI execution does.
 
+For setup, verification and documentation preview, read [CONTRIBUTING](../CONTRIBUTING.md). To learn the npm API without these helpers, start with the [Counter quick start](../docs/quick-start.md).
+
 All commands and snippet imports below are relative to the **repository root**, not this Markdown file. Use Node 24 and the pinned pnpm, run `pnpm install --frozen-lockfile` once, and build before starting browser hosts. Private repository access is required; this guide and the example code are not included in the package tarball.
 
 | Start here | What it demonstrates |

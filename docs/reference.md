@@ -1,81 +1,12 @@
 # Core reference
 
-Complete public API and core contracts for Articollab. For a step-by-step introduction, start with the [Counter quick start](quick-start.md).
+Look up the public API and exact collaboration contracts here. For a runnable introduction, start with the [Counter quick start](quick-start.md); for design reasons, read [Concepts](concepts.md).
 
-## v0.2 notes and compatibility
+## Compatibility
 
-The baseline includes:
+These docs describe the 0.2 beta API. Do not mix incompatible server/checkpoint versions or document lineages. The [upgrade guide](recovery.md#upgrading-from-01) covers explicit sessions, the incompatible 0.1 server checkpoint format and the later incoming-namespace default.
 
-- Typed Value/List/Text collections, optimistic reconciliation, synchronous transactions and retained pending replay conflicts.
-- Synchronous server policy and explicit rejection, last-batch retry deduplication and bounded commit catch-up.
-- Strict wire decoders, snapshots, and client/server checkpoint restore with sequence and ID allocation progress.
-
-**0.2.0-beta.0 is published on npm.** Breaking changes from 0.1: every server writer must be opened explicitly, `maxClients` counts open sessions, and server checkpoints use `lastClientNumber`/`clients` instead of `replays`. Old server checkpoints are rejected; there is no migration or fresh fallback. Batch, commit and client checkpoint shapes remain unchanged. Do not mix incompatible servers/checkpoints; example helper signatures also changed.
-
-### Preparing 0.2.0-beta.1
-
-`0.2.0-beta.1` is the next release target, not a published version yet. The source includes two changes since `0.2.0-beta.0`:
-
-- With no replay conflict, client reconciliation skips replay and visible collection comparisons for exact own acknowledgements, and skips replay for remote commits whose paths are disjoint from all pending operations. Own rejections or changed operations, overlapping paths and existing conflicts still use full reconciliation. Validation, visible state and events remain unchanged; this is not a constant-time guarantee for every receive.
-- **Breaking default:** new `server.receive()` batches require canonical writer/collection insertion namespaces before policy runs. Normal package clients already generate these IDs. Applications with custom incoming IDs must explicitly set `allowCustomClientNamespaces: true`, including when restoring a server, and supply their own incoming namespace policy.
-
-Neither change is in the published `0.2.0-beta.0`. Wire and checkpoint shapes are unchanged. Existing state and retained results are not retroactively namespace-checked; identical retained retries keep their original result, and `reject()` can still acknowledge namespace-invalid originals. Namespace checks are not authentication or deletion authorization. See [incoming namespaces](#incoming-insertion-namespaces) and the [upgrade checklist](recovery.md#preparing-an-upgrade-from-020-beta0).
-
-Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` retains its documented `name`, JSON Pointer `path` and readable message contract, not exact message wording. Transport, storage, authentication, writer coordination, lineage checks and production reconnect orchestration remain application responsibilities.
-
-## Mixed transaction example
-
-In an ESM project (`"type": "module"`), install the package with `pnpm add articollab@0.2.0-beta.0`. Use Node.js 24+, save the snippet as `board.ts` and run `node board.ts`; no repository access or build step is needed. The example imports the installed production entrypoint, not internal source modules.
-
-One writer makes a mixed transaction, buffers its batch, then manually sends the result to itself and a peer:
-
-```ts
-import {
-  createClient, createServer, defineDocument, list, text, value,
-  type ClientBatch, type DocumentOperation,
-} from "articollab";
-
-const Board = defineDocument({
-  count: value(0),
-  items: list<string>(),
-  body: text(),
-});
-type Batch = ClientBatch<DocumentOperation<typeof Board.definition>>;
-const outbound: Batch[] = [];
-const server = createServer(Board);
-const doc = createClient(Board, {
-  clientId: server.openClient(),
-  onBatch: (batch) => { outbound.push(batch); },
-});
-const peer = createClient(Board, {
-  clientId: server.openClient(),
-  onBatch() {}, // This peer does not edit in this example.
-});
-
-doc.transact(() => {
-  doc.state.count.value = 1;
-  doc.state.items.push("Write tests");
-  doc.state.body.insert(0, "Hello 😀");
-});
-
-console.log(doc.state.body.toString()); // "Hello 😀" — optimistic, before sending.
-console.log(outbound.length); // 1 batch containing all three operations.
-console.log(server.snapshot().data.count); // 0 — the server is still unchanged.
-
-const batch = outbound.shift();
-if (batch === undefined) throw new Error("Expected the transaction batch");
-const { commit } = server.receive(batch);
-for (const client of [doc, peer]) client.receive(commit);
-
-console.log(peer.state.count.value); // 1
-console.log(peer.state.items.toArray()); // ["Write tests"]
-console.log(peer.state.body.toString()); // "Hello 😀"
-console.log(doc.checkpoint().pendingBatches.length); // 0 — acknowledged.
-```
-
-Both clients start at schema defaults and watermark 0. Local mutation is not network submission, and submission is not client acknowledgement: the source must receive its ordered commit too. This intentionally has no retries, policies or listener-created edits. Applications must finish delivering one commit before a reentrant listener's next commit can overtake it.
-
-Full broadcast, resume, HTTP and persistence walkthroughs are in the [examples guide](../examples/README.md). The examples require repository access and are not shipped in the npm package.
+Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` promises its documented `name`, JSON Pointer `path` and readable message, not exact wording.
 
 ## Public API
 
@@ -226,4 +157,4 @@ The published 0.2 beta uses explicit sessions. Examples demonstrate application 
 
 There is no production transport or storage adapter, background sync, automatic retry/reconnect, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing, move, public stable positions or cursor API. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
 
-[Previous: Recovery](recovery.md) · [Next: Examples guide](../examples/README.md)
+[Previous: Recovery](recovery.md) · [Next: FAQ and limitations](faq.md)

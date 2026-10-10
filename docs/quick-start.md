@@ -2,16 +2,16 @@
 
 Use this example to see exactly when a local edit becomes authoritative. It buffers one batch, submits it manually, then delivers the commit to the writer and a peer.
 
-## Version
+## Before you start
 
-These instructions target the published `0.2.0-beta.0`. The 0.1 betas use a different session/checkpoint contract; do not mix them. Use an ESM project (`"type": "module"`).
+Use Node.js 24+ and an ESM project (`"type": "module"`). The package is public; no repository checkout is required. For existing applications, read the [upgrade guidance](recovery.md#upgrading-from-01) before mixing servers or checkpoints.
 
 ## Install and run
 
-In an ESM project, use Node.js 24+ and install the matching version from npm. You do not need access to the private repository.
+Install the beta from npm:
 
 ```sh
-pnpm add articollab@0.2.0-beta.0
+pnpm add articollab@beta
 ```
 
 Save the following complete snippet as `counter.ts` in your project and run `node counter.ts`. Node runs this TypeScript example directly; no build step is needed. The import resolves the installed package's production ESM entrypoint.
@@ -70,6 +70,6 @@ Pending: 0
 
 `server.receive(batch)` creates a receipt containing the authoritative commit. Deliver **the commit**, not the receipt, to every relevant client in global sequence order. At the writer, that commit also acknowledges its pending batch. The final value remains 3, so the own ack need not produce another change event.
 
-This deliberately synchronous example has no reentrant listeners. A real broadcast loop must serialize delivery so listener-generated batches cannot interrupt an earlier commit; see the [examples guide](examples.md#in-memory-broadcast-walkthrough).
+This synchronous example has no listener-generated edits. When integrating multiple writers, finish delivering each commit before handling a listener's new submission. See [ordered delivery](server-wire.md#deliver-in-order).
 
 [Previous: Overview](README.md) · [Next: Concepts](concepts.md)

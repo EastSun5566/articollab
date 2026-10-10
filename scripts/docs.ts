@@ -12,8 +12,9 @@ const source = join(root, "docs");
 const output = join(root, ".docs-site");
 const prefix = "/articollab/";
 const pages = ["README.md", "quick-start.md", "concepts.md", "collections.md",
-  "transactions.md", "server-wire.md", "recovery.md", "reference.md", "examples.md", "development.md", "faq.md"];
+  "transactions.md", "server-wire.md", "recovery.md", "reference.md", "faq.md"];
 const files = ["index.html", "_sidebar.md", ".nojekyll", ...pages];
+const retiredPages = ["development.md", "examples.md"];
 const execute = promisify(execFile);
 
 async function requireRegular(path: string): Promise<void> {
@@ -25,25 +26,20 @@ async function requireRegular(path: string): Promise<void> {
 export async function buildDocs(): Promise<void> {
   await mkdir(output, { recursive: true });
   assert.ok((await lstat(output)).isDirectory(), "Staging must not be a symlink");
-  for (const name of await readdir(output)) {
-    assert.ok(files.includes(name), `Unexpected staging asset: ${name}`);
+  const stagedFiles = await readdir(output);
+  for (const name of stagedFiles) {
+    assert.ok(files.includes(name) || retiredPages.includes(name), `Unexpected staging asset: ${name}`);
     await requireRegular(join(output, name));
   }
-  const sourceFiles = files.filter((name) => !["examples.md", ".nojekyll"].includes(name));
+  const sourceFiles = files.filter((name) => name !== ".nojekyll");
   assert.deepEqual((await readdir(source)).sort(), [...sourceFiles].sort(), "Keep docs assets on the allowlist");
+  for (const name of retiredPages) {
+    if (stagedFiles.includes(name)) await rm(join(output, name));
+  }
   for (const name of sourceFiles) {
     await requireRegular(join(source, name));
-    if (name === "reference.md") {
-      const reference = (await readFile(join(source, name), "utf8"))
-        .replaceAll("../examples/README.md", "examples.md");
-      await writeFile(join(output, name), reference);
-    } else {
-      await copyFile(join(source, name), join(output, name));
-    }
+    await copyFile(join(source, name), join(output, name));
   }
-  const examples = (await readFile(join(root, "examples/README.md"), "utf8"))
-    .replaceAll("../docs/reference.md", "reference.md");
-  await writeFile(join(output, "examples.md"), examples);
   await writeFile(join(output, ".nojekyll"), "");
   console.log("Staged docs in .docs-site/");
 }
@@ -59,19 +55,23 @@ function headingId(heading: string): string {
 
 /** Check staged links/assets, then typecheck and execute the exact documented Counter. */
 export async function checkDocs(): Promise<void> {
-  // The reference must also work when read directly in the source repository.
-  const reference = await readFile(join(source, "reference.md"), "utf8");
-  for (const match of withoutCode(reference).matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
-    const link = match[1]!;
-    if (/^https:\/\//.test(link)) continue;
-    const [file, anchor] = link.split("#");
-    const target = join(source, file === "" ? "reference.md" : file!);
-    await requireRegular(target);
-    if (anchor !== undefined) {
-      const content = await readFile(target, "utf8");
-      const headings = [...withoutCode(content).matchAll(/^#{1,6}\s+(.+)$/gm)]
-        .map((heading) => headingId(heading[1]!));
-      assert.ok(headings.includes(anchor), `reference.md: missing heading ${link}`);
+  // Reader and contributor links must work directly in the checkout too.
+  for (const name of ["README.md", "CONTRIBUTING.md", "examples/README.md",
+    ...[...pages, "_sidebar.md"].map((page) => "docs/" + page)]) {
+    const filename = join(root, name);
+    const markdown = await readFile(filename, "utf8");
+    for (const match of withoutCode(markdown).matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+      const link = match[1]!;
+      if (/^https:\/\//.test(link)) continue;
+      const [file, anchor] = link.split("#");
+      const target = file === "" ? filename : join(dirname(filename), file!);
+      await requireRegular(target);
+      if (anchor !== undefined) {
+        const content = await readFile(target, "utf8");
+        const headings = [...withoutCode(content).matchAll(/^#{1,6}\s+(.+)$/gm)]
+          .map((heading) => headingId(heading[1]!));
+        assert.ok(headings.includes(anchor), `${name}: missing heading ${link}`);
+      }
     }
   }
   assert.deepEqual((await readdir(output)).sort(), [...files].sort(), "Unexpected/missing staging assets");
@@ -131,6 +131,8 @@ export async function checkDocs(): Promise<void> {
     for (const [path, method, status] of [
       ["", "GET", 200], ["_sidebar.md", "GET", 200],
       ["quick-start.md", "HEAD", 200], ["index.html", "POST", 405],
+      ["development.md", "GET", 404], ["examples.md", "GET", 404],
+      ["CONTRIBUTING.md", "GET", 404],
       ["src/index.ts", "GET", 404], ["../package.json", "GET", 404],
       ["%2e%2e/.git/config", "GET", 404],
     ] as const) {

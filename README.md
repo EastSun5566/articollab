@@ -6,10 +6,10 @@ Clients edit optimistically; the server orders commits and clients replay unackn
 
 ## Install
 
-**`0.2.0-beta.0` is published on [npm](https://www.npmjs.com/package/articollab)**, with explicit server-issued writer sessions and a new server checkpoint format. Use an ESM project (`"type": "module"`); the Node.js examples require Node 24+. Do not mix 0.1 servers/checkpoints with the 0.2 contract.
+Install the public beta from [npm](https://www.npmjs.com/package/articollab). Use an ESM project (`"type": "module"`); the Node.js examples require Node 24+.
 
 ```sh
-pnpm add articollab@0.2.0-beta.0
+pnpm add articollab@beta
 ```
 
 ## Quick start
@@ -39,10 +39,9 @@ The server opens a writer session before its first batch. Disconnecting preserve
 - [Counter walkthrough](docs/quick-start.md)
 - [API, core contracts and compatibility](docs/reference.md)
 - [Recovery](docs/recovery.md)
-- [Examples](examples/README.md)
-- [Development](docs/development.md)
+- [Contributing](CONTRIBUTING.md)
 
-The source repository is currently private, so the full documentation requires repository access. Example helpers are not package APIs or production adapters.
+The npm package is public. Reading repository-hosted documentation and contributing currently require repository access.
 
 ## License
 
