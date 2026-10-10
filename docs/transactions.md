@@ -4,6 +4,8 @@ Use a transaction when several synchronous edits should travel as one batch. Use
 
 ## Batch related edits
 
+Using the Board client from [Collections](collections.md), group edits that belong together:
+
 ```ts
 const result = doc.transact(() => {
   doc.state.count.value = 1;
@@ -19,6 +21,8 @@ Outside a transaction, each actual mutation creates its own batch. An empty tran
 Transactions are synchronous. Do not pass an async callback. An exception escaping the outer callback rolls back its visible mutations and does not consume a local batch sequence. Already allocated List/Text IDs are not reused.
 
 ## Nested calls have no savepoint
+
+This example uses a Counter client from the [quick start](quick-start.md):
 
 ```ts
 doc.transact(() => {

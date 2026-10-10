@@ -1,8 +1,25 @@
 # Server policy and wire data
 
-Use policy to decide a batch's authoritative effect, and decoders to validate untrusted parsed JSON before calling typed runtime methods. These are separate boundaries.
+Submit batches to decide their authoritative effect, decode untrusted messages at the transport boundary, and deliver commits in global order. Policy, validation and delivery solve different problems.
+
+## Submit a batch
+
+Use the `server`, buffered `batch`, `doc` and `peer` from the [Counter quick start](quick-start.md). Replace its submission step with:
+
+```ts
+const receipt = server.receive(batch);
+console.log(receipt.replayed); // false for this new batch
+for (const client of [doc, peer]) client.receive(receipt.commit);
+console.log(doc.checkpoint().pendingBatches.length); // 0
+```
+
+The receipt contains the commit and local routing metadata. Send the **commit**, not the receipt, to clients. The source must receive it too: server acceptance alone does not remove pending work.
+
+Fresh writers need an ID from `server.openClient()`. Persist that session before handing out the ID if you need crash recovery. Opening a session is not authentication.
 
 ## Accept, transform or reject
+
+Import `createServer` from `"articollab"` and use the Counter schema from the quick start. Create this server instead of the accept-only server:
 
 ```ts
 const server = createServer(Counter, {
@@ -15,15 +32,17 @@ const server = createServer(Counter, {
 });
 ```
 
-This Counter-only resolver caps accepted values at 10 and rejects later batches once the pre-batch count reaches 10. It returns operations synchronously; it does not send messages. Policy can return any valid operation set, not necessarily one operation per input.
+A pending `set(12)` displays 12 locally, then becomes 10 after receiving its transformed commit. Once the authoritative count is 10, this policy rejects later batches.
 
-`[]` produces a normal authoritative commit with no effect. Delivering it acknowledges the source batch and rolls back its optimistic effect. `server.reject(originalBatch)` explicitly does the same without running the resolver or applying the incoming operations.
+The resolver receives the pre-batch snapshot and returns operations synchronously. Return `batch.operations` to accept unchanged, a valid operation set to transform, or `[]` to acknowledge without an authoritative effect. It need not return one operation per input.
 
-The same last-batch retry returns its original result across `receive()` and `reject()`. Acceptance cannot later become rejection. Cancellation is not undo.
+For explicit cancellation, trusted application code can call `server.reject(originalBatch)`. It skips the resolver and incoming operation application. A previously accepted batch cannot become rejected: an identical latest retry returns its original result through either entrypoint.
 
-Resolver failures or invalid output do not advance server state/sequences. Policy side effects cannot be rolled back: keep decisions pure. For Text transformations reusing incoming IDs, preserve code-point length; different-length insertions need application-owned globally unique ranges.
+Resolver throws or invalid output leave server state and sequences unchanged. Side effects cannot be rolled back; keep decisions pure. If a Text transform reuses incoming IDs, preserve the code-point length. Different-length insertions need globally unique application-supplied ID ranges.
 
 ## Decode at the transport boundary
+
+Import `decodeClientBatch` and `decodeServerCommit` from `"articollab"`. With a Counter server/client and a JSON message containing its original batch:
 
 ```ts
 const batch = decodeClientBatch(Counter, JSON.parse(batchMessage));
@@ -32,48 +51,55 @@ const commitMessage = JSON.stringify(commit);
 doc.receive(decodeServerCommit(Counter, JSON.parse(commitMessage)));
 ```
 
-`JSON.parse()` is the application's job. The decoder accepts `unknown`, checks exact fields, paths, collection kinds, JSON payloads, sequences and IDs, then deeply copies/freezes the result. `WireDecodeError.path` is a JSON Pointer, such as `/operations/0/id/counter`.
+The source receives the authoritative result through the same decoding boundary as peers. In a networked application, deliver earlier missing commits before this one.
 
-Decoders do not infer a business object's shape from TypeScript `T`. Validate that separately. An operation with a structurally valid but unknown anchor may decode successfully, then fail runtime application atomically.
+`JSON.parse()` is your application's job. A decoder accepts parsed `unknown`, checks fields, schema paths, collection kinds, JSON payloads, sequences and IDs, then deeply copies/freezes the result. `WireDecodeError.path` identifies an invalid field with a JSON Pointer, such as `/operations/0/id/counter`.
+
+Decoding does not validate the business shape of TypeScript `T`. An unknown anchor can be structurally valid and decode successfully, then fail authoritative application atomically. See the [wire/error contract](reference.md#wire-validation-and-error-boundaries).
 
 ## Incoming insertion namespaces
 
-In the unreleased source, new `server.receive()` batches check the package's canonical writer/collection insertion namespace before policy runs. This is a breaking default change from published `0.2.0-beta.0`, not authentication. Use the standalone helper to additionally verify your application's authenticated writer binding:
+New `server.receive()` batches must use the canonical writer/collection insertion namespace before policy runs. This prevents allocation under another writer's namespace, not impersonation of their session.
+
+For a Board schema from [Collections](collections.md), verify the authenticated writer binding before submission:
 
 ```ts
 import { assertClientBatchNamespace, decodeClientBatch } from "articollab";
 
-// authenticatedWriterId comes from your verified writer/session binding.
+// These values come from your transport and verified session binding.
 const batch = decodeClientBatch(Board, JSON.parse(batchMessage));
 assertClientBatchNamespace(batch, authenticatedWriterId);
 const receipt = server.receive(batch);
 ```
 
-A batch cannot allocate another writer's new IDs under the default policy, but may still insert after or delete their existing elements. The helper checks exact canonical bunch IDs, not string prefixes, and returns `undefined` or throws `TypeError`. Verify the authenticated writer binding on every request, including retries. An issued client ID does not authenticate its caller or provide deletion authorization; every client ID must still have only one writer.
+Never derive `authenticatedWriterId` from the request body. Verify binding on retries too. A writer may still anchor insertions after another writer's elements or delete them; deletion authorization belongs to your application.
 
-Applications using custom incoming IDs must opt out explicitly and supply their own namespace policy:
+If you intentionally use custom incoming IDs, provide your own namespace policy and opt out:
 
 ```ts
 const server = createServer(Board, { allowCustomClientNamespaces: true });
 ```
 
-The option defaults to `false` and must be supplied again on server restore; it does not disable other runtime validation. Resolver-generated authoritative IDs are not namespace-checked.
+This option defaults to `false`, does not disable other validation, and must be supplied again on restore. Resolver-generated authoritative IDs are outside the incoming check.
 
-To explicitly reject a namespace-invalid batch, first verify that `batch.clientId` matches the authenticated writer, then call `server.reject(batch)` without the standalone helper. Server rejection skips namespace checks. Both server entrypoints replay the last identical result before checking new submissions, so a rejected batch remains retryable through `receive()`. Neither a guard failure nor a thrown runtime error is an ack.
+To cancel a namespace-invalid original, verify its writer binding, then call `server.reject(batch)` without the standalone namespace helper. Rejection skips the server namespace check. Both entrypoints return the last identical result before checking new submissions, including a saved rejection or custom-ID acceptance.
 
-See the [namespace contract](reference.md#incoming-insertion-namespaces) for the exact format and boundaries.
+A guard failure or runtime throw is not an acknowledgement. See the [exact namespace contract](reference.md#incoming-insertion-namespaces) and [upgrade guidance](recovery.md#upgrading-from-020-beta0).
 
 ## Deliver in order
 
-```ts
-const receipt = server.receive(batch);
-// New result: broadcast receipt.commit to all relevant clients.
-// Retry: route its retained commit only to the source still missing it,
-// after earlier missing commits. Never redeliver consumed commits.
-```
+Every client needs every authoritative commit, exactly once and in global sequence order. If its watermark is 10 and its own commit is 12, first deliver commit 11. Do not skip it because POST succeeded or because commit 12 belongs to that client.
 
-Every client needs every authoritative commit in global order. Receipt `replayed` is routing metadata, not part of the commit wire object. The core does not supply a connection registry or broadcast queue.
+For each new result:
 
-See the [server contracts](reference.md#server-policy-rejection-and-retries) and [wire boundary](reference.md#wire-validation-and-error-boundaries).
+1. Persist the server checkpoint if your application promises recovery.
+2. Deliver the commit to every relevant client, including the source.
+3. Finish that delivery before processing a listener's new submission.
+
+Use an application-owned queue when listeners can submit during delivery. The small Counter example has no such listeners; it is not a production broadcast loop.
+
+For a retained retry, do not broadcast again to peers. [Catch up the source](recovery.md#catch-up-before-resubmitting) from its watermark; skip results it has already consumed. `receipt.replayed` does not create a new commit or catch up other clients.
+
+The core supplies neither a registry nor transport. See the [server contract](reference.md#server-policy-rejection-and-retries) for sequence and retry rules.
 
 [Previous: Transactions](transactions.md) · [Next: Recovery](recovery.md)
