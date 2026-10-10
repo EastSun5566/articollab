@@ -355,8 +355,8 @@ describe("text runtime", () => {
     assert.equal(server.openClient(), "client-1");
     assert.equal(server.openClient(), "client-2");
     assert.equal(server.openClient(), "client-3");
-    const id1 = { bunchId: "one", counter: 0 };
-    const id2 = { bunchId: "two", counter: 0 };
+    const id1 = { bunchId: JSON.stringify(["client-1", "body", 1]), counter: 0 };
+    const id2 = { bunchId: JSON.stringify(["client-2", "body", 1]), counter: 0 };
     const missing = { bunchId: "missing", counter: 0 };
     const receive = (
       clientId: string,
@@ -406,7 +406,7 @@ describe("text runtime", () => {
       type: "text/insert",
       path: "title",
       before: null,
-      id: id2,
+      id: { bunchId: JSON.stringify(["client-2", "title", 1]), counter: 0 },
       value: "x",
     } as unknown as NoteOperation; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
     assert.throws(
@@ -424,7 +424,7 @@ describe("text runtime", () => {
     );
     assert.throws(
       () =>
-        receive("client-2", 1, [
+        receive("client-1", 2, [
           {
             type: "text/insert",
             path: "body",

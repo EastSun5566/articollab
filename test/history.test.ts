@@ -330,7 +330,7 @@ describe("history checkpoint decoding", () => {
     const next = restored.receive({ clientId: "client-3", seq: 1, operations: [{
       type: "text/insert", path: "body",
       before: batches[0]!.operations.find((operation) => operation.type === "text/insert")!.id,
-      id: { bunchId: "after-tombstone", counter: 0 }, value: "B",
+      id: { bunchId: JSON.stringify(["client-3", "body", 1]), counter: 0 }, value: "B",
     }] }).commit;
     late.receive(next);
     assert.equal(late.state.body.toString(), restored.snapshot().data.body.value);

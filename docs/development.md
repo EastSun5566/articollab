@@ -40,7 +40,7 @@ The GitHub Actions `CI` workflow runs on main pushes, `v*` tag pushes, PRs targe
 | Transaction batching, nested/no-savepoint behavior, rollback, local callback failures and reentrant delivery | `runtime.test.ts`, collection tests; `resume.test.ts`, `async-resume.test.ts`, HTTP sync |
 | Atomic policy, explicit rejection and original-result retry | Runtime policy tests, `server-reject.test.ts`, `retry.test.ts`; HTTP rejection recovery |
 | Explicit writer sessions, open-session capacity, closure and restore | `client-session.test.ts`, `server-capacity.test.ts`; installed runtime/declaration fixtures |
-| Opt-in incoming writer/collection namespaces, cross-writer references and unchanged retries | `namespace.test.ts`; installed runtime/declaration fixtures |
+| Default incoming writer/collection namespaces, explicit custom-ID opt-out, cross-writer references and retained retries after restore | `namespace.test.ts`; installed runtime/declaration fixtures |
 | Owned wire JSON and restore metadata | `wire.test.ts`, `client-checkpoint.test.ts`, `history.test.ts` |
 | Local JSON validation, unchanged ownership, deep traversal and failure atomicity | `runtime.test.ts`, `list.test.ts`, `wire.test.ts` |
 | Pending prefix/conflicts, restore and catch-up | `replay-conflict.test.ts`, `client-checkpoint.test.ts`, `interleaving.test.ts`; HTTP/browser recovery |
@@ -50,6 +50,8 @@ The GitHub Actions `CI` workflow runs on main pushes, `v*` tag pushes, PRs targe
 These are coverage pointers, not proof of every observable edge case. Dedicated core regression cases in `runtime.test.ts` cover nested transaction batching, escaping-error rollback, caught inner errors without savepoints, and the pending/sequence/notification behavior when local callbacks throw. Existing persistence/recovery tests separately cover callback failures at application boundaries. Do not infer complete coverage from the number of passing tests.
 
 The optional `maxClients` bounds open writer sessions, including those without a batch. `openClient()` allocates a canonical, never-reused ID; `closeClient()` removes its session and last retry. Disconnect and history eviction do not close it. Unknown/closed writers fail before operation copying/policy. Restore validates all session metadata before checking capacity; the allocation counter survives closure and restore. Server checkpoints from 0.1 are intentionally incompatible.
+
+Unreleased namespace policy changes the default for new `receive()` batches: check the owned incoming batch before policy, unless `allowCustomClientNamespaces: true` explicitly delegates that policy to the application. Recognize identical retained retries first, and leave `reject()` able to acknowledge namespace-invalid originals. Neither restore nor authoritative resolver output is namespace-checked. The option is not persisted, and the internal check against `batch.clientId` is not authentication. Keep the standalone helper for application-authenticated writer binding; see [the contract](reference.md#incoming-insertion-namespaces).
 
 The deterministic interleaving suite uses three clients, five seeds, 200 scheduling steps and repeat-trace comparison, checking protocol invariants, a Value oracle, restore equivalence and convergence—not an independent List/Text model. Reproduce one seed with:
 

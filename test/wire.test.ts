@@ -624,7 +624,7 @@ describe("wire decoding", () => {
           type: "text/insert",
           path: "body",
           before: { bunchId: "missing", counter: 0 },
-          id: { bunchId: "one", counter: 0 },
+          id: { bunchId: JSON.stringify(["client-1", "body", 1]), counter: 0 },
           value: "a",
         },
       ],
@@ -650,7 +650,7 @@ describe("wire decoding", () => {
           type: "text/insert",
           path: "body",
           before: null,
-          id: { bunchId: "one", counter: 0 },
+          id: { bunchId: JSON.stringify(["client-1", "body", 1]), counter: 0 },
           value: "a",
         },
       ],
@@ -661,6 +661,7 @@ describe("wire decoding", () => {
   it("streams huge Text delete ranges before rejecting unknown ids", () => {
     const server = createServer(Board);
     assert.equal(server.openClient(), "client-1");
+    const id = { bunchId: JSON.stringify(["client-1", "body", 1]), counter: 0 };
     const first = decodeClientBatch(Board, {
       clientId: "client-1",
       seq: 1,
@@ -669,7 +670,7 @@ describe("wire decoding", () => {
           type: "text/insert",
           path: "body",
           before: null,
-          id: { bunchId: "one", counter: 0 },
+          id,
           value: "a",
         },
       ],
@@ -685,14 +686,16 @@ describe("wire decoding", () => {
           path: "body",
           ranges: [
             {
-              start: { bunchId: "one", counter: 0 },
+              start: id,
               count: Number.MAX_SAFE_INTEGER,
             },
           ],
         },
       ],
     });
-    assert.throws(() => server.receive(hugeDelete), /counter.*1|\["one",1\]/i);
+    assert.throws(() => server.receive(hugeDelete), {
+      message: `Unknown text element id: ${JSON.stringify([id.bunchId, 1])}`,
+    });
     assert.equal(server.snapshot().serverSeq, 1);
 
     const validDelete = decodeClientBatch(Board, {
@@ -703,7 +706,7 @@ describe("wire decoding", () => {
           type: "text/delete",
           path: "body",
           ranges: [
-            { start: { bunchId: "one", counter: 0 }, count: 1 },
+            { start: id, count: 1 },
           ],
         },
       ],

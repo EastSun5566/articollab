@@ -12,6 +12,8 @@ The baseline includes:
 
 **0.2.0-beta.0 is published on npm.** Breaking changes from 0.1: every server writer must be opened explicitly, `maxClients` counts open sessions, and server checkpoints use `lastClientNumber`/`clients` instead of `replays`. Old server checkpoints are rejected; there is no migration or fresh fallback. Batch, commit and client checkpoint shapes remain unchanged. Do not mix incompatible servers/checkpoints; example helper signatures also changed.
 
+**Unreleased breaking change:** new `server.receive()` batches now require canonical writer/collection insertion namespaces by default. Applications with custom incoming IDs must explicitly set `allowCustomClientNamespaces: true`, including when restoring a server. This change is not in the published `0.2.0-beta.0`; wire and checkpoint shapes are unchanged.
+
 Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` retains its documented `name`, JSON Pointer `path` and readable message contract, not exact message wording. Transport, storage, authentication, writer coordination, lineage checks and production reconnect orchestration remain application responsibilities.
 
 ## Mixed transaction example
@@ -81,12 +83,12 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.on("change", listener)` | Subscribes to document-level events; returns an unsubscribe function. |
 | `doc.receive(commit)` | Applies the next authoritative commit, acknowledges own pending work and replays the rest. |
 | `doc.replayConflict`, `doc.checkpoint()` | Read the first replay failure or save authoritative state and pending work. |
-| `createServer(schema, options?)` | Optional synchronous `resolve`, restore `checkpoint`, `historyLimit` (default 1000), and `maxClients` (optional open-session bound). |
+| `createServer(schema, options?)` | Optional synchronous `resolve`, restore `checkpoint`, `historyLimit` (default 1000), `maxClients` (optional open-session bound), and `allowCustomClientNamespaces` (default false). |
 | `server.openClient()`, `server.closeClient(clientId)` | Issue a writer ID or permanently retire it; neither creates a commit. |
 | `server.receive(batch)`, `server.reject(batch)` | Process a batch or replay its original result; return `{ commit, replayed }`. |
 | `server.snapshot()`, `server.checkpoint()`, `server.commitsSince(watermark)` | Late join, server restore, and complete ordered catch-up or `null`. |
 | `decodeClientBatch`, `decodeServerCommit`, `decodeSnapshot`, `decodeClientCheckpoint`, `decodeServerCheckpoint` | Each takes `(schema, unknown)`, validates parsed wire data and returns an owned frozen object. |
-| `assertClientBatchNamespace(batch, expectedClientId)` | Optional incoming-batch writer binding and canonical insertion namespace check; returns `void` or throws `TypeError`. |
+| `assertClientBatchNamespace(batch, expectedClientId)` | Explicit authenticated writer binding and canonical insertion namespace check; returns `void` or throws `TypeError`. |
 | `WireDecodeError` | Decoder error with `name`, JSON Pointer `path` (root `/`) and a readable message. |
 
 The entrypoint also exports these types, grouped by role rather than implementation file:
@@ -169,7 +171,11 @@ Only the last processed batch per client is retained for retry. The same payload
 
 Broadcast new commits to all relevant clients, including their source. Route a replay only to the source still awaiting it, after any earlier missing commits; never redeliver an already-consumed commit. Retry does not catch up peers. Sequences and allocation counters stay within safe integers; exhaustion prevents new relevant work, while retained server retries remain available.
 
-### Opt-in insertion namespaces
+### Incoming insertion namespaces
+
+For a new batch, `server.receive()` checks canonical insertion namespaces on its owned frozen batch before running the resolver. Failure throws `TypeError` without advancing state, sequences, retry metadata or history; it is not an ack. The server checks against `batch.clientId`, which must name an open session, but does not authenticate the caller. Application code must verify the caller's writer/session binding separately.
+
+`allowCustomClientNamespaces?: boolean` defaults to `false`; non-boolean values throw `TypeError` at construction. Set it to `true` only when the application supplies its own incoming namespace policy. It bypasses namespace checks, not session, sequence, retry-payload or state validation. The option is not checkpoint data: pass it again on restore if needed. Existing state, tombstones, history and saved results are not retroactively namespace-checked.
 
 `assertClientBatchNamespace(batch: ClientBatch, expectedClientId: string): void` checks a typed incoming batch before application code calls `server.receive()`, including retries. Unknown input must first pass `decodeClientBatch()`. The nonempty expected ID must come from an application-authenticated writer/session binding, not the batch itself; `batch.clientId` must match it.
 
@@ -177,9 +183,9 @@ For every List/Text insertion, `id.bunchId` must be exactly `JSON.stringify([cli
 
 Success returns `undefined`; failure throws `TypeError` identifying the relevant field, without an exact-message guarantee. The helper does not copy, freeze or modify its input, read server state, create a commit or consume a sequence. It checks namespaces, not wire structure, state-dependent ID validity, authentication, writer locking or deletion authorization. Applications must still enforce one writer per `clientId`.
 
-This check is never enabled automatically by the server, decoders or restore. Applications with custom incoming namespaces can use their own policy instead. Resolver-generated authoritative IDs are outside this incoming check and retain their existing globally unique ID requirements.
+The standalone helper remains useful for checking an application-authenticated writer ID. Decoders validate wire structure but do not enforce namespaces. Resolver-generated authoritative IDs are outside the incoming check and retain their existing globally unique ID requirements.
 
-To cancel a namespace-invalid original batch, trusted application code must verify its writer binding, then call `server.reject(originalBatch)` without this namespace check. Otherwise invalid pending work could never be acknowledged. Original-result retry and ordered delivery rules still apply; rejection is not undo.
+To cancel a namespace-invalid original batch, trusted application code must verify its writer binding, then call `server.reject(originalBatch)` without the standalone namespace check. `reject()` skips the server namespace check. Both entrypoints recognize the last identical batch before namespace validation and return its original result, including rejected or previously accepted custom-ID batches restored from a checkpoint. Changed payloads, old sequences and gaps still throw. Rejection is not undo.
 
 ### Snapshots, checkpoints and catch-up
 

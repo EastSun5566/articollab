@@ -58,6 +58,8 @@ Restore rebuilds optimistic state/conflict without sending or emitting changes. 
 
 Server checkpoint restore additionally retains the client allocation counter, all open sessions (including those with no batch), last results and bounded history; supply the resolver again. Disconnect/reload does not close the session. Never call `openClient()` to restore an existing identity. Do not substitute a client snapshot for a server checkpoint.
 
+The unreleased server also checks insertion namespaces for new submissions by default. Applications with custom incoming IDs must pass `allowCustomClientNamespaces: true` again on restore; the option is not serialized. Restore does not revalidate namespaces in existing state or retained results, and the last identical retry still returns its original result across `receive()` and `reject()`. New custom-ID submissions need the opt-out. Wire/checkpoint formats are unchanged; see [incoming namespaces](reference.md#incoming-insertion-namespaces).
+
 ## Catch up before resubmitting
 
 ```ts

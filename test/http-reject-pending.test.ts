@@ -110,8 +110,9 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
       if ((input instanceof Request ? input.url : input.toString()).endsWith("/rejections")) {
         rejected.push(decodeClientBatch(Board, JSON.parse(typeof init?.body === "string" ? init.body : assert.fail("Expected JSON request body"))).seq);
         // A remote commit races the rejection after the initial catch-up response.
-        assert.equal(await post(url, "/batches", { clientId: server.openClient(), seq: 1, operations: [
-          { type: "list/insert", path: "items", before: null, id: { bunchId: "peer-list", counter: 0 }, value: "Peer" },
+        const peerId = server.openClient();
+        assert.equal(await post(url, "/batches", { clientId: peerId, seq: 1, operations: [
+          { type: "list/insert", path: "items", before: null, id: { bunchId: JSON.stringify([peerId, "items", 1]), counter: 0 }, value: "Peer" },
         ] }), 204);
       }
       return fetch(input, init);
@@ -140,8 +141,9 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
       if (event.commit.source.clientId === "client-2") a.doc.state.count.value = 7;
       if (event.commit.source.clientId === "client-1") a.doc.state.count.value = 8;
     });
-    assert.equal(await post(url, "/batches", { clientId: server.openClient(), seq: 1, operations: [
-      { type: "list/insert", path: "items", before: null, id: { bunchId: "peer-list", counter: 0 }, value: "Peer" },
+    const peerId = server.openClient();
+    assert.equal(await post(url, "/batches", { clientId: peerId, seq: 1, operations: [
+      { type: "list/insert", path: "items", before: null, id: { bunchId: JSON.stringify([peerId, "items", 1]), counter: 0 }, value: "Peer" },
     ] }), 204);
     assert.equal(await a.rejectPending(), true);
     assert.deepEqual(a.doc.checkpoint().pendingBatches.map((entry) => entry.seq), [2, 3]);
@@ -261,7 +263,7 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
     assert.equal(server.snapshot().serverSeq, 0);
     const invalidState = { clientId: "client-1", seq: 1, operations: [
       { type: "list/insert", path: "items", before: { bunchId: "unknown", counter: 0 },
-        id: { bunchId: "new", counter: 0 }, value: "A" },
+        id: { bunchId: JSON.stringify(["client-1", "items", 1]), counter: 0 }, value: "A" },
       { type: "text/delete", path: "body", ranges: [{ start: { bunchId: "unknown", counter: 0 }, count: 1 }] },
     ] };
     assert.equal(await post(url, "/batches", invalidState), 409);

@@ -316,8 +316,8 @@ describe("list runtime", () => {
     assert.equal(server.openClient(), "client-2");
     assert.equal(server.openClient(), "client-3");
     assert.equal(server.openClient(), "client-4");
-    const id1 = { bunchId: "one", counter: 0 };
-    const id2 = { bunchId: "two", counter: 0 };
+    const id1 = { bunchId: JSON.stringify(["client-1", "items", 1]), counter: 0 };
+    const id2 = { bunchId: JSON.stringify(["client-2", "items", 1]), counter: 0 };
     const missing = { bunchId: "missing", counter: 0 };
     const receive = (
       clientId: string,
@@ -329,7 +329,7 @@ describe("list runtime", () => {
       type: "list/insert",
       path: "title",
       before: null,
-      id: id1,
+      id: { bunchId: JSON.stringify(["client-4", "title", 1]), counter: 0 },
       value: "x",
     } as unknown as BoardOperation; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
     assert.throws(
@@ -364,7 +364,7 @@ describe("list runtime", () => {
 
     assert.throws(
       () =>
-        receive("client-2", 1, [
+        receive("client-1", 2, [
           {
             type: "list/insert",
             path: "items",
