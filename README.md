@@ -41,8 +41,6 @@ The server opens a writer session before its first batch. Disconnecting preserve
 - [Recovery](docs/recovery.md)
 - [Contributing](CONTRIBUTING.md)
 
-The npm package is public. Reading repository-hosted documentation and contributing currently require repository access.
-
 ## License
 
 MIT.

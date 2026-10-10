@@ -22,7 +22,7 @@ async function requireRegular(path: string): Promise<void> {
   assert.ok(stat.isFile(), `Expected a regular file: ${path}`);
 }
 
-/** Stage only the fixed public docs assets, never the private checkout. */
+/** Stage only the fixed docs assets, never the whole checkout. */
 export async function buildDocs(): Promise<void> {
   await mkdir(output, { recursive: true });
   assert.ok((await lstat(output)).isDirectory(), "Staging must not be a symlink");

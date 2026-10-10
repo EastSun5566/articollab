@@ -6,9 +6,9 @@ Use this page to decide whether the collaboration core fits your application.
 
 No. The server orders every new authoritative batch. Clients edit optimistically, then reconcile and replay pending operations. Stable IDs and tombstones do not remove the need for server order.
 
-## Can I use the package without repository access?
+## Do I need a repository checkout?
 
-Yes. Install `articollab@beta` from npm and follow the [Counter quick start](quick-start.md). Contributor tools and repository demos require a checkout; they are not part of the installed package.
+No. Install `articollab@beta` from npm and follow the [Counter quick start](quick-start.md). Contributor tools and repository demos require a checkout; they are not part of the installed package.
 
 ## Why do nested object edits not synchronize?
 
