@@ -1,3 +1,5 @@
+import { equalsId, type ElementId } from "articulated";
+
 import {
   freezeListOperation,
   ListState,
@@ -261,6 +263,39 @@ function restoreServerCheckpoint<S extends SchemaShape>(
 
 function runtimeState(runtime: RuntimeCollection): CollectionState {
   return runtime.state;
+}
+
+function sameAnchor(left: Readonly<ElementId> | null, right: Readonly<ElementId> | null): boolean {
+  return left === right || (left !== null && right !== null && equalsId(left, right));
+}
+
+/** JSON equality would lose payload identity and signed-zero changes. */
+function sameOperations(left: readonly Operation[], right: readonly Operation[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((operation, index) => {
+    const other = right[index]!;
+    if (operation.path !== other.path) return false;
+    switch (operation.type) {
+      case "value/set":
+        return other.type === "value/set" && Object.is(operation.value, other.value);
+      case "list/insert":
+        return other.type === "list/insert" && sameAnchor(operation.before, other.before) &&
+          equalsId(operation.id, other.id) && Object.is(operation.value, other.value);
+      case "list/delete":
+        return other.type === "list/delete" && equalsId(operation.id, other.id);
+      case "text/insert":
+        return other.type === "text/insert" && sameAnchor(operation.before, other.before) &&
+          equalsId(operation.id, other.id) && operation.value === other.value;
+      case "text/delete":
+        return other.type === "text/delete" && operation.ranges.length === other.ranges.length &&
+          operation.ranges.every((range, rangeIndex) => {
+            const otherRange = other.ranges[rangeIndex]!;
+            return range.count === otherRange.count && equalsId(range.start, otherRange.start);
+          });
+      default:
+        return false;
+    }
+  });
 }
 
 function runtimeVisibleEquals(
@@ -574,12 +609,34 @@ export class ClientDocument<S extends SchemaShape> {
     const nextAuthoritativeStates = new Map(this.authoritativeStates);
     applyOperations(nextAuthoritativeStates, commit.operations);
 
+    // shortcut: exact, conflict-free own acks preserve the entire optimistic view.
+    if (isOwnCommit && this.currentReplayConflict === null &&
+      sameOperations(commit.operations, this.pendingBatches[0]!.operations)) {
+      // With no remaining pending, these states are also authoritative; keep references aligned.
+      if (this.pendingBatches.length === 1) {
+        for (const [path, runtime] of this.collections) {
+          nextAuthoritativeStates.set(path, runtimeState(runtime));
+        }
+      }
+      this.authoritativeStates = nextAuthoritativeStates;
+      this.pendingBatches.shift();
+      this.lastServerSeq = commit.serverSeq;
+      return;
+    }
+
     const remainingBatches = isOwnCommit
       ? this.pendingBatches.slice(1)
       : this.pendingBatches;
-    const { states: nextOptimisticStates, conflict } = replayPending(
-      nextAuthoritativeStates, remainingBatches
-    );
+    const commitPaths = new Set<string>(commit.operations.map((operation) => operation.path));
+    // shortcut: disjoint paths cannot change replayability of a conflict-free pending batch.
+    const canKeepPending = !isOwnCommit && remainingBatches.length > 0 &&
+      this.currentReplayConflict === null && remainingBatches.every((batch) =>
+        batch.operations.every((operation) => !commitPaths.has(operation.path)));
+    const { states: nextOptimisticStates, conflict } = canKeepPending
+      ? { states: new Map([...this.collections].map(([path, runtime]) => [path,
+          commitPaths.has(path) ? nextAuthoritativeStates.get(path)! : runtimeState(runtime),
+        ])), conflict: null }
+      : replayPending(nextAuthoritativeStates, remainingBatches);
     const previous = this.currentReplayConflict;
     const sameConflict = previous === null || conflict === null
       ? previous === conflict
