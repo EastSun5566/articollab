@@ -31,6 +31,23 @@ Server checkpoints changed from `{ snapshot, replays, history }` to `{ snapshot,
 
 Batch, commit and client checkpoint shapes are unchanged, but that does not make them portable across document lineages. A client restore requires the matching schema/document and its original still-open server session. See the [core reference](reference.md#snapshots-checkpoints-and-catch-up) for the checkpoint contract.
 
+## Preparing an upgrade from 0.2.0-beta.0
+
+The next release target is `0.2.0-beta.1`; it is not published yet. Its new default checks incoming List/Text insertion namespaces. Clients created by this package already use the canonical format, so normal submissions need no change.
+
+If your application supplies custom incoming IDs, explicitly keep its own namespace policy when creating or restoring the server:
+
+```ts
+const server = createServer(Board, {
+  checkpoint: savedServerCheckpoint,
+  allowCustomClientNamespaces: true,
+});
+```
+
+The option is not stored in the checkpoint. It skips only incoming namespace checks, not session, sequence, retry-payload or state validation. Keep authenticating the writer separately. Resolver-generated authoritative IDs do not need this opt-out.
+
+Wire and checkpoint formats remain the same as `0.2.0-beta.0`. For the same schema/document lineage, keep the existing server checkpoint and restore the client's original still-open identity. Existing state and saved results are not rechecked for namespace policy; identical retained retries still return their original result. New custom-ID batches fail without the opt-out, while trusted `reject()` can acknowledge their original payload. Do not clear checkpoints or open a replacement session to bypass an error.
+
 ## Late join: a snapshot
 
 ```ts

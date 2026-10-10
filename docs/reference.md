@@ -12,7 +12,14 @@ The baseline includes:
 
 **0.2.0-beta.0 is published on npm.** Breaking changes from 0.1: every server writer must be opened explicitly, `maxClients` counts open sessions, and server checkpoints use `lastClientNumber`/`clients` instead of `replays`. Old server checkpoints are rejected; there is no migration or fresh fallback. Batch, commit and client checkpoint shapes remain unchanged. Do not mix incompatible servers/checkpoints; example helper signatures also changed.
 
-**Unreleased breaking change:** new `server.receive()` batches now require canonical writer/collection insertion namespaces by default. Applications with custom incoming IDs must explicitly set `allowCustomClientNamespaces: true`, including when restoring a server. This change is not in the published `0.2.0-beta.0`; wire and checkpoint shapes are unchanged.
+### Preparing 0.2.0-beta.1
+
+`0.2.0-beta.1` is the next release target, not a published version yet. The source includes two changes since `0.2.0-beta.0`:
+
+- With no replay conflict, client reconciliation skips replay and visible collection comparisons for exact own acknowledgements, and skips replay for remote commits whose paths are disjoint from all pending operations. Own rejections or changed operations, overlapping paths and existing conflicts still use full reconciliation. Validation, visible state and events remain unchanged; this is not a constant-time guarantee for every receive.
+- **Breaking default:** new `server.receive()` batches require canonical writer/collection insertion namespaces before policy runs. Normal package clients already generate these IDs. Applications with custom incoming IDs must explicitly set `allowCustomClientNamespaces: true`, including when restoring a server, and supply their own incoming namespace policy.
+
+Neither change is in the published `0.2.0-beta.0`. Wire and checkpoint shapes are unchanged. Existing state and retained results are not retroactively namespace-checked; identical retained retries keep their original result, and `reject()` can still acknowledge namespace-invalid originals. Namespace checks are not authentication or deletion authorization. See [incoming namespaces](#incoming-insertion-namespaces) and the [upgrade checklist](recovery.md#preparing-an-upgrade-from-020-beta0).
 
 Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` retains its documented `name`, JSON Pointer `path` and readable message contract, not exact message wording. Transport, storage, authentication, writer coordination, lineage checks and production reconnect orchestration remain application responsibilities.
 

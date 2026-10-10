@@ -118,6 +118,14 @@ The source repository remains private; the npm beta is public. Before enabling d
 
 ## npm release
 
+### Next beta readiness
+
+The next target is `0.2.0-beta.1`. It includes reconciliation fast paths and the breaking incoming-namespace default described in the [version notes](reference.md#preparing-020-beta1). Keep the published installation instructions on `0.2.0-beta.0` until registry verification confirms the new release; preparing or dry-running a release does not publish it.
+
+Before the actual release, review custom-ID creation/restore guidance and run build, lint, Knip, typecheck, tests, package consumer checks, browser JSDoc and docs build/check. Preview the explicit version below and verify that tracked files, HEAD and tags do not change. Check the production tarball's manifest, exports, file allowlist and vendor MIT notice, then dry-run publication with an explicit `beta` tag. A preparation artifact is not the final release artifact: rebuild and verify it after the signed release commit.
+
+### Tag publication
+
 Release only by pushing a matching version tag after the version commit is on `main`. Tags must be canonical `vX.Y.Z` or `vX.Y.Z-beta.N`, exactly match `package.json`, and point to a commit in `origin/main` history. Other prereleases, build metadata and leading-zero version components are rejected before dependency installation. Beta tags publish to `beta`; stable tags publish to `latest`.
 
 The tag workflow publishes through npm **Trusted publishing**. Keep the package's publisher settings aligned with the workflow:
