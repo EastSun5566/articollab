@@ -29,6 +29,7 @@ import type {
 } from "./schema.ts";
 import { decodeClientCheckpoint, decodeServerCheckpoint } from "./wire.ts";
 import { clientNumber } from "./client-id.ts";
+import { assertClientBatchNamespace } from "./namespace.ts";
 import {
   applyOperations,
   initialStates,
@@ -174,6 +175,8 @@ export interface CreateServerOptions<S extends SchemaShape> {
   readonly historyLimit?: number;
   /** Maximum open writer sessions, including those without a batch. */
   readonly maxClients?: number;
+  /** Skip incoming insertion namespace checks; application code owns the policy. */
+  readonly allowCustomClientNamespaces?: boolean;
 }
 
 /** An optimistic collaborative value. Values are treated as immutable. */
@@ -707,6 +710,7 @@ export class ServerDocument<S extends SchemaShape> {
   private lastClientNumber: number;
   private readonly historyLimit: number;
   private readonly maxClients: number | undefined;
+  private readonly allowCustomClientNamespaces: boolean;
   private history: readonly ServerCommit<DocumentOperation<S>>[];
   private readonly resolve: ServerResolver<S> | undefined;
   private nextServerSeq = 1;
@@ -716,6 +720,11 @@ export class ServerDocument<S extends SchemaShape> {
     schema: DocumentSchema<S>,
     options: CreateServerOptions<S> = {}
   ) {
+    const allowCustomClientNamespaces = options.allowCustomClientNamespaces;
+    if (allowCustomClientNamespaces !== undefined && typeof allowCustomClientNamespaces !== "boolean") {
+      throw new TypeError("allowCustomClientNamespaces must be a boolean");
+    }
+    this.allowCustomClientNamespaces = allowCustomClientNamespaces ?? false;
     const maxClients = options.maxClients;
     if (maxClients !== undefined && (!Number.isSafeInteger(maxClients) || maxClients < 0)) {
       throw new Error("maxClients must be a non-negative safe integer");
@@ -852,6 +861,9 @@ export class ServerDocument<S extends SchemaShape> {
         seq: batch.seq,
         operations: incomingOperations,
       });
+      if (!reject && !this.allowCustomClientNamespaces) {
+        assertClientBatchNamespace(ownedBatch, ownedBatch.clientId);
+      }
       const states = this.authoritativeStates;
       const watermark = this.nextServerSeq - 1;
       let snapshot: DocumentSnapshot<S> | undefined;

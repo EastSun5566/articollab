@@ -36,9 +36,9 @@ doc.receive(decodeServerCommit(Counter, JSON.parse(commitMessage)));
 
 Decoders do not infer a business object's shape from TypeScript `T`. Validate that separately. An operation with a structurally valid but unknown anchor may decode successfully, then fail runtime application atomically.
 
-## Optionally guard insertion namespaces
+## Incoming insertion namespaces
 
-Use the namespace helper when incoming clients should only allocate IDs in the package's standard writer/collection namespace:
+In the unreleased source, new `server.receive()` batches check the package's canonical writer/collection insertion namespace before policy runs. This is a breaking default change from published `0.2.0-beta.0`, not authentication. Use the standalone helper to additionally verify your application's authenticated writer binding:
 
 ```ts
 import { assertClientBatchNamespace, decodeClientBatch } from "articollab";
@@ -49,11 +49,19 @@ assertClientBatchNamespace(batch, authenticatedWriterId);
 const receipt = server.receive(batch);
 ```
 
-A writer cannot allocate another writer's new IDs, but may still insert after or delete their existing elements. The helper checks exact canonical bunch IDs, not string prefixes, and returns `undefined` or throws `TypeError`. Guard retries too. It does not authenticate the caller or provide deletion authorization; every client ID must still have only one writer.
+A batch cannot allocate another writer's new IDs under the default policy, but may still insert after or delete their existing elements. The helper checks exact canonical bunch IDs, not string prefixes, and returns `undefined` or throws `TypeError`. Verify the authenticated writer binding on every request, including retries. An issued client ID does not authenticate its caller or provide deletion authorization; every client ID must still have only one writer.
 
-The check is opt-in and only covers the incoming batch, not resolver-generated IDs. Custom incoming namespaces may use a different application policy. To explicitly reject a namespace-invalid batch, first verify that `batch.clientId` matches the authenticated writer, then call `server.reject(batch)` without the namespace check. Neither a guard failure nor a thrown runtime error is an ack.
+Applications using custom incoming IDs must opt out explicitly and supply their own namespace policy:
 
-See the [namespace contract](reference.md#opt-in-insertion-namespaces) for the exact format and boundaries.
+```ts
+const server = createServer(Board, { allowCustomClientNamespaces: true });
+```
+
+The option defaults to `false` and must be supplied again on server restore; it does not disable other runtime validation. Resolver-generated authoritative IDs are not namespace-checked.
+
+To explicitly reject a namespace-invalid batch, first verify that `batch.clientId` matches the authenticated writer, then call `server.reject(batch)` without the standalone helper. Server rejection skips namespace checks. Both server entrypoints replay the last identical result before checking new submissions, so a rejected batch remains retryable through `receive()`. Neither a guard failure nor a thrown runtime error is an ack.
+
+See the [namespace contract](reference.md#incoming-insertion-namespaces) for the exact format and boundaries.
 
 ## Deliver in order
 

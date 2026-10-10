@@ -139,6 +139,24 @@ assert.equal(server.checkpoint().clients.some((entry) => entry.clientId === sour
 assert.deepEqual(server.snapshot(), beforeClose);
 assert.throws(() => server.receive(restoredOutgoing[0]));
 assert.notEqual(server.openClient(), sourceId);
+
+const guarded = createServer(Board);
+const writerId = guarded.openClient();
+const custom = decodeClientBatch(Board, {
+  clientId: writerId, seq: 1, operations: [{ type: "list/insert", path: "items",
+    before: null, id: { bunchId: "custom", counter: 0 }, value: "custom" }],
+});
+const beforeGuard = guarded.checkpoint();
+assert.throws(() => guarded.receive(custom), TypeError);
+assert.deepEqual(guarded.checkpoint(), beforeGuard);
+const optedOut = createServer(Board, { allowCustomClientNamespaces: true });
+assert.equal(optedOut.openClient(), writerId);
+const customResult = optedOut.receive(custom);
+assert.deepEqual(optedOut.snapshot().data.items.values, ["custom"]);
+const restoredCustom = createServer(Board, {
+  checkpoint: decodeServerCheckpoint(Board, roundTrip(optedOut.checkpoint())),
+});
+assert.deepEqual(restoredCustom.receive(custom), { commit: customResult.commit, replayed: true });
 `;
 
 const typesFixture = `
@@ -209,6 +227,10 @@ createClient(Board, { clientId: "types", snapshot: decodeSnapshot(Board, {}), on
 createClient(Board, { clientId: "types", checkpoint: decodeClientCheckpoint(Board, {}), onBatch() {} });
 createServer(Board, { checkpoint: decodeServerCheckpoint(Board, {}), resolve: ({ batch }) => batch.operations });
 createServer(Board, { maxClients: 2 });
+createServer(Board, { allowCustomClientNamespaces: true });
+createServer(Board, { allowCustomClientNamespaces: false });
+// @ts-expect-error Namespace opt-out requires a boolean.
+createServer(Board, { allowCustomClientNamespaces: "true" });
 // @ts-expect-error Client capacity requires a number, not a string.
 createServer(Board, { maxClients: "2" });
 

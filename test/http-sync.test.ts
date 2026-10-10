@@ -801,8 +801,9 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
       });
     });
     // A pending write to count hides the first transform. A remote visible update triggers catch-up's listener.
-    assert.equal(await post(url, { ...makeBatch(server.openClient()), operations: [{ type: "list/insert", path: "items",
-      before: null, id: { bunchId: "remote", counter: 0 }, value: "Remote" }] }), 204);
+    const peerId = server.openClient();
+    assert.equal(await post(url, { ...makeBatch(peerId), operations: [{ type: "list/insert", path: "items",
+      before: null, id: { bunchId: JSON.stringify([peerId, "items", 1]), counter: 0 }, value: "Remote" }] }), 204);
     assert.equal(await restored.sync(), true);
     assert.deepEqual(resolved, [1, 1, 2, 3, 4]);
     assert.deepEqual(watermarks, [2, 3]);

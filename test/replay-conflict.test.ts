@@ -60,7 +60,8 @@ describe("pending replay conflict", () => {
       original.state.body.insert(0, "X");
       original.state.items.push("B");
     });
-    const server = createServer(Board);
+    const server = createServer(Board, { resolve: ({ batch }) =>
+      batch.clientId === "client-2" ? batches[0]!.operations : batch.operations });
     const clientId = server.openClient(), peerId = server.openClient();
     assert.equal(clientId, "client-1");
     original.receive(server.reject(batches[0]!).commit);
@@ -73,8 +74,9 @@ describe("pending replay conflict", () => {
     const doc = createClient(Board, { clientId, checkpoint, onBatch() {} });
     let changes = 0;
     doc.on("change", () => changes++);
-    // Trusted authoritative IDs may restore the anchor; only the List path changes remotely.
-    doc.receive(server.receive({ clientId: peerId, seq: 1, operations: batches[0]!.operations }).commit);
+    // Policy restores the old anchor; only the authoritative List path changes remotely.
+    doc.receive(server.receive({ clientId: peerId, seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 0 }] }).commit);
     assert.equal(doc.replayConflict, null);
     assert.equal(doc.state.count.value, 9);
     assert.equal(doc.state.body.toString(), "X");
@@ -373,6 +375,7 @@ describe("blocked resume examples", { timeout: 15_000 }, () => {
     const resolved: string[] = [];
     const server = createServer(Board, { resolve: ({ batch }) => {
       resolved.push(batch.clientId + ":" + batch.seq);
+      if (batch.clientId === "client-4") return seed.operations;
       return batch.clientId === "client-1" && batch.seq <= 2 ? [] : batch.operations;
     } });
     const network = createExampleNetwork(server);
@@ -391,7 +394,8 @@ describe("blocked resume examples", { timeout: 15_000 }, () => {
     assert.deepEqual(resolved, ["client-3:1", "client-1:1"]);
     b.doc.state.count.value = 2;
     assert.equal(a.doc.state.count.value, 2);
-    network.submit({ clientId: server.openClient(), seq: 1, operations: seed.operations });
+    network.submit({ clientId: server.openClient(), seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 0 }] });
     assert.equal(a.doc.replayConflict, null);
     a.doc.state.count.value = 3;
     assert.deepEqual(resolved, ["client-3:1", "client-1:1", "client-2:1", "client-4:1", "client-1:2", "client-1:3"]);
@@ -402,6 +406,7 @@ describe("blocked resume examples", { timeout: 15_000 }, () => {
     const resolved: string[] = [];
     const server = createServer(Board, { resolve: ({ batch }) => {
       resolved.push(batch.clientId + ":" + batch.seq);
+      if (batch.clientId === "client-3") return seed.operations;
       return batch.clientId === "client-1" && batch.seq === 1 ? [] : batch.operations;
     } });
     const network = createAsyncExampleNetwork(server, { saveClientCheckpoint: (cp) => { saved.push(cp); } });
@@ -418,9 +423,10 @@ describe("blocked resume examples", { timeout: 15_000 }, () => {
     b.doc.state.count.value = 7;
     await network.idle();
     assert.equal(a.doc.state.count.value, 7);
-    // Explicit application action introduces A's old IDs; no automatic rebase or repair.
+    // Explicit server policy restores A's old IDs; no automatic rebase or repair.
     const seed = saved.find((entry) => entry.clientId === "client-1" && entry.lastLocalSeq === 1)!.pendingBatches[0]!;
-    await network.submit({ clientId: server.openClient(), seq: 1, operations: seed.operations });
+    await network.submit({ clientId: server.openClient(), seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 0 }] });
     await network.idle();
     assert.equal(a.doc.replayConflict, null);
     assert.deepEqual(a.doc.checkpoint().pendingBatches, []);
@@ -429,7 +435,8 @@ describe("blocked resume examples", { timeout: 15_000 }, () => {
 
   it("checks async blocked state again before applying a paused automatic send", async (t) => {
     const entered = gate(), release = gate(); t.after(() => release.resolve());
-    const server = createServer(Board);
+    const server = createServer(Board, { resolve: ({ batch }) =>
+      batch.clientId === "client-3" ? a.doc.checkpoint().pendingBatches[0]!.operations : batch.operations });
     const network = createAsyncExampleNetwork(server, { transfer: async (direction, clientId, message) => {
       if (direction === "client-to-server" && clientId === "client-1") { entered.resolve(); await release.promise; }
       return message;
@@ -438,7 +445,7 @@ describe("blocked resume examples", { timeout: 15_000 }, () => {
     a.doc.state.items.push("A");
     await entered.promise;
     await network.submit({ clientId: server.openClient(), seq: 1,
-      operations: a.doc.checkpoint().pendingBatches[0]!.operations });
+      operations: [{ type: "value/set", path: "count", value: 0 }] });
     // Incoming delivery must complete before releasing a's queued submission.
     const seen = new Promise<void>((resolve) => {
       if (a.doc.replayConflict !== null) resolve();
