@@ -52,6 +52,42 @@ function gate() {
 }
 
 describe("pending replay conflict", () => {
+  it("replays every path of a restored blocked batch when a remote insertion repairs its dependency", () => {
+    const { doc: original, batches } = setup();
+    original.state.items.push("A");
+    original.transact(() => {
+      original.state.count.value = 9;
+      original.state.body.insert(0, "X");
+      original.state.items.push("B");
+    });
+    const server = createServer(Board);
+    const clientId = server.openClient(), peerId = server.openClient();
+    assert.equal(clientId, "client-1");
+    original.receive(server.reject(batches[0]!).commit);
+    assert.equal(original.replayConflict?.batch, batches[1]);
+    assert.equal(original.replayConflict?.operationIndex, 2);
+    assert.equal(original.state.count.value, 0);
+    assert.equal(original.state.body.toString(), "");
+    assert.deepEqual(original.state.items.toArray(), []);
+    const checkpoint = decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(original.checkpoint())));
+    const doc = createClient(Board, { clientId, checkpoint, onBatch() {} });
+    let changes = 0;
+    doc.on("change", () => changes++);
+    // Trusted authoritative IDs may restore the anchor; only the List path changes remotely.
+    doc.receive(server.receive({ clientId: peerId, seq: 1, operations: batches[0]!.operations }).commit);
+    assert.equal(doc.replayConflict, null);
+    assert.equal(doc.state.count.value, 9);
+    assert.equal(doc.state.body.toString(), "X");
+    assert.deepEqual(doc.state.items.toArray(), ["A", "B"]);
+    assert.equal(changes, 1);
+    assert.deepEqual(doc.checkpoint().pendingBatches, checkpoint.pendingBatches);
+    assert.deepEqual(doc.checkpoint().lastBunchSeqs, checkpoint.lastBunchSeqs);
+    doc.receive(server.receive(batches[1]!).commit);
+    assert.equal(changes, 1);
+    assert.equal(doc.checkpoint().pendingBatches.length, 0);
+    assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
+  });
+
   it("records rejected insertion dependencies and continues receiving for List and Text", () => {
     for (const kind of ["list", "text"] as const) {
       for (const action of ["insert", "delete"] as const) {

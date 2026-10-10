@@ -70,6 +70,8 @@ The source header records local adaptations and the full MIT notice, which must 
 
 Trie nodes add per-entry memory overhead, so compare retained heap as well as mutation latency. The retained-heap workload measures one hydrated client, not peak memory or the cost of keeping multiple pending versions.
 
+Client reconciliation validates and applies each authoritative commit before considering shortcuts. With no replay conflict, an exact own ack retains the optimistic state without replay or a collection scan; when pending becomes empty, it also shares those confirmed state references with authoritative state. Operation comparison preserves order, IDs, anchors and ranges; Value/List payloads use `Object.is`, not JSON equality, so new object references and signed-zero changes still reconcile normally. A remote commit with paths disjoint from every pending operation keeps unaffected optimistic states without replay. Overlap, transformed/rejected own operations and existing conflicts use full whole-batch replay. Regression tests cover both avoided work and unchanged state, checkpoint and event semantics; these shortcuts do not remove all linear receive costs.
+
 ```sh
 pnpm bench
 pnpm --silent bench --json

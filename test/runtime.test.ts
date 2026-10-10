@@ -8,6 +8,9 @@ import { TextState } from "../src/text.ts";
 import {
   createClient,
   createServer,
+  decodeClientBatch,
+  decodeClientCheckpoint,
+  decodeServerCommit,
   defineDocument,
   list,
   text,
@@ -238,8 +241,8 @@ describe("client runtime", () => {
     const iteration = t.mock.method(IdList.prototype, "values");
     doc.receive(first);
     peer.receive(first);
-    assert.equal(changes, 1); // Independently rebuilt but equal own state is silent.
-    assert.ok(iteration.mock.calls.length > 0);
+    assert.equal(changes, 1); // An unchanged own ack retains the optimistic state.
+    assert.equal(iteration.mock.calls.length, 0);
     iteration.mock.resetCalls();
 
     peer.state.count.value = 1;
@@ -262,6 +265,285 @@ describe("client runtime", () => {
     assert.equal(doc.state.body.toString(), "BA😀");
     assert.equal(doc.checkpoint().pendingBatches.length, 0);
     assert.equal(peer.checkpoint().pendingBatches.length, 0);
+  });
+
+  it("confirms decoded mixed own acks after restore without replaying dependent pending", (t) => {
+    const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
+    const server = createServer(Board);
+    const clientId = server.openClient();
+    const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const original = createClient(Board, { clientId, onBatch: (batch) => batches.push(batch) });
+    original.transact(() => {
+      original.state.count.value = 1;
+      original.state.items.push("A");
+      original.state.body.insert(0, "AB😀");
+    });
+    original.transact(() => {
+      original.state.count.value = 2;
+      original.state.items.push("B");
+      original.state.body.insert(3, "B");
+    });
+    original.transact(() => {
+      original.state.items.delete(0);
+      original.state.body.delete(1, 2);
+    });
+    const checkpoint = decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(original.checkpoint())));
+    const doc = createClient(Board, { clientId, checkpoint, onBatch: (batch) => batches.push(batch) });
+    const commits = batches.map((batch) => {
+      const { commit } = server.receive(decodeClientBatch(Board, JSON.parse(JSON.stringify(batch))));
+      return { commit: decodeServerCommit(Board, JSON.parse(JSON.stringify(commit))), snapshot: server.snapshot() };
+    });
+    let changes = 0;
+    doc.on("change", () => changes++);
+    const iteration = t.mock.method(IdList.prototype, "values");
+    const listInsert = t.mock.method(ListState.prototype, "insert");
+    const listDelete = t.mock.method(ListState.prototype, "delete");
+    const textInsert = t.mock.method(TextState.prototype, "insert");
+    const textDelete = t.mock.method(TextState.prototype, "delete");
+    for (const [index, { commit, snapshot }] of commits.entries()) {
+      iteration.mock.resetCalls();
+      for (const method of [listInsert, listDelete, textInsert, textDelete]) method.mock.resetCalls();
+      doc.receive(commit);
+      assert.equal(iteration.mock.calls.length, 0);
+      for (const [type, method] of [["list/insert", listInsert], ["list/delete", listDelete],
+        ["text/insert", textInsert], ["text/delete", textDelete]] as const) {
+        assert.equal(method.mock.calls.length, commit.operations.filter((operation) => operation.type === type).length);
+      }
+      const saved = doc.checkpoint();
+      assert.deepEqual(saved.snapshot, snapshot);
+      assert.deepEqual(saved.pendingBatches, checkpoint.pendingBatches.slice(index + 1));
+      assert.deepEqual(saved.lastBunchSeqs, checkpoint.lastBunchSeqs);
+      assert.equal(saved.lastLocalSeq, 3);
+      assert.equal(doc.replayConflict, null);
+      assert.equal(changes, 0);
+      assert.equal(doc.state.count.value, 2);
+      assert.deepEqual(doc.state.items.toArray(), ["B"]);
+      assert.equal(doc.state.body.toString(), "AB");
+    }
+    doc.transact(() => { doc.state.items.push("C"); doc.state.body.insert(2, "😀"); });
+    assert.equal(batches[3]!.seq, 4);
+    doc.receive(server.receive(batches[3]!).commit);
+    assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
+    assert.equal(doc.checkpoint().pendingBatches.length, 0);
+  });
+
+  it("keeps disjoint pending collections but replays when a later batch overlaps", (t) => {
+    const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
+    const server = createServer(Board);
+    const clientId = server.openClient(), peerId = server.openClient();
+    const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const doc = createClient(Board, { clientId, onBatch: (batch) => batches.push(batch) });
+    doc.transact(() => { doc.state.items.push("A"); doc.state.body.insert(0, "😀"); });
+    doc.transact(() => { doc.state.items.push("B"); doc.state.body.insert(1, "B"); });
+    const before = doc.checkpoint();
+    let serverChanges = 0;
+    doc.on("change", (event) => { if (event.origin === "server") serverChanges++; });
+    const first = server.receive({ clientId: peerId, seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 9 }] }).commit;
+    const iteration = t.mock.method(IdList.prototype, "values");
+    const listInsert = t.mock.method(ListState.prototype, "insert");
+    const textInsert = t.mock.method(TextState.prototype, "insert");
+    doc.receive(first);
+    assert.equal(iteration.mock.calls.length, 0);
+    assert.equal(listInsert.mock.calls.length, 0);
+    assert.equal(textInsert.mock.calls.length, 0);
+    const saved = doc.checkpoint();
+    assert.deepEqual(saved.pendingBatches, before.pendingBatches);
+    assert.deepEqual(saved.lastBunchSeqs, before.lastBunchSeqs);
+    assert.deepEqual(saved.snapshot, server.snapshot());
+    assert.equal(serverChanges, 1);
+    assert.equal(doc.state.count.value, 9);
+    assert.deepEqual(doc.state.items.toArray(), ["A", "B"]);
+    assert.equal(doc.state.body.toString(), "😀B");
+
+    doc.state.count.value = 4;
+    const overlap = server.receive({ clientId: peerId, seq: 2,
+      operations: [{ type: "value/set", path: "count", value: 10 }] }).commit;
+    listInsert.mock.resetCalls(); textInsert.mock.resetCalls();
+    doc.receive(overlap);
+    assert.equal(listInsert.mock.calls.length, 2);
+    assert.equal(textInsert.mock.calls.length, 2);
+    assert.equal(doc.state.count.value, 4);
+    assert.equal(serverChanges, 1);
+    assert.deepEqual(doc.checkpoint().pendingBatches, batches);
+  });
+
+  it("retains Object.is payload semantics for accepted, decoded and transformed own acks", () => {
+    const Board = defineDocument({ data: valueSchema<{ label: string } | null>(null), items: list<{ label: string }>() });
+    for (const kind of ["value", "list"] as const) for (const mode of ["original", "decoded", "transformed"] as const) {
+      const server = createServer(Board, mode === "transformed" ? { resolve: ({ batch }) =>
+        batch.operations.map((operation) => operation.type === "value/set" || operation.type === "list/insert"
+          ? { ...operation, value: { label: "A" } } : operation) } : {});
+      const clientId = server.openClient();
+      const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+      const doc = createClient(Board, { clientId, onBatch: (batch) => batches.push(batch) });
+      const payload = { label: "A" };
+      if (kind === "value") doc.state.data.value = payload;
+      else doc.state.items.push(payload);
+      let changes = 0;
+      doc.on("change", () => changes++);
+      const received = server.receive(batches[0]!).commit;
+      const commit = mode === "decoded" ? decodeServerCommit(Board, JSON.parse(JSON.stringify(received))) : received;
+      doc.receive(commit);
+      const operation = commit.operations[0]!;
+      assert.ok(operation.type === "value/set" || operation.type === "list/insert");
+      const visible = kind === "value" ? doc.state.data.value : doc.state.items.get(0);
+      assert.strictEqual(visible, operation.value);
+      assert.equal(Object.is(visible, payload), mode === "original");
+      assert.equal(changes, mode === "original" ? 0 : 1);
+      assert.equal(doc.checkpoint().pendingBatches.length, 0);
+    }
+    const { doc } = setup();
+    doc.state.count.value = 0;
+    let changes = 0;
+    doc.on("change", () => changes++);
+    doc.receive({ serverSeq: 1, source: { clientId: "client-1", seq: 1 },
+      operations: [{ type: "value/set", path: "count", value: -0 }] });
+    assert.ok(Object.is(doc.state.count.value, -0));
+    assert.equal(changes, 1);
+  });
+
+  it("reconciles rejected, reordered, transformed and remapped mixed own operations", () => {
+    const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
+    for (const mode of ["reject", "reorder", "transform", "list-remap", "text-remap"] as const) {
+      const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+      const doc = createClient(Board, { clientId: "client-1", onBatch: (batch) => batches.push(batch) });
+      doc.transact(() => {
+        doc.state.count.value = 1; doc.state.items.push("A");
+        doc.state.body.insert(0, "😀"); doc.state.count.value = 2;
+      });
+      const batch = batches[0]!;
+      const operations = mode === "reject" ? [] : mode === "reorder" ? batch.operations.toReversed() :
+        batch.operations.map((operation) => {
+          if ((mode === "list-remap" && operation.type === "list/insert") ||
+            (mode === "text-remap" && operation.type === "text/insert")) {
+            return { ...operation, id: { bunchId: `server-${operation.path}`, counter: 0 } };
+          }
+          if (mode === "transform") {
+            switch (operation.type) {
+              case "value/set": return { ...operation, value: 3 };
+              case "list/insert": return { ...operation, value: "B" };
+              case "text/insert": return { ...operation, value: "X" };
+            }
+          }
+          return operation;
+        });
+      let changes = 0;
+      doc.on("change", () => changes++);
+      doc.receive({ serverSeq: 1, source: batch, operations });
+      assert.equal(changes, 1); // Remapped visible IDs change even when rendered values do not.
+      assert.equal(doc.state.count.value, mode === "reject" ? 0 : mode === "reorder" ? 1 : mode === "transform" ? 3 : 2);
+      assert.deepEqual(doc.state.items.toArray(), mode === "reject" ? [] : [mode === "transform" ? "B" : "A"]);
+      assert.equal(doc.state.body.toString(), mode === "reject" ? "" : mode === "transform" ? "X" : "😀");
+      assert.equal(doc.checkpoint().pendingBatches.length, 0);
+    }
+  });
+
+  it("does not confuse transformed anchors, deletion targets or ranges with original operations", (t) => {
+    const Board = defineDocument({ items: list<string>(), body: text() });
+    const a = { bunchId: "seed", counter: 0 }, b = { bunchId: "seed", counter: 1 };
+    for (const mode of ["anchor", "target", "range-count", "range-start", "range-order"] as const) {
+      const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+      const doc = createClient(Board, { clientId: "client-1", onBatch: (batch) => batches.push(batch) });
+      doc.receive({ serverSeq: 1, source: { clientId: "peer", seq: 1 }, operations: [
+        { type: "list/insert", path: "items", before: null, id: a, value: "A" },
+        { type: "list/insert", path: "items", before: a, id: b, value: "B" },
+        { type: "text/insert", path: "body", before: null, id: a, value: "AB" },
+        { type: "text/insert", path: "body", before: b, id: { bunchId: "second", counter: 0 }, value: "CD" },
+      ] });
+      if (mode === "anchor") doc.transact(() => { doc.state.items.insert(1, "X"); doc.state.body.insert(1, "😀"); });
+      else if (mode === "target") doc.state.items.delete(0);
+      else doc.state.body.delete(1, 2);
+      const batch = batches[0]!;
+      const operations = batch.operations.map((operation) => {
+        if (operation.type === "list/insert" || operation.type === "text/insert") return { ...operation, before: b };
+        if (operation.type === "list/delete") return { ...operation, id: b };
+        if (operation.type === "text/delete") {
+          return { ...operation, ranges: mode === "range-order" ? operation.ranges.toReversed() :
+            operation.ranges.map((range, index) => mode === "range-count" && index === 1
+              ? { ...range, count: 2 } : mode === "range-start" && index === 0
+                ? { ...range, start: a } : range) };
+        }
+        return operation;
+      });
+      let changes = 0;
+      doc.on("change", () => changes++);
+      const iteration = t.mock.method(IdList.prototype, "values");
+      doc.receive({ serverSeq: 2, source: batch, operations });
+      if (mode === "range-order") assert.ok(iteration.mock.calls.length > 0);
+      iteration.mock.restore();
+      assert.equal(changes, mode === "range-order" ? 0 : 1);
+      assert.deepEqual(doc.state.items.toArray(), mode === "anchor" ? ["A", "B", "X"] : mode === "target" ? ["A"] : ["A", "B"]);
+      assert.equal(doc.state.body.toString(), mode === "anchor" ? "AB😀CD" : mode === "range-count" ? "A" :
+        mode === "range-start" ? "BD" : mode === "range-order" ? "AD" : "ABCD");
+      assert.equal(doc.checkpoint().pendingBatches.length, 0);
+    }
+  });
+
+  it("validates all authoritative operations before using reconciliation shortcuts", () => {
+    const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
+    const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const doc = createClient(Board, { clientId: "client-1", onBatch: (batch) => batches.push(batch) });
+    doc.transact(() => { doc.state.items.push("A"); doc.state.body.insert(0, "😀"); });
+    let changes = 0;
+    doc.on("change", () => changes++);
+    const before = doc.checkpoint();
+    const peer = { clientId: "peer", seq: 1 };
+    const invalids: unknown[] = [
+      { serverSeq: 2, source: peer, operations: [] },
+      { serverSeq: 1, source: { clientId: "client-1", seq: 2 }, operations: batches[0]!.operations },
+      { serverSeq: 1, source: peer, operations: [{ type: "list/insert", path: "count", before: null,
+        id: { bunchId: "bad", counter: 0 }, value: "bad" }] },
+      { serverSeq: 1, source: peer, operations: [{ type: "value/set", path: "missing", value: 1 }] },
+      { serverSeq: 1, source: batches[0], operations: [
+        { type: "value/set", path: "count", value: 9 },
+        { type: "text/insert", path: "body", before: { bunchId: "unknown", counter: 0 },
+          id: { bunchId: "bad", counter: 0 }, value: "bad" },
+      ] },
+    ];
+    for (const invalid of invalids) {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed commits exercise atomic runtime validation before any shortcut.
+      assert.throws(() => doc.receive(invalid as ServerCommit<DocumentOperation<typeof Board.definition>>));
+      assert.deepEqual(doc.checkpoint(), before);
+      assert.deepEqual(doc.state.items.toArray(), ["A"]);
+      assert.equal(doc.state.body.toString(), "😀");
+      assert.equal(doc.state.count.value, 0);
+      assert.equal(changes, 0);
+    }
+    doc.receive({ serverSeq: 1, source: batches[0]!, operations: batches[0]!.operations });
+    assert.equal(doc.checkpoint().snapshot.serverSeq, 1);
+    assert.equal(doc.checkpoint().pendingBatches.length, 0);
+    assert.equal(changes, 0);
+  });
+
+  it("publishes disjoint reconciliation state before a listener creates another batch", () => {
+    const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
+    const server = createServer(Board);
+    const clientId = server.openClient(), peerId = server.openClient();
+    const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const doc = createClient(Board, { clientId, onBatch: (batch) => batches.push(batch) });
+    doc.transact(() => { doc.state.items.push("A"); doc.state.body.insert(0, "😀"); });
+    let serverChanges = 0;
+    doc.on("change", (event) => {
+      if (event.origin !== "server") return;
+      serverChanges++;
+      const saved = doc.checkpoint();
+      assert.equal(saved.snapshot.serverSeq, 1);
+      assert.deepEqual(saved.pendingBatches, [batches[0]]);
+      assert.equal(doc.state.count.value, 2);
+      assert.deepEqual(doc.state.items.toArray(), ["A"]);
+      assert.equal(doc.state.body.toString(), "😀");
+      doc.transact(() => { doc.state.items.push("B"); doc.state.body.insert(1, "B"); });
+    });
+    doc.receive(server.receive({ clientId: peerId, seq: 1,
+      operations: [{ type: "value/set", path: "count", value: 2 }] }).commit);
+    assert.deepEqual(batches.map((batch) => batch.seq), [1, 2]);
+    for (const batch of batches) doc.receive(server.receive(batch).commit);
+    assert.equal(serverChanges, 1);
+    assert.equal(doc.checkpoint().pendingBatches.length, 0);
+    assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
+    assert.deepEqual(doc.state.items.toArray(), ["A", "B"]);
+    assert.equal(doc.state.body.toString(), "😀B");
   });
 
   it("infers the schema state and emits one batch for a mutation", () => {
