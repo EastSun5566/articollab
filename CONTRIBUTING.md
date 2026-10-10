@@ -1,6 +1,6 @@
 # Contributing
 
-Use this guide to modify the repository, verify changes and prepare releases. Repository access is required; contributor tooling and demos are not shipped in the npm package. For library usage, start with the [Counter quick start](docs/quick-start.md).
+Use this guide to modify the repository, verify changes and prepare releases. Contributor tooling and demos require a checkout and are not shipped in the npm package. For library usage, start with the [Counter quick start](docs/quick-start.md).
 
 ## Set up a checkout
 
@@ -106,9 +106,17 @@ Local Value/List JSON validation visits the supplied payload without a copy or c
 
 The `CI` workflow checks main pushes, `v*` tag pushes, PRs to main and manual runs. It uses a frozen install, pinned actions and the declared pnpm, then runs checks including browser JSDoc, package consumers and docs staging. Local success does not prove remote success.
 
+Repository visibility, contribution settings and Pages deployment are separate decisions. Before making a repository public, review its full Git history, author metadata, pull requests, workflow logs and artifacts for information that should not be exposed.
+
+When accepting public contributions, check these repository settings:
+
+- Protect `main` with required CI checks, and block force pushes and branch deletion. Review changes before merging, especially workflow and release changes.
+- Require workflow approval for all outside collaborators. [Inspect the proposed code before approving a fork workflow](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/approve-runs-from-forks), not just before merging it.
+- Keep default workflow permissions read-only and automatic PR approval disabled. Do not give fork checks secrets or publishing/deployment credentials.
+
 Pages upload/deployment requires successful checks, a main push/manual event and `PAGES_ENABLED=true`. Only validated `.docs-site/` is uploaded. The deploy job alone receives Pages write/OIDC permissions; `enablement: false` does not enable Pages automatically. PRs and tag runs do not deploy docs.
 
-Before enabling Pages, confirm [private-repository support](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages) and review published assets. Private source does not imply a private site. After deployment, verify its commit, URL and rendered behavior.
+Before enabling Pages, review the staged assets, select GitHub Actions as the repository's [Pages publishing source](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site), then set `PAGES_ENABLED=true`. After deployment, verify its commit, URL and rendered behavior; changing repository visibility alone does not deploy the site.
 
 ## Prepare and publish a release
 
@@ -158,7 +166,7 @@ Tags must match the manifest version and point to main history. CI rejects unsup
 
 Keep npm's publisher settings aligned with GitHub owner `EastSun5566`, repo `articollab`, workflow `ci.yml`, empty environment, and direct `npm publish` permission. No extra dist-tag management permission is required. The manifest repository URL must match. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
 
-The publish job receives publishing OIDC permission; the checks job does not. It uses the workflow's pinned npm on a GitHub-hosted runner, not npm tokens or login. Private repositories do not generate provenance. Main/PR/manual runs never publish.
+The publish job receives publishing OIDC permission; the checks job does not. It uses the workflow's pinned npm on a GitHub-hosted runner, not npm tokens or login. Main/PR/manual runs never publish.
 
 After checks, the publish job builds and packs one tarball outside the checkout, dry-runs it, then publishes that file with explicit registry, public access, channel and disabled lifecycle scripts. Tag runs are not automatically cancelled.
 
