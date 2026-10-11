@@ -317,6 +317,16 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     assert.deepEqual(installed.repository, {
       type: "git", url: "git+https://github.com/EastSun5566/articollab.git",
     });
+    assert.equal(installed.homepage, "https://eastsun5566.github.io/articollab/");
+    assert.deepEqual(installed.bugs, {
+      url: "https://github.com/EastSun5566/articollab/issues",
+    });
+    assert.deepEqual(installed.keywords, [
+      "collaboration", "realtime", "sync", "local-first", "server-reconciliation",
+    ]);
+    assert.deepEqual(installed.author, {
+      name: "EastSun5566", email: "hi@eastsun.me", url: "https://github.com/EastSun5566",
+    });
     assert.deepEqual(installed.publishConfig, {
       registry: "https://registry.npmjs.org/", access: "public", tag: "beta",
     });
