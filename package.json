@@ -12,6 +12,22 @@
     "type": "git",
     "url": "git+https://github.com/EastSun5566/articollab.git"
   },
+  "homepage": "https://eastsun5566.github.io/articollab/",
+  "bugs": {
+    "url": "https://github.com/EastSun5566/articollab/issues"
+  },
+  "keywords": [
+    "collaboration",
+    "realtime",
+    "sync",
+    "local-first",
+    "server-reconciliation"
+  ],
+  "author": {
+    "name": "EastSun5566",
+    "email": "hi@eastsun.me",
+    "url": "https://github.com/EastSun5566"
+  },
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@10.34.5",
