@@ -273,7 +273,9 @@ function sameAnchor(left: Readonly<ElementId> | null, right: Readonly<ElementId>
 }
 
 /** JSON equality would lose payload identity and signed-zero changes. */
-function sameOperations(left: readonly Operation[], right: readonly Operation[]): boolean {
+function sameOperations(
+  left: readonly Operation[], right: readonly Operation[], allowListValueChanges = false
+): boolean {
   if (left.length !== right.length) return false;
   return left.every((operation, index) => {
     const other = right[index]!;
@@ -283,7 +285,7 @@ function sameOperations(left: readonly Operation[], right: readonly Operation[])
         return other.type === "value/set" && Object.is(operation.value, other.value);
       case "list/insert":
         return other.type === "list/insert" && sameAnchor(operation.before, other.before) &&
-          equalsId(operation.id, other.id) && Object.is(operation.value, other.value);
+          equalsId(operation.id, other.id) && (allowListValueChanges || Object.is(operation.value, other.value));
       case "list/delete":
         return other.type === "list/delete" && equalsId(operation.id, other.id);
       case "text/insert":
@@ -305,11 +307,13 @@ function runtimeVisibleEquals(
   runtime: RuntimeCollection,
   state: CollectionState,
   path: string,
-  skipComparison: boolean
+  skipComparison: boolean,
+  listValueIds?: readonly Readonly<ElementId>[]
 ): boolean {
   if (runtime instanceof RuntimeList) {
     if (!(state instanceof ListState)) throw wrongCollectionKind(path);
-    return skipComparison || runtime.visibleEquals(state);
+    return skipComparison || (listValueIds === undefined ? runtime.visibleEquals(state) :
+      listValueIds.every((id) => runtime.state.visibleValueEquals(state, id)));
   }
   if (runtime instanceof RuntimeText) {
     if (!(state instanceof TextState)) throw wrongCollectionKind(path);
@@ -647,13 +651,27 @@ export class ClientDocument<S extends SchemaShape> {
       : previous.batch === conflict.batch &&
         previous.operationIndex === conflict.operationIndex &&
         previous.message === conflict.message;
+    // shortcut: matching own operations preserve IDs; only List insertion values can differ.
+    // Both replays must be conflict-free; otherwise compare the entire visible prefix.
+    const listValueIds = isOwnCommit && previous === null && conflict === null &&
+      sameOperations(commit.operations, this.pendingBatches[0]!.operations, true)
+      ? new Map<string, Readonly<ElementId>[]>() : undefined;
+    if (listValueIds !== undefined) {
+      for (const operation of commit.operations) {
+        if (operation.type !== "list/insert") continue;
+        const ids = listValueIds.get(operation.path) ?? [];
+        ids.push(operation.id);
+        listValueIds.set(operation.path, ids);
+      }
+    }
     let changed = !sameConflict;
     for (const [path, runtime] of this.collections) {
       const nextState = nextOptimisticStates.get(path);
       if (nextState === undefined) {
         throw new Error(`Missing document path: ${path}`);
       }
-      if (!runtimeVisibleEquals(runtime, nextState, path, changed)) changed = true;
+      const ids = listValueIds === undefined ? undefined : listValueIds.get(path) ?? [];
+      if (!runtimeVisibleEquals(runtime, nextState, path, changed, ids)) changed = true;
     }
 
     this.authoritativeStates = nextAuthoritativeStates;

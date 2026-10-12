@@ -209,6 +209,12 @@ export class ListState<T extends JsonValue> {
     return [...this.values()];
   }
 
+  visibleValueEquals(other: ListState<T>, id: Readonly<ElementId>): boolean {
+    const present = this.idList.has(id);
+    if (present !== other.idList.has(id)) return false;
+    return !present || Object.is(this.valueFor(id), other.valueFor(id));
+  }
+
   visibleEquals(other: ListState<T>): boolean {
     if (this === other) return true;
     if (this.length !== other.length) return false;
