@@ -4,7 +4,7 @@ Look up the public API and exact collaboration contracts here. For a runnable in
 
 ## Compatibility
 
-These docs describe the 0.2 beta API. Do not mix incompatible server/checkpoint versions or document lineages. The [upgrade guide](recovery.md#upgrading-from-01) covers explicit sessions, the incompatible 0.1 server checkpoint format and the later incoming-namespace default.
+These docs describe the 0.2 API. Do not mix incompatible server/checkpoint versions or document lineages. The [upgrade guide](recovery.md#upgrading-from-01) covers explicit sessions, the incompatible 0.1 server checkpoint format and the later incoming-namespace default.
 
 Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` promises its documented `name`, JSON Pointer `path` and readable message, not exact wording.
 
@@ -153,7 +153,7 @@ Runtime errors have readable messages, not a stable error-code hierarchy. `WireD
 
 ## Boundaries
 
-The published 0.2 beta uses explicit sessions. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
+The published 0.2 release uses explicit sessions. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
 
 There is no production transport or storage adapter, background sync, automatic retry/reconnect, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing, move, public stable positions or cursor API. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
 

@@ -8,10 +8,10 @@ Use Node.js 24+ and an ESM project (`"type": "module"`). The package is public; 
 
 ## Install and run
 
-Install the beta from npm:
+Install from npm:
 
 ```sh
-pnpm add articollab@beta
+pnpm add articollab
 ```
 
 Save the following complete snippet as `counter.ts` in your project and run `node counter.ts`. Node runs this TypeScript example directly; no build step is needed. The import resolves the installed package's production ESM entrypoint.
