@@ -1,6 +1,6 @@
 import type { ElementId } from "articulated";
 import { copyJsonValue, jsonArray, jsonEquals, jsonPointer, jsonRecord, type JsonPathSegment } from "./json.ts";
-import { initialStates, replayPending } from "./state.ts";
+import { decodedCollectionStates, initialStates, replayPending } from "./state.ts";
 import { PendingReplayError } from "./conflict.ts";
 import { localBunchSeq } from "./namespace.ts";
 import { clientNumber } from "./client-id.ts";
@@ -443,10 +443,10 @@ function validateSnapshotCollection(
   try {
     if (kind === "list") {
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The caller constructs this snapshot for the selected collection kind, then hydration validates it.
-      ListState.load(snapshot as ListSnapshotData);
+      decodedCollectionStates.set(snapshot, ListState.load(snapshot as ListSnapshotData));
     } else {
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The caller constructs this snapshot for the selected collection kind, then hydration validates it.
-      TextState.load(snapshot as TextSnapshotData);
+      decodedCollectionStates.set(snapshot, TextState.load(snapshot as TextSnapshotData));
     }
   } catch (error) {
     fail(path, `invalid ${kind} snapshot: ${errorMessage(error)}`);

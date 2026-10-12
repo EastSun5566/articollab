@@ -102,6 +102,8 @@ For vendor upgrades, review adaptations, run collision/version-isolation regress
 
 Local Value/List JSON validation visits the supplied payload without a copy or cache; measure large-payload replacement separately from primitive-element collection benchmarks. Reconciliation optimizations must preserve ordered validation, visible equality, conflict and notification contracts. Neither improvement establishes constant-time receive.
 
+Decoded List/Text snapshots reuse the persistent states loaded during validation. This cache is keyed only by decoder-owned frozen payloads; raw typed snapshots still load and validate normally. Constructors decode checkpoints again, so reuse is within each decoding boundary, not across every decode/restore call. Retaining a decoded snapshot also retains its cached state; measure that memory tradeoff when changing hydration.
+
 ## CI and documentation deployment
 
 The `CI` workflow checks main pushes, `v*` tag pushes, PRs to main and manual runs. It uses a frozen install, pinned actions and the declared pnpm, then runs checks including browser JSDoc, package consumers and docs staging. Local success does not prove remote success.

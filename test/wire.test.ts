@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { ListState } from "../src/list.ts";
+import { TextState } from "../src/text.ts";
 
 import {
   createClient,
   createServer,
   decodeClientBatch,
+  decodeClientCheckpoint,
   decodeServerCheckpoint,
   decodeServerCommit,
   decodeSnapshot,
@@ -15,6 +18,7 @@ import {
   WireDecodeError,
   type ClientBatch,
   type DocumentOperation,
+  type DocumentSnapshot,
   type JsonValue,
 } from "../src/index.ts";
 
@@ -63,6 +67,93 @@ function valueBatch(value: unknown): Record<string, unknown> {
 }
 
 describe("wire decoding", () => {
+  it("loads collections once per decoding boundary and reuses decoded snapshots", (t) => {
+    const server = createServer(Board);
+    const clientId = server.openClient();
+    const { batches, doc } = setupClient(clientId);
+    doc.transact(() => {
+      doc.state.items.push({ label: "gone" });
+      doc.state.body.insert(0, "A😀");
+    });
+    doc.receive(server.receive(batches[0]!).commit);
+    doc.transact(() => {
+      doc.state.items.delete(0);
+      doc.state.body.delete(0);
+    });
+    doc.receive(server.receive(batches[1]!).commit);
+    doc.transact(() => {
+      doc.state.items.push({ label: "pending" });
+      doc.state.body.insert(1, "B");
+    });
+    const clientInput = jsonRoundTrip(doc.checkpoint());
+    const serverInput = jsonRoundTrip(server.checkpoint());
+    const listLoad = t.mock.method(ListState, "load");
+    const textLoad = t.mock.method(TextState, "load");
+
+    const snapshot = decodeSnapshot(Board, jsonRoundTrip(server.snapshot()));
+    createClient(Board, { clientId: "late", snapshot, onBatch() {} });
+    createClient(Board, { clientId: "another", snapshot, onBatch() {} });
+    assert.equal(listLoad.mock.calls.length, 1);
+    assert.equal(textLoad.mock.calls.length, 1);
+
+    listLoad.mock.resetCalls(); textLoad.mock.resetCalls();
+    const checkpoint = decodeClientCheckpoint(Board, clientInput);
+    assert.equal(listLoad.mock.calls.length, 1);
+    assert.equal(textLoad.mock.calls.length, 1);
+    const restored = createClient(Board, { clientId, checkpoint, onBatch() {} });
+    // Constructors decode again: reuse is within each owned decoding boundary.
+    assert.equal(listLoad.mock.calls.length, 2);
+    assert.equal(textLoad.mock.calls.length, 2);
+    assert.deepEqual(restored.checkpoint(), checkpoint);
+    assert.deepEqual(restored.state.items.toArray(), [{ label: "pending" }]);
+    assert.equal(restored.state.body.toString(), "😀B");
+
+    listLoad.mock.resetCalls(); textLoad.mock.resetCalls();
+    const restoredServer = createServer(Board, {
+      checkpoint: decodeServerCheckpoint(Board, serverInput),
+    });
+    assert.equal(listLoad.mock.calls.length, 2);
+    assert.equal(textLoad.mock.calls.length, 2);
+    assert.deepEqual(restoredServer.checkpoint(), server.checkpoint());
+  });
+
+  it("isolates reused decoded states and still validates mutable or wrong-kind snapshots", () => {
+    const input = { serverSeq: 0, data: {
+      meta: { status: "draft", nested: { enabled: false }, tags: [] },
+      items: { idList: [{ bunchId: "list-seed", startCounter: 0, count: 1, isDeleted: false }],
+        values: [{ label: "A" }] },
+      body: { idList: [{ bunchId: "text-seed", startCounter: 0, count: 3, isDeleted: false }], value: "A😀B" },
+    } };
+    const snapshot = decodeSnapshot(Board, input);
+    const left = createClient(Board, { clientId: "left", snapshot, onBatch() {} });
+    const right = createClient(Board, { clientId: "right", snapshot, onBatch() {} });
+    assert.strictEqual(left.state.items.get(0), snapshot.data.items.values[0]);
+    left.transact(() => {
+      left.state.items.delete(0);
+      left.state.body.delete(1);
+    });
+    right.transact(() => {
+      right.state.items.push({ label: "B" });
+      right.state.body.insert(3, "🦊");
+    });
+    assert.deepEqual(left.state.items.toArray(), []);
+    assert.equal(left.state.body.toString(), "AB");
+    assert.deepEqual(right.state.items.toArray(), [{ label: "A" }, { label: "B" }]);
+    assert.equal(right.state.body.toString(), "A😀B🦊");
+    assert.deepEqual(snapshot, input);
+
+    const raw = createClient(Board, { clientId: "raw", snapshot: input, onBatch() {} });
+    input.data.body.value = "";
+    assert.throws(() => createClient(Board, { clientId: "invalid", snapshot: input, onBatch() {} }));
+    assert.equal(raw.state.body.toString(), "A😀B");
+    assert.equal(snapshot.data.body.value, "A😀B");
+
+    const otherSchema = defineDocument({ meta: Board.definition.meta, items: text(), body: text() });
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Intentionally hydrate the decoded List payload as Text to verify cache kind checks.
+    const wrongKind = snapshot as unknown as DocumentSnapshot<typeof otherSchema.definition>;
+    assert.throws(() => createClient(otherSchema, { clientId: "wrong-kind", snapshot: wrongKind, onBatch() {} }));
+  });
+
   it("round-trips Value, List, and Text batches and commits", () => {
     const server = createServer(Board);
     assert.equal(server.openClient(), "client-1");

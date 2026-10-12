@@ -40,6 +40,8 @@ Local positions become stable insertion anchors or deletion targets on the wire.
 
 There is no replacement or move method. Replace one element with delete + insert inside a transaction.
 
+This creates a new element identity, not an update to the existing element. If two writers concurrently replace the same element, both insertions can remain: the second deletion targets an already-deleted ID. Use application policy when your data requires a single replacement result.
+
 ## Text: Unicode code points
 
 ```ts

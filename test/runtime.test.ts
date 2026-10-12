@@ -267,6 +267,114 @@ describe("client runtime", () => {
     assert.equal(peer.checkpoint().pendingBatches.length, 0);
   });
 
+  it("stops comparing after a visible change while still restoring all collection states", (t) => {
+    const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
+    const server = createServer(Board);
+    const writerId = server.openClient();
+    const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const writer = createClient(Board, { clientId: writerId, onBatch: (batch) => batches.push(batch) });
+    writer.transact(() => {
+      writer.state.items.push("A");
+      writer.state.body.insert(0, "A😀");
+    });
+    writer.receive(server.receive(batches[0]!).commit);
+    const doc = createClient(Board, { clientId: server.openClient(), snapshot: server.snapshot(), onBatch() {} });
+    writer.transact(() => {
+      writer.state.count.value = 1;
+      writer.state.items.delete(0);
+      writer.state.items.push("B");
+      writer.state.body.delete(1);
+      writer.state.body.insert(1, "🦊");
+    });
+    const commit = server.receive(batches[1]!).commit;
+    const listEquals = t.mock.method(ListState.prototype, "visibleEquals");
+    const textEquals = t.mock.method(TextState.prototype, "visibleEquals");
+    let changes = 0;
+    doc.on("change", () => {
+      changes++;
+      assert.equal(doc.checkpoint().snapshot.serverSeq, 2);
+      assert.deepEqual(doc.state.items.toArray(), ["B"]);
+      assert.equal(doc.state.body.toString(), "A🦊");
+    });
+    doc.receive(commit);
+    assert.equal(listEquals.mock.calls.length, 0);
+    assert.equal(textEquals.mock.calls.length, 0);
+    assert.equal(changes, 1);
+    assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
+  });
+
+  it("keeps cancelled remote insertions silent and advances the watermark", () => {
+    const Board = defineDocument({ items: list<string>(), body: text() });
+    const server = createServer(Board);
+    const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const writer = createClient(Board, { clientId: server.openClient(), onBatch: (batch) => batches.push(batch) });
+    const doc = createClient(Board, { clientId: server.openClient(), onBatch() {} });
+    let changes = 0;
+    doc.on("change", () => changes++);
+    writer.transact(() => {
+      writer.state.items.push("temporary");
+      writer.state.items.delete(0);
+      writer.state.body.insert(0, "😀");
+      writer.state.body.delete(0);
+    });
+    doc.receive(server.receive(batches[0]!).commit);
+    assert.deepEqual(doc.state.items.toArray(), []);
+    assert.equal(doc.state.body.toString(), "");
+    assert.equal(changes, 0);
+    assert.equal(doc.checkpoint().snapshot.serverSeq, 1);
+  });
+
+  it("still validates collection kinds before mutation when another path already changed", () => {
+    const Board = defineDocument({ count: valueSchema(0), data: valueSchema(0) });
+    const doc = createClient(Board, { clientId: "observer", onBatch() {} });
+    const before = doc.checkpoint();
+    let changes = 0;
+    doc.on("change", () => changes++);
+    for (const state of [ListState.empty(), TextState.empty()]) {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately put a collection state in a Value operation to retain existing atomic kind validation.
+      const invalid = { type: "value/set", path: "data", value: state } as unknown as DocumentOperation<typeof Board.definition>;
+      assert.throws(() => doc.receive({ serverSeq: 1, source: { clientId: "peer", seq: 1 },
+        operations: [{ type: "value/set", path: "count", value: 1 }, invalid],
+      }));
+      assert.deepEqual(doc.checkpoint(), before);
+      assert.equal(doc.state.count.value, 0);
+      assert.equal(changes, 0);
+    }
+    doc.receive({ serverSeq: 1, source: { clientId: "peer", seq: 1 },
+      operations: [{ type: "value/set", path: "count", value: 1 }],
+    });
+    assert.equal(changes, 1);
+  });
+
+  it("does not iterate Text for a remote deletion whose targets are already tombstones", (t) => {
+    const Board = defineDocument({ body: text() });
+    const server = createServer(Board);
+    const outgoing: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const remote: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const writerId = server.openClient();
+    const writer = createClient(Board, { clientId: writerId, onBatch: (batch) => outgoing.push(batch) });
+    const peer = createClient(Board, { clientId: server.openClient(), onBatch: (batch) => remote.push(batch) });
+    writer.state.body.insert(0, "A😀B");
+    const initial = server.receive(outgoing[0]!).commit;
+    writer.receive(initial); peer.receive(initial);
+    writer.state.body.delete(1); peer.state.body.delete(1);
+    const first = server.receive(outgoing[1]!).commit;
+    const second = server.receive(remote[0]!).commit;
+    const observer = createClient(Board, { clientId: server.openClient(),
+      snapshot: { serverSeq: 1, data: { body: { idList: [{
+        bunchId: JSON.stringify([writerId, "body", 1]), startCounter: 0, count: 3, isDeleted: false,
+      }], value: "A😀B" } } }, onBatch() {} });
+    observer.receive(first);
+    let changes = 0;
+    observer.on("change", () => changes++);
+    const iteration = t.mock.method(IdList.prototype, "values");
+    observer.receive(second);
+    assert.equal(iteration.mock.calls.length, 0);
+    assert.equal(changes, 0);
+    assert.equal(observer.state.body.toString(), "AB");
+    assert.equal(observer.checkpoint().snapshot.serverSeq, 3);
+  });
+
   it("confirms decoded mixed own acks after restore without replaying dependent pending", (t) => {
     const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
     const server = createServer(Board);
