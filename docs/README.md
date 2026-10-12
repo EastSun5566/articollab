@@ -31,9 +31,9 @@ Articollab provides the collaboration core, not an editor, database or productio
 The library is available on npm:
 
 ```sh
-pnpm add articollab@beta
+pnpm add articollab
 ```
 
-These docs describe the 0.2 beta API. Use an ESM project; the runnable Node.js examples require Node 24+. You do not need a repository checkout to use the package. Existing applications should read [upgrade guidance](recovery.md#upgrading-from-01) before mixing versions or checkpoints.
+These docs describe the 0.2 API. Use an ESM project; the runnable Node.js examples require Node 24+. You do not need a repository checkout to use the package. Existing applications should read [upgrade guidance](recovery.md#upgrading-from-01) before mixing versions or checkpoints.
 
 [Next: Counter quick start](quick-start.md)

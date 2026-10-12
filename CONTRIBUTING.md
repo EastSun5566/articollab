@@ -78,7 +78,7 @@ Keep user guidance separate from repository operations:
 
 These principles follow the [Astro writing guide](https://contribute.docs.astro.build/guides/writing-style/) and [Vercel writing guidelines](https://raw.githubusercontent.com/vercel-labs/writing-guidelines/main/command.md), without adopting their product-specific components.
 
-General installation instructions use `articollab@beta` while releases use the beta channel. Keep concrete versions in upgrade guidance only when necessary. Dist-tags select an install-time version; they do not continuously upgrade an installed project.
+General installation instructions use `pnpm add articollab`, which selects the `latest` release. Use `articollab@beta` only for prereleases. Keep concrete versions in upgrade guidance only when necessary. Dist-tags select an install-time version; they do not continuously upgrade an installed project.
 
 ## Benchmark and vendor maintenance
 

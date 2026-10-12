@@ -8,7 +8,7 @@ No. The server orders every new authoritative batch. Clients edit optimistically
 
 ## Do I need a repository checkout?
 
-No. Install `articollab@beta` from npm and follow the [Counter quick start](quick-start.md). Contributor tools and repository demos require a checkout; they are not part of the installed package.
+No. Install `articollab` from npm and follow the [Counter quick start](quick-start.md). Contributor tools and repository demos require a checkout; they are not part of the installed package.
 
 ## Why do nested object edits not synchronize?
 

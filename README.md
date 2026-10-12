@@ -6,10 +6,10 @@ Clients edit optimistically; the server orders commits and clients replay unackn
 
 ## Install
 
-Install the public beta from [npm](https://www.npmjs.com/package/articollab). Use an ESM project (`"type": "module"`); the Node.js examples require Node 24+.
+Install from [npm](https://www.npmjs.com/package/articollab). Use an ESM project (`"type": "module"`); the Node.js examples require Node 24+.
 
 ```sh
-pnpm add articollab@beta
+pnpm add articollab
 ```
 
 ## Quick start
