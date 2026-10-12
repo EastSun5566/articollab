@@ -37,7 +37,7 @@ describe("collection benchmark", () => {
     assert.ok(typeof environment.cpuCount === "number" && environment.cpuCount > 0);
     assert.deepEqual(report.config, { sizes: [32], samples: 2, iterations: 2, pending: 20, warmups: 1 });
     assert.ok(Array.isArray(report.results));
-    assert.equal(report.results.length, 18);
+    assert.equal(report.results.length, 22);
     const cases = new Set<string>();
     for (const input of report.results) {
       const row = record(input);
@@ -69,7 +69,9 @@ describe("collection benchmark", () => {
     }
     const scenarios = ["local-insert", "local-delete", "sync-insert", "pending-replay", "materialize",
       "snapshot", "unused-policy-snapshot", "unchanged-receive", "retained-heap"];
-    assert.deepEqual([...cases].sort(), ["list", "text"].flatMap((kind) => scenarios.map((scenario) => `${kind}/${scenario}`)).sort());
+    const objectScenarios = ["object-json-ack", "object-own-replace-ack", "object-json-replace-ack", "object-remote-replace"];
+    assert.deepEqual([...cases].sort(), [...["list", "text"].flatMap((kind) => scenarios.map((scenario) => `${kind}/${scenario}`)),
+      ...objectScenarios.map((scenario) => `list/${scenario}`)].sort());
   });
 
   it("prints readable smoke rows and does nothing when imported", async () => {
@@ -79,14 +81,15 @@ describe("collection benchmark", () => {
     const output = await run(["--expose-gc", script, "--smoke"]);
     assert.equal(output.stderr, "");
     assert.match(output.stdout, /kind\tsize\tscenario\tmedian\tmin\tmax\tunit/);
-    assert.equal(output.stdout.split("\n").filter((line) => /^(list|text)\t32\t/.test(line)).length, 18);
+    assert.equal(output.stdout.split("\n").filter((line) => /^(list|text)\t32\t/.test(line)).length, 22);
     assert.match(output.stdout, /ms\/op/);
     assert.match(output.stdout, /retained-heap.*bytes/);
     assert.match(output.stdout, /signed GC estimate/);
   });
 
   it("rejects invalid flags before starting a workload", async () => {
-    for (const args of [["--unknown"], ["--smoke", "extra"]]) {
+    for (const args of [["--unknown"], ["--smoke", "extra"],
+      ["--worker", "text", "32", "object-json-ack", "smoke"]]) {
       await assert.rejects(run([script, ...args]), (error: unknown) => {
         assert.ok(error instanceof Error && "code" in error && error.code === 1);
         assert.ok("stdout" in error && error.stdout === "");

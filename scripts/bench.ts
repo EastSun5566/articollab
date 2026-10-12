@@ -17,8 +17,10 @@ const execute = promisify(execFile);
 const kinds = ["list", "text"] as const;
 const scenarios = ["local-insert", "local-delete", "sync-insert", "pending-replay",
   "materialize", "snapshot", "unused-policy-snapshot", "unchanged-receive", "retained-heap"] as const;
+const objectScenarios = ["object-json-ack", "object-own-replace-ack", "object-json-replace-ack",
+  "object-remote-replace"] as const;
 type Kind = typeof kinds[number];
-type Scenario = typeof scenarios[number];
+type Scenario = typeof scenarios[number] | typeof objectScenarios[number];
 type Shape = { count: ValueSchema<number>; items: ListSchema<string>; body: TextSchema };
 type Doc = ClientDocument<Shape>;
 type Batch = ClientBatch<DocumentOperation<Shape>>;
@@ -82,7 +84,7 @@ function collect(): void {
   globalThis.gc();
 }
 
-function timeTrial(api: Api, kind: Kind, size: number, scenario: Scenario, iterations: number): number {
+function timeTrial(api: Api, kind: Kind, size: number, scenario: typeof scenarios[number], iterations: number): number {
   const schema = board(api);
   const snapshot = fixture(kind, size);
   const server = api.createServer(schema, {
@@ -197,15 +199,86 @@ function serializedSizes(api: Api, kind: Kind, size: number) {
     checkpointBytes: Buffer.byteLength(JSON.stringify(server.checkpoint()), "utf8") };
 }
 
+function objectFixture(size: number) {
+  return { serverSeq: 0, data: { items: {
+    idList: [{ bunchId: "seed", startCounter: 0, count: size, isDeleted: false }],
+    values: Array.from({ length: size }, () => ({ label: "x" })),
+  } } };
+}
+
+function objectTrial(api: Api, size: number, scenario: typeof objectScenarios[number], iterations: number): number {
+  const schema = api.defineDocument({ items: api.list<{ label: string }>() });
+  const snapshot = objectFixture(size);
+  const server = api.createServer(schema, { historyLimit: 0,
+    checkpoint: { snapshot, lastClientNumber: 0, clients: [], history: [] } });
+  const batches: ClientBatch<DocumentOperation<typeof schema.definition>>[] = [];
+  const writer = api.createClient(schema, { clientId: server.openClient(), snapshot,
+    onBatch: (batch) => batches.push(batch) });
+  const peer = api.createClient(schema, { clientId: server.openClient(), snapshot, onBatch() {} });
+  const recipient = scenario === "object-remote-replace" ? peer : writer;
+  let changes = 0;
+  recipient.on("change", (event) => { if (event.origin === "server") changes++; });
+  collect();
+  let elapsed = 0;
+  for (let index = 0; index < iterations; index++) {
+    const payload = { label: "y" };
+    if (scenario === "object-json-ack") writer.state.items.push(payload);
+    else writer.transact(() => {
+      writer.state.items.delete(size - 1);
+      writer.state.items.insert(size - 1, payload);
+    });
+    const batch = batches[index]!;
+    const received = server.receive(batch).commit;
+    const commit = scenario === "object-json-ack" || scenario === "object-json-replace-ack"
+      ? api.decodeServerCommit(schema, JSON.parse(JSON.stringify(received))) : received;
+    const start = performance.now();
+    recipient.receive(commit);
+    elapsed += performance.now() - start;
+    if (recipient === peer) writer.receive(commit);
+    else peer.receive(commit);
+    const operation = commit.operations.at(-1)!;
+    assert.equal(operation.type, "list/insert");
+    if (operation.type === "list/insert") {
+      const position = scenario === "object-json-ack" ? size + index : size - 1;
+      assert.strictEqual(recipient.state.items.get(position), operation.value);
+      assert.equal(Object.is(operation.value, payload),
+        scenario !== "object-json-ack" && scenario !== "object-json-replace-ack");
+    }
+  }
+  assert.equal(changes, scenario === "object-own-replace-ack" ? 0 : iterations);
+  const values = Array.from({ length: size }, () => ({ label: "x" }));
+  if (scenario === "object-json-ack") values.push(...Array.from({ length: iterations }, () => ({ label: "y" })));
+  else values[size - 1] = { label: "y" };
+  for (const doc of [writer, peer]) {
+    assert.deepEqual(doc.state.items.toArray(), values);
+    assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
+    assert.equal(doc.checkpoint().pendingBatches.length, 0);
+    assert.equal(doc.replayConflict, null);
+  }
+  return elapsed / iterations;
+}
+
 async function worker(kind: Kind, size: number, scenario: Scenario, smoke: boolean): Promise<Result> {
   // Type-only source references allow check-before-build; runtime always resolves production ESM.
   const loaded: unknown = await import(import.meta.resolve("articollab"));
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Self-package resolution points to the built public entrypoint generated from the same source API.
   const api = loaded as Api;
   const config = settings(smoke);
-  const bytes = serializedSizes(api, kind, size);
-  const trial = () => scenario === "retained-heap" ? heapTrial(api, kind, size) :
-    timeTrial(api, kind, size, scenario, config.iterations);
+  const objectScenario = objectScenarios.find((candidate) => candidate === scenario);
+  assert.ok(objectScenario === undefined || kind === "list", "Object workloads require List");
+  const objectSnapshot = objectScenario === undefined ? undefined : objectFixture(size);
+  const bytes = objectSnapshot === undefined ? serializedSizes(api, kind, size) : {
+    snapshotBytes: Buffer.byteLength(JSON.stringify(objectSnapshot), "utf8"),
+    checkpointBytes: Buffer.byteLength(JSON.stringify({ snapshot: objectSnapshot,
+      lastClientNumber: 0, clients: [], history: [] }), "utf8"),
+  };
+  const trial = () => {
+    if (objectScenario !== undefined) return objectTrial(api, size, objectScenario, config.iterations);
+    if (scenario === "retained-heap") return heapTrial(api, kind, size);
+    const primitiveScenario = scenarios.find((candidate) => candidate === scenario);
+    assert.ok(primitiveScenario !== undefined);
+    return timeTrial(api, kind, size, primitiveScenario, config.iterations);
+  };
   for (let index = 0; index < config.warmups; index++) trial();
   const samples = Array.from({ length: config.samples }, trial);
   const sorted = samples.toSorted((left, right) => left - right);
@@ -232,7 +305,7 @@ async function metadata() {
 async function main(args: string[]): Promise<void> {
   if (args[0] === "--worker") {
     const kind = kinds.find((candidate) => candidate === args[1]);
-    const scenario = scenarios.find((candidate) => candidate === args[3]);
+    const scenario = [...scenarios, ...objectScenarios].find((candidate) => candidate === args[3]);
     const size = Number(args[2]);
     assert.ok(args.length === 5 && kind !== undefined && scenario !== undefined &&
       (args[4] === "smoke" || args[4] === "full"), "Invalid benchmark worker arguments");
@@ -247,7 +320,7 @@ async function main(args: string[]): Promise<void> {
   const results: Result[] = [];
   for (const kind of kinds) {
     for (const size of config.sizes) {
-      for (const scenario of scenarios) {
+      for (const scenario of [...scenarios, ...(kind === "list" ? objectScenarios : [])]) {
         const workerArgs = ["--expose-gc", filename, "--worker", kind, String(size), scenario,
           values.smoke ? "smoke" : "full"];
         try {

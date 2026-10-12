@@ -47,6 +47,8 @@ Knip covers source, tests, scripts and examples; findings and configuration hint
 
 Collection, transaction and callback contracts are covered by `runtime.test.ts`, `list.test.ts` and `text.test.ts`. Session/namespace tests cover writer boundaries; wire/checkpoint/history/retry suites cover decoding and recovery. Integration suites cover HTTP, persistence and browser orchestration. These are pointers, not proof of complete coverage.
 
+`reconciliation-change.test.ts` checks server change events against a full comparison of visible IDs, payload references and conflict descriptors, including deterministic seeds. It rebuilds the pending prefix with existing hydration/replay code, but does not call runtime equality helpers. This is an oracle for change detection, not an independent List/Text ordering model.
+
 Reproduce a deterministic scheduling seed with:
 
 ```sh
@@ -88,9 +90,11 @@ pnpm --silent bench --json
 pnpm bench --smoke
 ```
 
-The benchmark builds production ESM and uses the public entrypoint. It measures List/Text at 1,000, 10,000 and 50,000 elements/code points in separate worker processes. Fixtures start with `"x"`; insertions use List `"y"` or Text `"😀"`. History is disabled. Networking, wire decoding, filesystem persistence and client churn are outside these measurements.
+The benchmark builds production ESM and uses the public entrypoint. It measures List/Text at 1,000, 10,000 and 50,000 elements/code points in separate worker processes. Primitive fixtures start with `"x"`; insertions use List `"y"` or Text `"😀"`. History is disabled. Networking, wire decoding, filesystem persistence and client churn are outside the timed work.
 
 Workloads cover local edits, in-process sync, remote receive with 20 pending insertions, materialization, snapshots, unused policy snapshots, unchanged receive and retained heap. Heap measures one hydrated client, not peak memory, allocation rate or RSS. Snapshot/checkpoint UTF-8 JSON bytes are reported separately.
+
+Four additional List workloads use `{ label: "x" }` elements: JSON-decoded insertion ack, in-memory replacement ack, JSON-decoded replacement ack and remote replacement. Each times only `receive()`; local edits, submission, serialization/decoding and assertions are outside the timer. Replacement targets the last element so unchanged-prefix comparisons remain visible. These are single-bunch fixtures, not fragmented-document measurements. The full matrix contains 66 workloads; the original 54 keep their measurement boundaries.
 
 Each worker has a 30-second timeout, one warm-up and five fresh-fixture samples. Timing averages ten operations per sample, except pending replay's single receive. Setup, explicit GC and assertions are excluded; natural GC during operations is included. Heap uses explicit GC before/after hydration and retains signed deltas, including negative measurements. Smoke uses size 32, two samples and two operations, still with 20 pending batches.
 
