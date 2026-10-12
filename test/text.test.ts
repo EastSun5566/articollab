@@ -5,6 +5,7 @@ import { TextState } from "../src/text.ts";
 import {
   createClient,
   createServer,
+  decodeServerCheckpoint,
   defineDocument,
   list,
   text,
@@ -35,6 +36,81 @@ function setup(clientId = "client-1") {
 }
 
 describe("text runtime", () => {
+  it("rejects rounded range overflow atomically in typed receive and policy output", () => {
+    for (const mode of ["typed", "policy"] as const) {
+      let overflow = true;
+      const server = createServer(Note, mode === "policy" ? {
+        resolve: ({ batch }) => batch.operations.map((operation) =>
+          operation.type === "text/insert" ? { ...operation, id: {
+            ...operation.id, counter: overflow ? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER - 1,
+          } } : operation),
+      } : {});
+      const clientId = server.openClient();
+      const batch = (counter: number): NoteBatch => ({ clientId, seq: 1, operations: [
+        { type: "value/set", path: "title", value: "Ready" },
+        { type: "text/insert", path: "body", before: null,
+          id: { bunchId: JSON.stringify([clientId, "body", 1]), counter }, value: "A😀" },
+      ] });
+      const before = server.checkpoint();
+      assert.throws(() => server.receive(batch(mode === "typed" ? Number.MAX_SAFE_INTEGER : 0)));
+      assert.deepEqual(server.checkpoint(), before);
+
+      const observer = createClient(Note, { clientId: "observer", onBatch() {} });
+      const clientBefore = observer.checkpoint();
+      let changes = 0;
+      observer.on("change", () => changes++);
+      assert.throws(() => observer.receive({ serverSeq: 1, source: { clientId, seq: 1 },
+        operations: batch(Number.MAX_SAFE_INTEGER).operations,
+      }));
+      assert.deepEqual(observer.checkpoint(), clientBefore);
+      assert.equal(changes, 0);
+
+      overflow = false;
+      const receipt = server.receive(batch(mode === "typed" ? Number.MAX_SAFE_INTEGER - 1 : 0));
+      assert.equal(receipt.commit.serverSeq, 1);
+      observer.receive(receipt.commit);
+      assert.equal(observer.state.body.toString(), "A😀");
+      assert.equal(changes, 1);
+      const checkpoint = decodeServerCheckpoint(Note, server.checkpoint());
+      const restored = createServer(Note, { checkpoint });
+      assert.deepEqual(restored.snapshot(), server.snapshot());
+      assert.equal(restored.snapshot().data.body.value, "A😀");
+
+      const saved = server.checkpoint();
+      assert.throws(() => server.receive({ clientId, seq: 2, operations: [
+        { type: "value/set", path: "title", value: "Broken" },
+        { type: "text/delete", path: "body", ranges: [{
+          start: { bunchId: JSON.stringify([clientId, "body", 1]), counter: Number.MAX_SAFE_INTEGER }, count: 2,
+        }] },
+      ] }));
+      assert.deepEqual(server.checkpoint(), saved);
+      assert.equal(server.receive({ clientId, seq: 2, operations: [{ type: "text/delete", path: "body",
+        ranges: [{ start: { bunchId: JSON.stringify([clientId, "body", 1]), counter: Number.MAX_SAFE_INTEGER }, count: 1 }],
+      }] }).commit.serverSeq, 2);
+      assert.equal(server.snapshot().data.body.value, "A");
+    }
+  });
+
+  it("retains state identity for tombstone-only deletes after validating every target", () => {
+    const state = TextState.empty().insert({ type: "text/insert", path: "body", before: null,
+      id: { bunchId: "base", counter: 0 }, value: "A😀B" });
+    const operation: TextDeleteOperation = { type: "text/delete", path: "body",
+      ranges: [{ start: { bunchId: "base", counter: 1 }, count: 1 }] };
+    const deleted = state.delete(operation);
+    const saved = deleted.save();
+    assert.strictEqual(deleted.delete(operation), deleted);
+    assert.throws(() => deleted.delete({ ...operation, ranges: [
+      ...operation.ranges, { start: { bunchId: "missing", counter: 0 }, count: 1 },
+    ] }));
+    assert.deepEqual(deleted.save(), saved);
+    const changed = deleted.delete({ ...operation, ranges: [
+      ...operation.ranges, { start: { bunchId: "base", counter: 2 }, count: 1 },
+    ] });
+    assert.notStrictEqual(changed, deleted);
+    assert.equal(changed.toString(), "A");
+    assert.equal(state.toString(), "A😀B");
+  });
+
   it("isolates Unicode bulk branches and round-trips tombstones", () => {
     const base = TextState.empty().insert({ type: "text/insert", path: "body", before: null,
       id: { bunchId: "base", counter: 0 }, value: "A😀BC" });

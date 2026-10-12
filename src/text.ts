@@ -73,7 +73,7 @@ function* idsInRange(
   if (
     !Number.isSafeInteger(start.counter) ||
     start.counter < 0 ||
-    !Number.isSafeInteger(start.counter + count - 1)
+    start.counter > Number.MAX_SAFE_INTEGER - count + 1
   ) {
     throw new Error(`Invalid text id range start: ${idKey(start)}`);
   }
@@ -202,6 +202,8 @@ export class TextState {
         }
       }
     });
+    // All targets were already tombstones; preserve identity for visible equality.
+    if (nextIdList.length === this.idList.length) return this;
     return new TextState(nextIdList, nextValues);
   }
 

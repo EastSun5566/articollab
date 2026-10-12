@@ -13,6 +13,9 @@ import { validateJsonValue } from "./json.ts";
 
 export type CollectionState = JsonValue | ListState<JsonValue> | TextState;
 
+// Only decoder-owned, frozen snapshots enter this cache; states remain persistent.
+export const decodedCollectionStates = new WeakMap<object, ListState<JsonValue> | TextState>();
+
 export function wrongCollectionKind(path: string): Error {
   return new Error(`Operation type does not match document path: ${path}`);
 }
@@ -149,11 +152,14 @@ export function initialStates<S extends SchemaShape>(
     Extract<keyof S, string>
   >) {
     const descriptor = schema.definition[path];
+    const payload = snapshotData?.[path];
+    const decoded = typeof payload === "object" && payload !== null
+      ? decodedCollectionStates.get(payload) : undefined;
     if (descriptor.kind === "value") {
       const value =
         snapshotData === undefined
           ? descriptor.initialValue
-          : snapshotData[path];
+          : payload;
       if (snapshotData === undefined) validateJsonValue(value, [path]);
       if (value === undefined) {
         throw new Error(`Missing document path: ${path}`);
@@ -165,16 +171,20 @@ export function initialStates<S extends SchemaShape>(
         path,
         snapshotData === undefined
           ? ListState.empty()
-          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Typed snapshot boundary supplies the matching payload; collection loaders retain their runtime checks.
-          : ListState.load(snapshotData[path] as ListSnapshotData)
+          : decoded instanceof ListState
+            ? decoded
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Typed snapshot boundary supplies the matching payload; collection loaders retain their runtime checks.
+            : ListState.load(payload as ListSnapshotData)
       );
     } else {
       states.set(
         path,
         snapshotData === undefined
           ? TextState.empty()
-          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Typed snapshot boundary supplies the matching payload; collection loaders retain their runtime checks.
-          : TextState.load(snapshotData[path] as TextSnapshotData)
+          : decoded instanceof TextState
+            ? decoded
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Typed snapshot boundary supplies the matching payload; collection loaders retain their runtime checks.
+            : TextState.load(payload as TextSnapshotData)
       );
     }
   }

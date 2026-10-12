@@ -304,20 +304,21 @@ function sameOperations(left: readonly Operation[], right: readonly Operation[])
 function runtimeVisibleEquals(
   runtime: RuntimeCollection,
   state: CollectionState,
-  path: string
+  path: string,
+  skipComparison: boolean
 ): boolean {
   if (runtime instanceof RuntimeList) {
     if (!(state instanceof ListState)) throw wrongCollectionKind(path);
-    return runtime.visibleEquals(state);
+    return skipComparison || runtime.visibleEquals(state);
   }
   if (runtime instanceof RuntimeText) {
     if (!(state instanceof TextState)) throw wrongCollectionKind(path);
-    return runtime.visibleEquals(state);
+    return skipComparison || runtime.visibleEquals(state);
   }
   if (state instanceof ListState || state instanceof TextState) {
     throw wrongCollectionKind(path);
   }
-  return runtime.visibleEquals(state);
+  return skipComparison || runtime.visibleEquals(state);
 }
 
 function restoreRuntime(
@@ -652,7 +653,7 @@ export class ClientDocument<S extends SchemaShape> {
       if (nextState === undefined) {
         throw new Error(`Missing document path: ${path}`);
       }
-      if (!runtimeVisibleEquals(runtime, nextState, path)) changed = true;
+      if (!runtimeVisibleEquals(runtime, nextState, path, changed)) changed = true;
     }
 
     this.authoritativeStates = nextAuthoritativeStates;
