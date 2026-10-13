@@ -106,6 +106,8 @@ For vendor upgrades, review adaptations, run collision/version-isolation regress
 
 Local Value/List JSON validation visits the supplied payload without a copy or cache; measure large-payload replacement separately from primitive-element collection benchmarks. Reconciliation optimizations must preserve ordered validation, visible equality, conflict and notification contracts. Neither improvement establishes constant-time receive.
 
+Conflict-free own acks whose operations differ only in List insertion payloads compare values at the affected stable IDs, rather than scanning the full List. Authoritative application and pending replay still run; decoded references are adopted and `Object.is` remains the equality rule. Other operation changes, remote commits and replay conflicts retain full comparison. Use the change oracle and object receive workloads when modifying this shortcut.
+
 Decoded List/Text snapshots reuse the persistent states loaded during validation. This cache is keyed only by decoder-owned frozen payloads; raw typed snapshots still load and validate normally. Constructors decode checkpoints again, so reuse is within each decoding boundary, not across every decode/restore call. Retaining a decoded snapshot also retains its cached state; measure that memory tradeoff when changing hydration.
 
 ## CI and documentation deployment

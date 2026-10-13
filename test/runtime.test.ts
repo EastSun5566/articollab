@@ -267,6 +267,158 @@ describe("client runtime", () => {
     assert.equal(peer.checkpoint().pendingBatches.length, 0);
   });
 
+  it("compares only affected List values for decoded own insertions and replacements", (t) => {
+    const Board = defineDocument({ items: list<{ label: string }>() });
+    for (const action of ["insert", "replace", "cancel"] as const) {
+      const server = createServer(Board);
+      const clientId = server.openClient();
+      const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+      const doc = createClient(Board, { clientId, onBatch: (batch) => batches.push(batch) });
+      doc.transact(() => { for (let index = 0; index < 64; index++) doc.state.items.push({ label: String(index) }); });
+      doc.receive(server.receive(batches[0]!).commit);
+      const payload = { label: "A" };
+      doc.transact(() => {
+        if (action === "replace") doc.state.items.delete(63);
+        doc.state.items.push(payload);
+        if (action === "cancel") doc.state.items.delete(64);
+      });
+      const commit = decodeServerCommit(Board, JSON.parse(JSON.stringify(server.receive(batches[1]!).commit)));
+      let changes = 0;
+      doc.on("change", () => changes++);
+      const iteration = t.mock.method(IdList.prototype, "values");
+      doc.receive(commit);
+      assert.equal(iteration.mock.calls.length, 0);
+      iteration.mock.restore();
+      assert.equal(changes, action === "cancel" ? 0 : 1);
+      assert.deepEqual(doc.checkpoint().pendingBatches, []);
+      assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
+      if (action !== "cancel") {
+        const operation = commit.operations.at(-1)!;
+        assert.equal(operation.type, "list/insert");
+        if (operation.type === "list/insert") {
+          assert.strictEqual(doc.state.items.get(doc.state.items.length - 1), operation.value);
+          assert.notStrictEqual(operation.value, payload);
+          assert.ok(Object.isFrozen(operation.value));
+        }
+      }
+    }
+  });
+
+  it("keeps pending replay while skipping List scans for dependent and hidden decoded own values", (t) => {
+    const Board = defineDocument({ items: list<{ label: string }>(), other: list<{ label: string }>() });
+    for (const hidden of [false, true]) for (const restored of [false, true]) {
+      const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+      const server = createServer(Board);
+      const clientId = server.openClient();
+      let doc = createClient(Board, { clientId, onBatch: (batch) => batches.push(batch) });
+      doc.state.items.push({ label: "A" });
+      const b = { label: "B" }, other = { label: "other" };
+      doc.transact(() => {
+        if (hidden) doc.state.items.delete(0);
+        doc.state.items.push(b);
+        doc.state.other.push(other);
+      });
+      if (restored) doc = createClient(Board, { clientId,
+        checkpoint: decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(doc.checkpoint()))),
+        onBatch: (batch) => batches.push(batch),
+      });
+      const expectedB = doc.state.items.get(doc.state.items.length - 1);
+      const expectedOther = doc.state.other.get(0);
+      const pending = doc.checkpoint();
+      const commit = decodeServerCommit(Board, JSON.parse(JSON.stringify(server.receive(batches[0]!).commit)));
+      let changes = 0;
+      doc.on("change", () => changes++);
+      const iteration = t.mock.method(IdList.prototype, "values");
+      const replay = t.mock.method(ListState.prototype, "insert");
+      doc.receive(commit);
+      assert.equal(iteration.mock.calls.length, 0);
+      assert.equal(replay.mock.calls.length, 3); // Authoritative A and both pending insertions still apply.
+      iteration.mock.restore(); replay.mock.restore();
+      assert.equal(changes, hidden ? 0 : 1);
+      assert.strictEqual(doc.state.items.get(doc.state.items.length - 1), expectedB);
+      assert.strictEqual(doc.state.other.get(0), expectedOther);
+      assert.deepEqual(doc.checkpoint().pendingBatches, [batches[1]]);
+      assert.deepEqual(doc.checkpoint().lastBunchSeqs, pending.lastBunchSeqs);
+      const second = decodeServerCommit(Board, JSON.parse(JSON.stringify(server.receive(batches[1]!).commit)));
+      doc.receive(second);
+      assert.equal(changes, hidden ? 1 : 2);
+      assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
+      assert.equal(doc.replayConflict, null);
+    }
+  });
+
+  it("retains Object.is for changed List primitives without iterating unchanged IDs", (t) => {
+    const Board = defineDocument({ items: list<number>() });
+    for (const value of [-0, 2]) {
+      const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+      const doc = createClient(Board, { clientId: "client-1", onBatch: (batch) => batches.push(batch) });
+      doc.state.items.push(0);
+      const operation = batches[0]!.operations[0]!;
+      assert.equal(operation.type, "list/insert");
+      let changes = 0;
+      doc.on("change", () => changes++);
+      if (operation.type === "list/insert") {
+        const iteration = t.mock.method(IdList.prototype, "values");
+        doc.receive({ serverSeq: 1, source: batches[0]!, operations: [{ ...operation, value }] });
+        assert.equal(iteration.mock.calls.length, 0);
+        iteration.mock.restore();
+      }
+      assert.ok(Object.is(doc.state.items.get(0), value));
+      assert.equal(changes, 1);
+    }
+  });
+
+  it("falls back to full List comparison for reordered, remapped and rejected own operations", (t) => {
+    const Board = defineDocument({ items: list<{ label: string }>() });
+    for (const mode of ["reorder", "remap", "reject"] as const) {
+      const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+      const doc = createClient(Board, { clientId: "client-1", onBatch: (batch) => batches.push(batch) });
+      doc.transact(() => {
+        doc.state.items.insert(0, { label: "A" });
+        doc.state.items.insert(0, { label: "B" });
+      });
+      const batch = batches[0]!;
+      const operations = mode === "reject" ? [] : mode === "reorder" ? batch.operations.toReversed() :
+        batch.operations.map((operation, index) => operation.type === "list/insert"
+          ? { ...operation, id: { bunchId: "server", counter: index }, value: { ...operation.value } } : operation);
+      let changes = 0;
+      doc.on("change", () => changes++);
+      const comparison = t.mock.method(ListState.prototype, "visibleEquals");
+      doc.receive({ serverSeq: 1, source: batch, operations });
+      assert.equal(comparison.mock.calls.length, 1);
+      comparison.mock.restore();
+      assert.equal(changes, 1);
+      assert.deepEqual(doc.checkpoint().pendingBatches, []);
+    }
+  });
+
+  it("uses full List comparison for a payload-only own ack when a pending suffix is blocked", (t) => {
+    const Board = defineDocument({ items: list<{ label: string }>() });
+    const server = createServer(Board);
+    const clientId = server.openClient();
+    const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const doc = createClient(Board, { clientId, onBatch: (batch) => batches.push(batch) });
+    doc.state.items.push({ label: "A" });
+    doc.state.items.insert(0, { label: "independent" });
+    doc.state.items.push({ label: "depends on A" });
+    doc.receive(server.reject(batches[0]!).commit);
+    const conflict = doc.replayConflict;
+    assert.strictEqual(conflict?.batch, batches[2]);
+    const commit = decodeServerCommit(Board, JSON.parse(JSON.stringify(server.receive(batches[1]!).commit)));
+    let changes = 0;
+    doc.on("change", () => changes++);
+    const comparison = t.mock.method(ListState.prototype, "visibleEquals");
+    doc.receive(commit);
+    assert.equal(comparison.mock.calls.length, 1);
+    comparison.mock.restore();
+    assert.equal(changes, 1);
+    assert.strictEqual(doc.replayConflict, conflict);
+    assert.deepEqual(doc.state.items.toArray(), [{ label: "independent" }]);
+    assert.deepEqual(doc.checkpoint().pendingBatches, [batches[2]]);
+    doc.receive(server.reject(batches[2]!).commit);
+    assert.equal(doc.replayConflict, null);
+  });
+
   it("stops comparing after a visible change while still restoring all collection states", (t) => {
     const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
     const server = createServer(Board);
