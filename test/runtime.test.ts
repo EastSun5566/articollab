@@ -419,6 +419,145 @@ describe("client runtime", () => {
     assert.equal(doc.replayConflict, null);
   });
 
+  it("compares touched IDs for remote List replacements without pending work", (t) => {
+    const Board = defineDocument({ items: list<{ label: string }>(), other: list<string>(),
+      count: valueSchema(0), body: text() });
+    for (const restored of [false, true]) {
+      const server = createServer(Board);
+      const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+      const writer = createClient(Board, { clientId: server.openClient(), onBatch: (batch) => batches.push(batch) });
+      writer.transact(() => {
+        for (let index = 0; index < 64; index++) writer.state.items.push({ label: String(index) });
+        writer.state.other.push("unchanged");
+      });
+      writer.receive(server.receive(batches[0]!).commit);
+      const clientId = server.openClient();
+      let doc = createClient(Board, { clientId, snapshot: server.snapshot(), onBatch() {} });
+      if (restored) doc = createClient(Board, { clientId,
+        checkpoint: decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(doc.checkpoint()))), onBatch() {},
+      });
+      const first = doc.state.items.get(0);
+      // The payload is equal, but replacing its stable ID is still a visible change.
+      writer.transact(() => {
+        writer.state.items.delete(63);
+        writer.state.items.push({ label: "63" });
+        writer.state.body.insert(0, "A😀");
+      });
+      const commit = decodeServerCommit(Board, JSON.parse(JSON.stringify(server.receive(batches[1]!).commit)));
+      let changes = 0;
+      doc.on("change", () => {
+        changes++;
+        assert.equal(doc.state.items.length, 64);
+        assert.equal(doc.state.items.get(63).label, "63");
+      });
+      const comparison = t.mock.method(ListState.prototype, "visibleEquals");
+      const iteration = t.mock.method(IdList.prototype, "values");
+      doc.receive(commit);
+      assert.equal(comparison.mock.calls.length, 0);
+      assert.equal(iteration.mock.calls.length, 0);
+      comparison.mock.restore(); iteration.mock.restore();
+      assert.equal(changes, 1);
+      assert.strictEqual(doc.state.items.get(0), first);
+      const inserted = commit.operations.find((operation) => operation.type === "list/insert");
+      assert.ok(inserted?.type === "list/insert");
+      assert.strictEqual(doc.state.items.get(63), inserted.value);
+      assert.ok(Object.isFrozen(doc.state.items.get(63)));
+      assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
+      assert.equal(doc.state.body.toString(), "A😀");
+      assert.deepEqual(doc.checkpoint().pendingBatches, []);
+    }
+  });
+
+  it("compares final remote List visibility for cancellation, tombstones and empty commits", (t) => {
+    const Board = defineDocument({ items: list<string>() });
+    const server = createServer(Board);
+    const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const writer = createClient(Board, { clientId: server.openClient(), onBatch: (batch) => batches.push(batch) });
+    writer.transact(() => {
+      for (let index = 0; index < 64; index++) writer.state.items.push(String(index));
+    });
+    writer.receive(server.receive(batches[0]!).commit);
+    const doc = createClient(Board, { clientId: server.openClient(), snapshot: server.snapshot(), onBatch() {} });
+    let changes = 0;
+    doc.on("change", () => changes++);
+    writer.transact(() => {
+      writer.state.items.push("temporary");
+      writer.state.items.delete(64);
+    });
+    const cancelled = server.receive(batches[1]!).commit;
+    writer.receive(cancelled);
+    const deletion = cancelled.operations[1]!;
+    assert.equal(deletion.type, "list/delete");
+    const comparison = t.mock.method(ListState.prototype, "visibleEquals");
+    const iteration = t.mock.method(IdList.prototype, "values");
+    doc.receive(decodeServerCommit(Board, JSON.parse(JSON.stringify(cancelled))));
+    doc.receive({ serverSeq: 3, source: { clientId: cancelled.source.clientId, seq: 3 }, operations: [deletion] });
+    doc.receive({ serverSeq: 4, source: { clientId: cancelled.source.clientId, seq: 4 }, operations: [] });
+    assert.equal(comparison.mock.calls.length, 0);
+    assert.equal(iteration.mock.calls.length, 0);
+    comparison.mock.restore(); iteration.mock.restore();
+    assert.equal(changes, 0);
+    assert.equal(doc.state.items.length, 64);
+    assert.equal(doc.state.items.get(63), "63");
+    assert.equal(doc.checkpoint().snapshot.serverSeq, 4);
+    assert.deepEqual(doc.checkpoint().pendingBatches, []);
+  });
+
+  it("uses full remote List comparison when any local pending batch remains", (t) => {
+    const Board = defineDocument({ items: list<string>(), count: valueSchema(0) });
+    for (const overlap of [false, true]) {
+      const server = createServer(Board);
+      const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+      const writer = createClient(Board, { clientId: server.openClient(), onBatch: (batch) => batches.push(batch) });
+      writer.state.items.push("A");
+      writer.receive(server.receive(batches[0]!).commit);
+      const doc = createClient(Board, { clientId: server.openClient(), snapshot: server.snapshot(), onBatch() {} });
+      if (overlap) doc.state.items.push("pending");
+      else doc.state.count.set(1);
+      const pending = doc.checkpoint();
+      writer.transact(() => {
+        writer.state.items.delete(0);
+        writer.state.items.insert(0, "B");
+      });
+      const commit = server.receive(batches[1]!).commit;
+      let changes = 0;
+      doc.on("change", () => changes++);
+      const comparison = t.mock.method(ListState.prototype, "visibleEquals");
+      doc.receive(commit);
+      assert.equal(comparison.mock.calls.length, 1);
+      comparison.mock.restore();
+      assert.equal(changes, 1);
+      assert.deepEqual(doc.state.items.toArray(), overlap ? ["B", "pending"] : ["B"]);
+      assert.deepEqual(doc.checkpoint().pendingBatches, pending.pendingBatches);
+      assert.deepEqual(doc.checkpoint().lastBunchSeqs, pending.lastBunchSeqs);
+      assert.equal(doc.replayConflict, null);
+    }
+  });
+
+  it("validates every remote List operation before a targeted comparison or notification", () => {
+    const Board = defineDocument({ items: list<string>() });
+    const doc = createClient(Board, { clientId: "observer", onBatch() {} });
+    const before = doc.checkpoint();
+    let changes = 0;
+    doc.on("change", () => changes++);
+    const id = { bunchId: "remote", counter: 0 };
+    const insert = { type: "list/insert", path: "items", before: null, id, value: "A" } as const;
+    const invalid: DocumentOperation<typeof Board.definition>[] = [
+      insert,
+      { type: "list/delete", path: "items", id: { bunchId: "unknown", counter: 0 } },
+    ];
+    for (const operation of invalid) {
+      assert.throws(() => doc.receive({ serverSeq: 1, source: { clientId: "peer", seq: 1 },
+        operations: [insert, operation],
+      }));
+      assert.deepEqual(doc.checkpoint(), before);
+      assert.equal(changes, 0);
+    }
+    doc.receive({ serverSeq: 1, source: { clientId: "peer", seq: 1 }, operations: [insert] });
+    assert.deepEqual(doc.state.items.toArray(), ["A"]);
+    assert.equal(changes, 1);
+  });
+
   it("stops comparing after a visible change while still restoring all collection states", (t) => {
     const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
     const server = createServer(Board);

@@ -308,12 +308,12 @@ function runtimeVisibleEquals(
   state: CollectionState,
   path: string,
   skipComparison: boolean,
-  listValueIds?: readonly Readonly<ElementId>[]
+  listComparisonIds?: readonly Readonly<ElementId>[]
 ): boolean {
   if (runtime instanceof RuntimeList) {
     if (!(state instanceof ListState)) throw wrongCollectionKind(path);
-    return skipComparison || (listValueIds === undefined ? runtime.visibleEquals(state) :
-      listValueIds.every((id) => runtime.state.visibleValueEquals(state, id)));
+    return skipComparison || (listComparisonIds === undefined ? runtime.visibleEquals(state) :
+      listComparisonIds.every((id) => runtime.state.visibleValueEquals(state, id)));
   }
   if (runtime instanceof RuntimeText) {
     if (!(state instanceof TextState)) throw wrongCollectionKind(path);
@@ -653,15 +653,20 @@ export class ClientDocument<S extends SchemaShape> {
         previous.message === conflict.message;
     // shortcut: matching own operations preserve IDs; only List insertion values can differ.
     // Both replays must be conflict-free; otherwise compare the entire visible prefix.
-    const listValueIds = isOwnCommit && previous === null && conflict === null &&
-      sameOperations(commit.operations, this.pendingBatches[0]!.operations, true)
+    const compareOwnListValues = isOwnCommit && previous === null && conflict === null &&
+      sameOperations(commit.operations, this.pendingBatches[0]!.operations, true);
+    // shortcut: without pending, only inserted/deleted List IDs can change; compare final visibility.
+    const compareRemoteListIds = !isOwnCommit && remainingBatches.length === 0 &&
+      previous === null && conflict === null;
+    const listComparisonIds = compareOwnListValues || compareRemoteListIds
       ? new Map<string, Readonly<ElementId>[]>() : undefined;
-    if (listValueIds !== undefined) {
+    if (listComparisonIds !== undefined) {
       for (const operation of commit.operations) {
-        if (operation.type !== "list/insert") continue;
-        const ids = listValueIds.get(operation.path) ?? [];
-        ids.push(operation.id);
-        listValueIds.set(operation.path, ids);
+        if (operation.type === "list/insert" || (compareRemoteListIds && operation.type === "list/delete")) {
+          const ids = listComparisonIds.get(operation.path) ?? [];
+          ids.push(operation.id);
+          listComparisonIds.set(operation.path, ids);
+        }
       }
     }
     let changed = !sameConflict;
@@ -670,7 +675,7 @@ export class ClientDocument<S extends SchemaShape> {
       if (nextState === undefined) {
         throw new Error(`Missing document path: ${path}`);
       }
-      const ids = listValueIds === undefined ? undefined : listValueIds.get(path) ?? [];
+      const ids = listComparisonIds === undefined ? undefined : listComparisonIds.get(path) ?? [];
       if (!runtimeVisibleEquals(runtime, nextState, path, changed, ids)) changed = true;
     }
 
