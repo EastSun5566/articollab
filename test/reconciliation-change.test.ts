@@ -131,6 +131,47 @@ function random(seed: number) {
 }
 
 describe("full visible change comparison", () => {
+  it("matches full comparison for idle remote replacement and cancelled ID edits", () => {
+    const network = setup();
+    const [writer, peer] = network.clients;
+    assert.ok(writer !== undefined && peer !== undefined);
+    const deliver = (decision: Mode | "explicit-reject") => {
+      const commit = network.submit(writer, decision)!;
+      network.receive(writer, commit);
+      network.receive(peer, commit);
+      assert.deepEqual(peer.doc.checkpoint().pendingBatches, []);
+      assert.equal(peer.doc.replayConflict, null);
+    };
+    writer.doc.transact(() => {
+      writer.doc.state.items.push({ label: "A" });
+      writer.doc.state.items.push({ label: "B" });
+    });
+    deliver("accept");
+    peer.restore();
+    writer.doc.transact(() => {
+      writer.doc.state.items.delete(1);
+      writer.doc.state.items.insert(1, { label: "B" });
+    });
+    deliver("accept");
+    writer.doc.transact(() => {
+      writer.doc.state.items.insert(0, { label: "temporary anchor" });
+      writer.doc.state.items.insert(1, { label: "survives its anchor" });
+      writer.doc.state.items.delete(0);
+      writer.doc.state.items.delete(2);
+    });
+    deliver("transform");
+    const changes = peer.changes;
+    writer.doc.transact(() => {
+      writer.doc.state.items.push({ label: "temporary" });
+      writer.doc.state.items.delete(2);
+    });
+    deliver("accept");
+    writer.doc.state.items.push({ label: "rejected" });
+    deliver("explicit-reject");
+    assert.equal(peer.changes, changes);
+    assert.deepEqual(peer.doc.checkpoint().snapshot, network.server.snapshot());
+  });
+
   it("distinguishes cancellation, object identity, signed zero and dependent rejection", () => {
     const network = setup();
     const [writer, peer] = network.clients;
