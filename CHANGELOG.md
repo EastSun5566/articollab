@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.3.0-beta.0](https://github.com/EastSun5566/articollab/compare/v0.2.0...v0.3.0-beta.0) (2026-10-15)
+
+### ⚠ BREAKING CHANGES
+
+* All participating runtimes must support list/set before exchanging updates; 0.2 runtimes cannot decode the new operation.
+
+### Features
+
+* add stable-identity list updates ([853463c](https://github.com/EastSun5566/articollab/commit/853463cacd7df8eb15957c33289ef546022664fe))
+
+### Bug Fixes
+
+* validate text ranges and avoid redundant collection work ([3bb4b86](https://github.com/EastSun5566/articollab/commit/3bb4b86e607a61dad5fafdf64a183d3256e327d0))
+
 ## 0.2.0 (2026-10-11)
 
 ### ⚠ BREAKING CHANGES
