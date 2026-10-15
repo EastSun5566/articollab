@@ -67,6 +67,44 @@ function valueBatch(value: unknown): Record<string, unknown> {
 }
 
 describe("wire decoding", () => {
+  it("decodes List sets with exact fields, owned payloads and precise error paths", () => {
+    const input = { clientId: "client-1", seq: 1, operations: [{ type: "list/set", path: "items",
+      id: { bunchId: "another-writer", counter: 0 }, value: { label: "new" } }] };
+    const batch = decodeClientBatch(Board, input);
+    const operation = batch.operations[0]!;
+    assert.equal(operation.type, "list/set");
+    assert.ok(Object.isFrozen(operation));
+    if (operation.type === "list/set") {
+      assert.notStrictEqual(operation.id, input.operations[0]!.id);
+      assert.notStrictEqual(operation.value, input.operations[0]!.value);
+      assert.ok(Object.isFrozen(operation.id) && Object.isFrozen(operation.value));
+      input.operations[0]!.value.label = "changed";
+      input.operations[0]!.id.counter = 1;
+      assert.equal(operation.value.label, "new");
+      assert.equal(operation.id.counter, 0);
+    }
+    const valid = { type: "list/set", path: "items", id: { bunchId: "id", counter: 0 }, value: { label: "new" } };
+    const decode = (candidate: unknown) => decodeClientBatch(Board, { clientId: "client-1", seq: 1, operations: [candidate] });
+    for (const field of ["id", "value"]) {
+      const missing: Record<string, unknown> = { ...valid };
+      delete missing[field];
+      assertWireError(() => decode(missing), "/operations/0/" + field);
+    }
+    assertWireError(() => decode({ ...valid, before: null }), "/operations/0/before");
+    assertWireError(() => decode({ ...valid, path: "body" }), "/operations/0/path");
+    assertWireError(() => decode({ ...valid, path: "missing" }), "/operations/0/path");
+    assertWireError(() => decode({ ...valid, id: { bunchId: "id", counter: -1 } }), "/operations/0/id/counter");
+    assertWireError(() => decode({ ...valid, value: { label: undefined } }), "/operations/0/value/label");
+    const server = createServer(Board);
+    assert.equal(server.openClient(), "client-1");
+    const before = server.checkpoint();
+    assert.throws(() => server.receive(batch)); // Structure is legal, but the target is not known.
+    assert.deepEqual(server.checkpoint(), before);
+    const rejected = server.reject(batch);
+    const copied = decodeServerCommit(Board, jsonRoundTrip(rejected.commit));
+    assert.deepEqual(copied.operations, []);
+  });
+
   it("loads collections once per decoding boundary and reuses decoded snapshots", (t) => {
     const server = createServer(Board);
     const clientId = server.openClient();

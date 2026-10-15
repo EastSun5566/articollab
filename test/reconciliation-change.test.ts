@@ -65,7 +65,8 @@ function setup() {
     if (mode === "reject") return [];
     if (mode === "accept") return batch.operations;
     return batch.operations.map((operation) => {
-      if (operation.type === "list/insert" && typeof operation.value === "object" && operation.value !== null) {
+      if ((operation.type === "list/insert" || operation.type === "list/set") &&
+        typeof operation.value === "object" && operation.value !== null) {
         return { ...operation, value: { label: "server:" + operation.value.label } };
       }
       if (operation.type === "value/set") return { ...operation, value: -operation.value };
@@ -131,6 +132,40 @@ function random(seed: number) {
 }
 
 describe("full visible change comparison", () => {
+  it("matches full comparison for sets, hidden own payloads and deleted targets", () => {
+    const network = setup();
+    const [writer, peer] = network.clients;
+    assert.ok(writer !== undefined && peer !== undefined);
+    writer.doc.state.items.push({ label: "seed" });
+    const initial = network.submit(writer, "accept", false)!;
+    network.receive(writer, initial, false); network.receive(peer, initial, false);
+    writer.doc.state.items.set(0, { label: "head" });
+    writer.doc.state.items.set(0, { label: "pending" });
+    const count = writer.changes;
+    const head = network.submit(writer, "accept")!;
+    network.receive(writer, head); network.receive(peer, head);
+    assert.equal(writer.changes, count);
+    const transformed = network.submit(writer, "transform")!;
+    network.receive(writer, transformed); network.receive(peer, transformed);
+    writer.doc.state.items.set(0, 0);
+    const zero = network.submit(writer, "accept", false)!;
+    network.receive(writer, zero, false); network.receive(peer, zero, false);
+    writer.doc.state.items.set(0, -0);
+    const signed = network.submit(writer, "accept", false)!;
+    network.receive(writer, signed, false); network.receive(peer, signed, false);
+    assert.ok(Object.is(peer.doc.state.items.get(0), -0));
+    writer.doc.state.items.set(0, { label: "stale update" });
+    peer.doc.state.items.delete(0);
+    const deleted = network.submit(peer, "accept", false)!;
+    network.receive(writer, deleted, false); network.receive(peer, deleted, false);
+    assert.equal(writer.doc.replayConflict, null);
+    const tombstoneSet = network.submit(writer, "accept")!;
+    const before = writer.changes + peer.changes;
+    network.receive(writer, tombstoneSet); network.receive(peer, tombstoneSet);
+    assert.equal(writer.changes + peer.changes, before);
+    assert.deepEqual(writer.doc.checkpoint().snapshot, network.server.snapshot());
+  });
+
   it("matches full comparison for idle remote replacement and cancelled ID edits", () => {
     const network = setup();
     const [writer, peer] = network.clients;
@@ -237,15 +272,19 @@ describe("full visible change comparison", () => {
           const size = target.doc.state.items.length;
           const index = choose(Math.max(size, 1));
           if (action === 0 || size === 0) target.doc.state.items.insert(choose(size + 1), { label: String(step) });
-          else if (action === 1) target.doc.transact(() => {
-            target.doc.state.items.delete(index); target.doc.state.items.insert(index, { label: String(step) });
-          });
+          else if (action === 1) {
+            if (step % 2 === 0) target.doc.state.items.set(index, { label: String(step) });
+            else target.doc.transact(() => {
+              target.doc.state.items.delete(index); target.doc.state.items.insert(index, { label: String(step) });
+            });
+          }
           else if (action === 2) target.doc.state.items.delete(index);
           else if (action === 3) target.doc.transact(() => {
             target.doc.state.items.push({ label: "cancel" }); target.doc.state.items.delete(size);
           });
           else target.doc.transact(() => {
             target.doc.state.count.value = step;
+            target.doc.state.items.set(index, { label: "updated:" + step });
             target.doc.state.items.push({ label: String(step) });
             target.doc.state.body.insert(target.doc.state.body.length, "a😀");
           });

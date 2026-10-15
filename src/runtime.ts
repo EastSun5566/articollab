@@ -7,6 +7,7 @@ import {
   type List,
   type ListDeleteOperation,
   type ListInsertOperation,
+  type ListSetOperation,
   type ListOperation,
 } from "./list.ts";
 import {
@@ -54,6 +55,7 @@ export type Operation =
   | ValueSetOperation
   | ListInsertOperation
   | ListDeleteOperation
+  | ListSetOperation
   | TextInsertOperation
   | TextDeleteOperation;
 
@@ -288,6 +290,9 @@ function sameOperations(
           equalsId(operation.id, other.id) && (allowListValueChanges || Object.is(operation.value, other.value));
       case "list/delete":
         return other.type === "list/delete" && equalsId(operation.id, other.id);
+      case "list/set":
+        return other.type === "list/set" && equalsId(operation.id, other.id) &&
+          (allowListValueChanges || Object.is(operation.value, other.value));
       case "text/insert":
         return other.type === "text/insert" && sameAnchor(operation.before, other.before) &&
           equalsId(operation.id, other.id) && operation.value === other.value;
@@ -350,6 +355,7 @@ function freezeOperation(operation: Operation): Operation {
       return Object.freeze({ ...operation });
     case "list/insert":
     case "list/delete":
+    case "list/set":
       return freezeListOperation(operation);
     case "text/insert":
     case "text/delete":
@@ -651,18 +657,19 @@ export class ClientDocument<S extends SchemaShape> {
       : previous.batch === conflict.batch &&
         previous.operationIndex === conflict.operationIndex &&
         previous.message === conflict.message;
-    // shortcut: matching own operations preserve IDs; only List insertion values can differ.
+    // shortcut: matching own operations preserve IDs; only List insert/set values can differ.
     // Both replays must be conflict-free; otherwise compare the entire visible prefix.
     const compareOwnListValues = isOwnCommit && previous === null && conflict === null &&
       sameOperations(commit.operations, this.pendingBatches[0]!.operations, true);
-    // shortcut: without pending, only inserted/deleted List IDs can change; compare final visibility.
+    // shortcut: without pending, compare final visibility/values at List insert/delete/set targets.
     const compareRemoteListIds = !isOwnCommit && remainingBatches.length === 0 &&
       previous === null && conflict === null;
     const listComparisonIds = compareOwnListValues || compareRemoteListIds
       ? new Map<string, Readonly<ElementId>[]>() : undefined;
     if (listComparisonIds !== undefined) {
       for (const operation of commit.operations) {
-        if (operation.type === "list/insert" || (compareRemoteListIds && operation.type === "list/delete")) {
+        if (operation.type === "list/insert" || operation.type === "list/set" ||
+          (compareRemoteListIds && operation.type === "list/delete")) {
           const ids = listComparisonIds.get(operation.path) ?? [];
           ids.push(operation.id);
           listComparisonIds.set(operation.path, ids);

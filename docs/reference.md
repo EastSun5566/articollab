@@ -4,7 +4,7 @@ Look up the public API and exact collaboration contracts here. For a runnable in
 
 ## Compatibility
 
-These docs describe the 0.2 API. Do not mix incompatible server/checkpoint versions or document lineages. The [upgrade guide](recovery.md#upgrading-from-01) covers explicit sessions, the incompatible 0.1 server checkpoint format and the later incoming-namespace default.
+These docs cover the published 0.2 API plus the upcoming, unreleased 0.3 List `set()` extension. `list/set` requires a coordinated 0.3 upgrade; it is not available in the published 0.2 package. Do not mix incompatible runtimes or document lineages. See [0.3 upgrade guidance](recovery.md#upgrading-from-02-to-03) and the [0.1 upgrade guide](recovery.md#upgrading-from-01).
 
 Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` promises its documented `name`, JSON Pointer `path` and readable message, not exact wording.
 
@@ -37,7 +37,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `SchemaShape`, `CollectionSchema`, `ValueSchema`, `ListSchema`, `TextSchema`, `ValueType`, `ListType` | Schema descriptors and inferred element types. |
 | `Value`, `List`, `Text`, `DocumentState` | Typed collection views. |
 | `CreateClientOptions`, `CreateServerOptions`, `ServerResolveContext`, `ServerResolver` | Construction and batch policy contracts. |
-| `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextOperation`, `TextIdRange`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
+| `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation` (upcoming 0.3), `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextOperation`, `TextIdRange`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
 | `ClientBatchRef`, `ClientBatch`, `ServerCommit`, `ServerReceipt`, `ServerReplayEntry` | Batch identity, authoritative result, local routing metadata and retry entries. |
 | `LocalChangeEvent`, `ServerChangeEvent`, `ChangeEvent`, `PendingReplayConflict` | Local/server notifications and the first blocked pending operation. |
 | `DocumentSnapshotData`, `DocumentSnapshot`, `ListSnapshotData`, `TextSnapshotData`, `SavedIdRange` | Typed snapshot payloads, including List/Text tombstones. |
@@ -50,24 +50,26 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | Collection | Reads | Mutations |
 | --- | --- | --- |
 | `Value<T>` | `.value` | `.value = next` or `.set(next)`; replace the whole JSON value. |
-| `List<T>` | `.length`, `.get(index)`, `.values()`, `.toArray()`, iteration | `.insert(index, value)`, `.push(value)`, `.delete(index)`; single element, no in-place replacement. |
+| `List<T>` | `.length`, `.get(index)`, `.values()`, `.toArray()`, iteration | `.insert(index, value)`, `.push(value)`, `.delete(index)`; upcoming 0.3 `.set(index, value)` updates one element without changing its ID. |
 | `Text` | `.length`, `.values()`, `.toString()`, iteration | `.insert(index, string)`, `.delete(index, count = 1)`; Unicode code points. |
 
-Values and List elements must be JSON-compatible and immutable after being supplied. Nested object/array edits are not intercepted: replace a Value rather than editing its fields; replace a List element using delete + insert in a transaction. The public state container, operation/ID containers and library-owned wire arrays are frozen, but user payloads are not generally deep-cloned or deep-frozen. `toArray()` copies the array, but its shared elements must still remain immutable.
+Values and List elements must be JSON-compatible and immutable after being supplied. Nested object/array edits are not intercepted: replace a Value rather than editing its fields; in 0.3, use List `set()` to replace the whole element value while preserving identity. Delete + insert creates a new identity instead. The public state container, operation/ID containers and library-owned wire arrays are frozen, but user payloads are not generally deep-cloned or deep-frozen. `toArray()` copies the array, but its shared elements must still remain immutable.
 
 `value(initialValue)`, schema-default initialization, local Value set and List insert/push synchronously validate JSON payloads. Invalid values throw `TypeError` before that mutation changes state, pending, sequence or ID allocation, without calling `onBatch` or change listeners. Accepted payloads retain their references and are not frozen by validation. Validation rejects non-finite numbers, undefined, BigInt, functions, symbols, cycles, non-plain objects, sparse arrays and non-JSON property descriptors. Plain objects may have `Object.prototype` or a null prototype; shared branches are allowed. Own accessors and `toJSON` functions are rejected, not executed. Validation visits each occurrence in the supplied payload, not the whole document, and is not cached.
 
-This is JSON validation, not application-shape validation or deep immutability enforcement. Typed receive, direct snapshot hydration and resolver output remain trusted-input boundaries; decode unknown wire data first. Finite signed zero is allowed with existing local `Object.is` semantics, but ordinary JSON serialization does not preserve its sign. Deep validation/decoding avoids recursion; the runtime's JSON serializer still has its own depth limits.
+List `set()` uses the same local JSON validation before updating state. This is JSON validation, not application-shape validation or deep immutability enforcement. Typed receive, direct snapshot hydration and resolver output remain trusted-input boundaries; decode unknown wire data first. Finite signed zero is allowed with existing local `Object.is` semantics, but ordinary JSON serialization does not preserve its sign. Deep validation/decoding avoids recursion; the runtime's JSON serializer still has its own depth limits.
 
 Schema paths are fixed, nonempty strings when created with `defineDocument()`; there is no nested collection schema, schema migration or application-shape validator. For example, `value(0)` infers `Value<number>`, not a literal-only zero. TypeScript payload types do not validate arbitrary incoming JSON at runtime.
 
-List/Text insertion indices allow `0..length`; List get/delete require `0..length-1`. Indices and Text counts must be safe integers, and a Text deletion must fit entirely within the visible text. Invalid bounds throw without a batch or change. Text `insert(index, "")` and `delete(index, 0)` validate bounds, then do nothing, including while replay is blocked. `"😀"` has Text length 1; code points are not UTF-16 code units or grapheme clusters.
+List/Text insertion indices allow `0..length`; List get/delete/set require `0..length-1`. Indices and Text counts must be safe integers, and a Text deletion must fit entirely within the visible text. Invalid bounds throw without a batch or change. Text `insert(index, "")` and `delete(index, 0)` validate bounds, then do nothing, including while replay is blocked. `"😀"` has Text length 1; code points are not UTF-16 code units or grapheme clusters.
 
 List/Text operations use stable IDs, not mutable indices. The wire field `before` is the preceding insertion anchor (`null` means start); deleted known IDs remain tombstones and can still anchor pending insertions. Text insertion allocates consecutive IDs; deletion compresses consecutive targets into ranges. Deleting known tombstones is an authoritative no-op, but unknown targets or colliding insertion IDs are errors.
 
+In 0.3, `List.set(index, value): void` emits `{ type: "list/set", path, id, value }`, with exactly those fields. The target is the visible ID at call time. Setting a present target replaces the whole payload without changing its ID, position, length or allocation counters; concurrent updates follow server operation order. A known deleted target is a legal no-op and never stores the new value or resurrects the element. An unknown target is a collection conflict: server processing fails atomically, while pending replay blocks at that batch. Other operations in a batch containing a tombstone no-op still apply. Updating another writer's element is allowed; insertion namespace checks are not update authorization.
+
 ### Mutations, transactions and events
 
-Outside a transaction, each actual mutation forms a batch. Value assignment records an operation even when assigning the same value. A successful nonempty outer transaction forms one batch; an empty transaction produces neither batch nor local change.
+Outside a transaction, each actual mutation forms a batch. Value assignment and List `set()` record an operation even when assigning the same value. A successful nonempty outer transaction forms one batch; an empty transaction produces neither batch nor local change.
 
 The local completion order is **optimistic state → pending batch and local sequence → `onBatch(batch)` → local `change`**. The event is `{ origin: "local", batch }`. A synchronous `onBatch` can process the server result immediately, so a later local listener may already see reconciled state; the event is not a snapshot of that state.
 

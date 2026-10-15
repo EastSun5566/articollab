@@ -4,10 +4,16 @@ import { ListState } from "../src/list.ts";
 import type { JsonValue } from "../src/schema.ts";
 
 import {
+  assertClientBatchNamespace,
   createClient,
   createServer,
+  decodeClientBatch,
+  decodeClientCheckpoint,
+  decodeServerCheckpoint,
+  decodeServerCommit,
   defineDocument,
   list,
+  text,
   value,
   type ClientBatch,
   type DocumentOperation,
@@ -33,6 +39,261 @@ function setup(clientId = "client-1") {
 }
 
 describe("list runtime", () => {
+  it("sets an existing value without changing identity or allocating IDs", () => {
+    const { batches, doc } = setup();
+    let changes = 0;
+    doc.on("change", () => changes++);
+    doc.state.items.push("A");
+    const before = doc.checkpoint();
+    assert.equal(doc.state.items.set(0, "B"), undefined);
+    doc.state.items.set(0, "B"); // An explicit same-value write is still a mutation.
+    assert.deepEqual(doc.state.items.toArray(), ["B"]);
+    assert.equal(doc.state.items.length, 1);
+    assert.equal(changes, 3);
+    assert.equal(batches.length, 3);
+    const insertion = batches[0]!.operations[0]!;
+    assert.equal(insertion.type, "list/insert");
+    for (const batch of batches.slice(1)) {
+      const operation = batch.operations[0]!;
+      assert.equal(operation.type, "list/set");
+      if (operation.type === "list/set" && insertion.type === "list/insert") {
+        assert.deepEqual(operation.id, insertion.id);
+        assert.notStrictEqual(operation.id, insertion.id);
+        assert.ok(Object.isFrozen(operation) && Object.isFrozen(operation.id));
+      }
+    }
+    assert.deepEqual(doc.checkpoint().lastBunchSeqs, before.lastBunchSeqs);
+    assert.equal(doc.checkpoint().lastLocalSeq, 3);
+  });
+
+  it("validates set bounds and JSON before changing state, pending or notifications", () => {
+    const schema = defineDocument({ items: list<JsonValue>() });
+    let batches = 0, changes = 0, reads = 0;
+    const doc = createClient(schema, { clientId: "json", onBatch: () => batches++ });
+    doc.on("change", () => changes++);
+    const payload = { nested: { valid: true } };
+    doc.state.items.push(payload);
+    const before = doc.checkpoint();
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    const sparse: unknown[] = new Array<unknown>(2);
+    sparse[1] = 1;
+    const accessor = Object.defineProperty({}, "value", { enumerable: true, get: () => { reads++; return 1; } });
+    for (const input of [undefined, NaN, Infinity, 1n, () => 1, Symbol(), cycle,
+      new Date(), accessor, sparse, { bad: undefined }]) {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid JSON verifies the public mutation validation boundary.
+      assert.throws(() => doc.state.items.set(0, input as JsonValue), TypeError);
+      assert.deepEqual(doc.checkpoint(), before);
+    }
+    for (const index of [-1, 1, 0.5, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      assert.throws(() => doc.state.items.set(index, "invalid index"));
+      assert.deepEqual(doc.checkpoint(), before);
+    }
+    assert.equal(reads, 0);
+    assert.strictEqual(doc.state.items.get(0), payload);
+    assert.equal(batches, 1); assert.equal(changes, 1);
+    const shared = { enabled: false };
+    const valid = { left: shared, right: shared };
+    doc.state.items.set(0, valid);
+    assert.strictEqual(doc.state.items.get(0), valid);
+    assert.equal(Object.isFrozen(valid), false);
+    assert.equal(doc.checkpoint().lastLocalSeq, 2);
+    assert.deepEqual(doc.checkpoint().lastBunchSeqs, before.lastBunchSeqs);
+  });
+
+  it("keeps persistent set versions isolated and treats known tombstones as no-ops", () => {
+    const id = { bunchId: "seed", counter: 0 };
+    const payload = { nested: true };
+    const base = ListState.empty<JsonValue>().insert({ type: "list/insert", path: "items", before: null, id, value: payload });
+    const operation = { type: "list/set", path: "items", id, value: payload } as const;
+    assert.strictEqual(base.set(operation), base);
+    const left = base.set({ ...operation, value: 0 });
+    const right = base.set({ ...operation, value: null });
+    const signed = left.set({ ...operation, value: -0 });
+    assert.strictEqual(base.get(0), payload);
+    assert.equal(left.get(0), 0); assert.equal(right.get(0), null);
+    assert.ok(Object.is(signed.get(0), -0));
+    assert.deepEqual(signed.save().idList, base.save().idList);
+    const deleted = base.delete({ type: "list/delete", path: "items", id });
+    assert.strictEqual(deleted.set({ ...operation, value: "no resurrection" }), deleted);
+    assert.throws(() => base.set({ ...operation, id: { bunchId: "unknown", counter: 0 } }));
+    assert.strictEqual(base.get(0), payload);
+  });
+
+  it("groups mixed sets and rolls back uncaught failures while retaining caught valid writes", () => {
+    const { batches, doc } = setup();
+    doc.state.items.push("A");
+    const before = doc.checkpoint();
+    let changes = 0;
+    doc.on("change", () => changes++);
+    assert.throws(() => doc.transact(() => {
+      doc.state.title.set("rollback");
+      doc.state.items.set(0, "B");
+      doc.state.items.set(1, "out of bounds");
+    }));
+    assert.deepEqual(doc.checkpoint(), before);
+    assert.deepEqual(doc.state.items.toArray(), ["A"]);
+    assert.equal(changes, 0);
+    doc.transact(() => {
+      doc.state.title.set("updated");
+      doc.state.items.set(0, "B");
+      assert.throws(() => doc.state.items.set(0, NaN as unknown as string), TypeError); // oxlint-disable-line typescript/no-unsafe-type-assertion -- Invalid JSON must not enter the mixed transaction.
+      doc.state.items.set(0, "C");
+    });
+    assert.equal(batches.length, 2);
+    assert.equal(changes, 1);
+    assert.deepEqual(batches[1]!.operations.map((operation) => operation.type), ["value/set", "list/set", "list/set"]);
+    assert.deepEqual(doc.state.items.toArray(), ["C"]);
+    assert.deepEqual(doc.checkpoint().lastBunchSeqs, before.lastBunchSeqs);
+  });
+
+  it("orders concurrent sets on one stable ID and replays against identity rather than index", () => {
+    for (const reversed of [false, true]) {
+      const server = createServer(Board);
+      const a = setup(server.openClient()), b = setup(server.openClient());
+      a.doc.state.items.push("A");
+      const initial = server.receive(a.batches[0]!).commit;
+      a.doc.receive(initial); b.doc.receive(initial);
+      const ids = server.snapshot().data.items.idList;
+      a.doc.state.items.set(0, "from A"); b.doc.state.items.set(0, "from B");
+      assertClientBatchNamespace(b.batches[0]!, b.doc.checkpoint().clientId); // Updating the other writer's element is not ID allocation.
+      const first = server.receive(reversed ? b.batches[0]! : a.batches[1]!).commit;
+      a.doc.receive(first); b.doc.receive(first);
+      const second = server.receive(reversed ? a.batches[1]! : b.batches[0]!).commit;
+      a.doc.receive(second); b.doc.receive(second);
+      assert.deepEqual(server.snapshot().data.items.idList, ids);
+      assert.deepEqual(a.doc.state.items.toArray(), [reversed ? "from A" : "from B"]);
+      assert.deepEqual(b.doc.state.items.toArray(), a.doc.state.items.toArray());
+      a.doc.state.items.set(0, "pending update");
+      b.doc.state.items.insert(0, "new first");
+      const insertion = server.receive(b.batches[1]!).commit;
+      a.doc.receive(insertion); b.doc.receive(insertion);
+      assert.deepEqual(a.doc.state.items.toArray(), ["new first", "pending update"]);
+      const update = server.receive(a.batches[2]!).commit;
+      a.doc.receive(update); b.doc.receive(update);
+      assert.deepEqual(a.doc.checkpoint().snapshot, server.snapshot());
+      assert.deepEqual(b.doc.checkpoint().snapshot, server.snapshot());
+    }
+  });
+
+  it("lets deletion win over set in either server order without blocking other batch operations", () => {
+    for (const deleteFirst of [false, true]) {
+      const server = createServer(Board);
+      const a = setup(server.openClient()), b = setup(server.openClient());
+      a.doc.state.items.push("A");
+      const initial = server.receive(a.batches[0]!).commit;
+      a.doc.receive(initial); b.doc.receive(initial);
+      a.doc.transact(() => { a.doc.state.items.set(0, "updated"); a.doc.state.title.set("still applies"); });
+      b.doc.state.items.delete(0);
+      const first = server.receive(deleteFirst ? b.batches[0]! : a.batches[1]!).commit;
+      a.doc.receive(first); b.doc.receive(first);
+      assert.equal(a.doc.replayConflict, null);
+      if (deleteFirst) assert.deepEqual(a.doc.state.items.toArray(), []);
+      const second = server.receive(deleteFirst ? a.batches[1]! : b.batches[0]!).commit;
+      a.doc.receive(second); b.doc.receive(second);
+      assert.deepEqual(a.doc.state.items.toArray(), []);
+      assert.equal(a.doc.state.title.value, "still applies");
+      assert.deepEqual(a.doc.checkpoint().pendingBatches, []);
+      assert.deepEqual(a.doc.checkpoint().snapshot, server.snapshot());
+      assert.deepEqual(b.doc.checkpoint().snapshot, server.snapshot());
+    }
+  });
+
+  it("rejects unknown set targets atomically and keeps rejected insertion dependencies blocked", () => {
+    const server = createServer(Board);
+    const { batches, doc } = setup(server.openClient());
+    const before = server.checkpoint();
+    assert.throws(() => server.receive({ clientId: doc.checkpoint().clientId, seq: 1,
+      operations: [{ type: "value/set", path: "title", value: "must rollback" },
+        { type: "list/set", path: "items", id: { bunchId: "unknown", counter: 0 }, value: "B" }],
+    }));
+    assert.deepEqual(server.checkpoint(), before);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A set on a Value path must retain atomic collection-kind validation at the typed boundary.
+    const wrongKind = { type: "list/set", path: "title", id: { bunchId: "unknown", counter: 0 }, value: "B" } as unknown as BoardOperation;
+    assert.throws(() => server.receive({ clientId: doc.checkpoint().clientId, seq: 1, operations: [wrongKind] }));
+    assert.deepEqual(server.checkpoint(), before);
+    doc.state.items.push("A");
+    doc.state.items.set(0, "dependent");
+    doc.receive(server.reject(batches[0]!).commit);
+    assert.strictEqual(doc.replayConflict?.batch, batches[1]);
+    assert.equal(doc.replayConflict?.operationIndex, 0);
+    assert.deepEqual(doc.state.items.toArray(), []);
+    const restored = createClient(Board, { clientId: before.clients[0]!.clientId,
+      checkpoint: decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(doc.checkpoint()))), onBatch() {} });
+    assert.notEqual(restored.replayConflict, null);
+    restored.receive(server.reject(batches[1]!).commit);
+    assert.equal(restored.replayConflict, null);
+    assert.deepEqual(restored.checkpoint().pendingBatches, []);
+  });
+
+  it("round-trips set policy results, retry history and pending checkpoints without new IDs", () => {
+    let decision: "accept" | "reject" | "transform" = "accept";
+    let calls = 0;
+    const resolve = ({ batch }: { batch: BoardBatch }) => {
+      calls++;
+      if (decision === "reject") return [];
+      return batch.operations.map((operation) => decision === "transform" && operation.type === "list/set"
+        ? { ...operation, value: "server:" + operation.value } : operation);
+    };
+    let server = createServer(Board, { resolve });
+    const { batches, doc } = setup(server.openClient());
+    doc.state.items.push("A");
+    doc.receive(server.receive(batches[0]!).commit);
+    const allocations = doc.checkpoint().lastBunchSeqs;
+    for (const mode of ["reject", "transform"] as const) {
+      decision = mode;
+      doc.state.items.set(0, "B");
+      const batch = batches.at(-1)!;
+      doc.receive(decodeServerCommit(Board, JSON.parse(JSON.stringify(server.receive(decodeClientBatch(Board,
+        JSON.parse(JSON.stringify(batch)))).commit))));
+      assert.equal(doc.state.items.get(0), mode === "reject" ? "A" : "server:B");
+    }
+    doc.state.items.set(0, "pending");
+    let restored = createClient(Board, { clientId: doc.checkpoint().clientId,
+      checkpoint: decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(doc.checkpoint()))), onBatch() {} });
+    server = createServer(Board, { resolve, checkpoint: decodeServerCheckpoint(Board, JSON.parse(JSON.stringify(server.checkpoint()))) });
+    const previousCalls = calls;
+    assert.equal(server.receive(batches[2]!).replayed, true);
+    assert.equal(calls, previousCalls);
+    const commit = server.receive(restored.checkpoint().pendingBatches[0]!).commit;
+    // Simulate a lost ack, then restore both sides and catch up without resolving twice.
+    restored = createClient(Board, { clientId: restored.checkpoint().clientId,
+      checkpoint: decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(restored.checkpoint()))), onBatch() {} });
+    server = createServer(Board, { resolve, checkpoint: decodeServerCheckpoint(Board, JSON.parse(JSON.stringify(server.checkpoint()))) });
+    const afterCommit = calls;
+    for (const missed of server.commitsSince(restored.checkpoint().snapshot.serverSeq)!) restored.receive(missed);
+    assert.equal(restored.state.items.get(0), "server:pending");
+    assert.deepEqual(restored.checkpoint().pendingBatches, []);
+    assert.deepEqual(restored.checkpoint().lastBunchSeqs, allocations);
+    assert.equal(server.reject(batches[3]!).replayed, true);
+    assert.equal(calls, afterCommit);
+    assert.equal(restored.checkpoint().snapshot.serverSeq, commit.serverSeq);
+  });
+
+  it("batches Value/List/Text updates and rolls all three back on set validation failure", () => {
+    const schema = defineDocument({ count: value(0), items: list<JsonValue>(), body: text() });
+    const batches: ClientBatch<DocumentOperation<typeof schema.definition>>[] = [];
+    const doc = createClient(schema, { clientId: "mixed", onBatch: (batch) => batches.push(batch) });
+    doc.state.items.push("seed");
+    const before = doc.checkpoint();
+    assert.throws(() => doc.transact(() => {
+      doc.state.count.set(1); doc.state.items.set(0, "rollback"); doc.state.body.insert(0, "😀");
+      doc.state.items.set(0, NaN);
+    }), TypeError);
+    // The failed transaction keeps allocated Text IDs, but set itself allocates nothing.
+    assert.deepEqual(doc.checkpoint(), { ...before, lastBunchSeqs: { items: 1, body: 1 } });
+    assert.equal(doc.state.count.value, 0); assert.equal(doc.state.body.toString(), "");
+    assert.deepEqual(doc.state.items.toArray(), ["seed"]);
+    let changes = 0;
+    doc.on("change", () => changes++);
+    doc.transact(() => {
+      doc.state.count.set(1); doc.state.items.set(0, "updated"); doc.state.body.insert(0, "😀");
+    });
+    assert.equal(changes, 1);
+    assert.equal(batches.length, 2);
+    assert.deepEqual(batches[1]!.operations.map((operation) => operation.type), ["value/set", "list/set", "text/insert"]);
+  });
+
   it("rejects non-JSON insert/push before allocating IDs or producing a batch", () => {
     const schema = defineDocument({ items: list<JsonValue>() });
     let batches = 0;

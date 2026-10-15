@@ -18,7 +18,7 @@ const kinds = ["list", "text"] as const;
 const scenarios = ["local-insert", "local-delete", "sync-insert", "pending-replay",
   "materialize", "snapshot", "unused-policy-snapshot", "unchanged-receive", "retained-heap"] as const;
 const objectScenarios = ["object-json-ack", "object-own-replace-ack", "object-json-replace-ack",
-  "object-remote-replace"] as const;
+  "object-remote-replace", "object-local-set", "object-json-set-ack", "object-remote-set"] as const;
 type Kind = typeof kinds[number];
 type Scenario = typeof scenarios[number] | typeof objectScenarios[number];
 type Shape = { count: ValueSchema<number>; items: ListSchema<string>; body: TextSchema };
@@ -215,7 +215,8 @@ function objectTrial(api: Api, size: number, scenario: typeof objectScenarios[nu
   const writer = api.createClient(schema, { clientId: server.openClient(), snapshot,
     onBatch: (batch) => batches.push(batch) });
   const peer = api.createClient(schema, { clientId: server.openClient(), snapshot, onBatch() {} });
-  const recipient = scenario === "object-remote-replace" ? peer : writer;
+  const recipient = scenario === "object-remote-replace" || scenario === "object-remote-set" ? peer : writer;
+  const isSet = scenario === "object-local-set" || scenario === "object-json-set-ack" || scenario === "object-remote-set";
   let changes = 0;
   recipient.on("change", (event) => { if (event.origin === "server") changes++; });
   collect();
@@ -223,29 +224,33 @@ function objectTrial(api: Api, size: number, scenario: typeof objectScenarios[nu
   for (let index = 0; index < iterations; index++) {
     const payload = { label: "y" };
     if (scenario === "object-json-ack") writer.state.items.push(payload);
-    else writer.transact(() => {
+    else if (isSet) {
+      const start = scenario === "object-local-set" ? performance.now() : 0;
+      writer.state.items.set(size - 1, payload);
+      if (scenario === "object-local-set") elapsed += performance.now() - start;
+    } else writer.transact(() => {
       writer.state.items.delete(size - 1);
       writer.state.items.insert(size - 1, payload);
     });
     const batch = batches[index]!;
     const received = server.receive(batch).commit;
-    const commit = scenario === "object-json-ack" || scenario === "object-json-replace-ack"
+    const commit = scenario === "object-json-ack" || scenario === "object-json-replace-ack" || scenario === "object-json-set-ack"
       ? api.decodeServerCommit(schema, JSON.parse(JSON.stringify(received))) : received;
-    const start = performance.now();
+    const start = scenario === "object-local-set" ? 0 : performance.now();
     recipient.receive(commit);
-    elapsed += performance.now() - start;
+    if (scenario !== "object-local-set") elapsed += performance.now() - start;
     if (recipient === peer) writer.receive(commit);
     else peer.receive(commit);
     const operation = commit.operations.at(-1)!;
-    assert.equal(operation.type, "list/insert");
-    if (operation.type === "list/insert") {
+    assert.equal(operation.type, isSet ? "list/set" : "list/insert");
+    if (operation.type === "list/insert" || operation.type === "list/set") {
       const position = scenario === "object-json-ack" ? size + index : size - 1;
       assert.strictEqual(recipient.state.items.get(position), operation.value);
       assert.equal(Object.is(operation.value, payload),
-        scenario !== "object-json-ack" && scenario !== "object-json-replace-ack");
+        scenario !== "object-json-ack" && scenario !== "object-json-replace-ack" && scenario !== "object-json-set-ack");
     }
   }
-  assert.equal(changes, scenario === "object-own-replace-ack" ? 0 : iterations);
+  assert.equal(changes, scenario === "object-own-replace-ack" || scenario === "object-local-set" ? 0 : iterations);
   const values = Array.from({ length: size }, () => ({ label: "x" }));
   if (scenario === "object-json-ack") values.push(...Array.from({ length: iterations }, () => ({ label: "y" })));
   else values[size - 1] = { label: "y" };
@@ -254,6 +259,10 @@ function objectTrial(api: Api, size: number, scenario: typeof objectScenarios[nu
     assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
     assert.equal(doc.checkpoint().pendingBatches.length, 0);
     assert.equal(doc.replayConflict, null);
+    if (isSet) {
+      assert.deepEqual(doc.checkpoint().snapshot.data.items.idList, snapshot.data.items.idList);
+      assert.equal(doc.checkpoint().lastBunchSeqs.items, 0);
+    }
   }
   return elapsed / iterations;
 }

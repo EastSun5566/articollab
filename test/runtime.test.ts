@@ -558,6 +558,92 @@ describe("client runtime", () => {
     assert.equal(changes, 1);
   });
 
+  it("compares set targets without List iteration for idle remote commits and decoded own acks", (t) => {
+    const Board = defineDocument({ items: list<{ label: string }>() });
+    for (const hidden of [false, true]) {
+      const server = createServer(Board);
+      const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+      let doc = createClient(Board, { clientId: server.openClient(), onBatch: (batch) => batches.push(batch) });
+      doc.transact(() => { for (let index = 0; index < 64; index++) doc.state.items.push({ label: String(index) }); });
+      doc.receive(server.receive(batches[0]!).commit);
+      const peer = createClient(Board, { clientId: server.openClient(), snapshot: server.snapshot(), onBatch() {} });
+      doc.state.items.set(63, { label: "head" });
+      if (hidden) doc.state.items.set(63, { label: "pending overwrite" });
+      doc = createClient(Board, { clientId: doc.checkpoint().clientId,
+        checkpoint: decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(doc.checkpoint()))), onBatch() {} });
+      const before = doc.checkpoint();
+      const pendingValue = doc.state.items.get(63);
+      const commit = decodeServerCommit(Board, JSON.parse(JSON.stringify(server.receive(batches[1]!).commit)));
+      let changes = 0, remoteChanges = 0;
+      doc.on("change", () => changes++); peer.on("change", () => remoteChanges++);
+      const iteration = t.mock.method(IdList.prototype, "values");
+      const replay = t.mock.method(ListState.prototype, "set");
+      doc.receive(commit); peer.receive(commit);
+      assert.equal(iteration.mock.calls.length, 0);
+      assert.equal(replay.mock.calls.length, hidden ? 3 : 2); // Both authoritative applies, plus the pending overwrite.
+      iteration.mock.restore(); replay.mock.restore();
+      assert.equal(changes, hidden ? 0 : 1);
+      assert.equal(remoteChanges, 1);
+      const operation = commit.operations[0]!;
+      assert.ok(operation.type === "list/set");
+      assert.strictEqual(doc.state.items.get(63), hidden ? pendingValue : operation.value);
+      assert.strictEqual(peer.state.items.get(63), operation.value);
+      assert.deepEqual(doc.checkpoint().lastBunchSeqs, before.lastBunchSeqs);
+      if (hidden) doc.receive(decodeServerCommit(Board, JSON.parse(JSON.stringify(server.receive(batches[2]!).commit))));
+      assert.equal(changes, 1);
+      assert.deepEqual(doc.checkpoint().pendingBatches, []);
+      assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
+    }
+  });
+
+  it("preserves signed zero and silent set acknowledgements without scanning the List", (t) => {
+    const Board = defineDocument({ items: list<number>() });
+    const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const server = createServer(Board);
+    const doc = createClient(Board, { clientId: server.openClient(), onBatch: (batch) => batches.push(batch) });
+    doc.state.items.push(0);
+    doc.receive(server.receive(batches[0]!).commit);
+    const peer = createClient(Board, { clientId: server.openClient(), snapshot: server.snapshot(), onBatch() {} });
+    let local = 0, own = 0, remote = 0;
+    doc.on("change", (event) => { if (event.origin === "local") local++; else own++; });
+    peer.on("change", () => remote++);
+    for (const value of [-0, -0, 0]) {
+      doc.state.items.set(0, value);
+      const commit = server.receive(batches.at(-1)!).commit;
+      const iteration = t.mock.method(IdList.prototype, "values");
+      doc.receive(commit); peer.receive(commit);
+      assert.equal(iteration.mock.calls.length, 0);
+      iteration.mock.restore();
+      assert.ok(Object.is(doc.state.items.get(0), value));
+      assert.ok(Object.is(peer.state.items.get(0), value));
+    }
+    assert.equal(local, 3); assert.equal(own, 0); assert.equal(remote, 2);
+  });
+
+  it("falls back for remapped set targets and validates unknown authoritative targets atomically", (t) => {
+    const Board = defineDocument({ items: list<string>() });
+    const server = createServer(Board);
+    const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const doc = createClient(Board, { clientId: server.openClient(), onBatch: (batch) => batches.push(batch) });
+    doc.transact(() => { doc.state.items.push("A"); doc.state.items.push("B"); });
+    const seed = server.receive(batches[0]!).commit;
+    doc.receive(seed);
+    const target = seed.operations[1]!;
+    assert.ok(target.type === "list/insert");
+    doc.state.items.set(0, "changed");
+    const before = doc.checkpoint();
+    const source = { clientId: before.clientId, seq: 2 };
+    assert.throws(() => doc.receive({ serverSeq: 2, source,
+      operations: [{ type: "list/set", path: "items", id: { bunchId: "unknown", counter: 0 }, value: "X" }],
+    }));
+    assert.deepEqual(doc.checkpoint(), before);
+    const comparison = t.mock.method(ListState.prototype, "visibleEquals");
+    doc.receive({ serverSeq: 2, source, operations: [{ type: "list/set", path: "items", id: target.id, value: "changed" }] });
+    assert.equal(comparison.mock.calls.length, 1);
+    comparison.mock.restore();
+    assert.deepEqual(doc.state.items.toArray(), ["A", "changed"]);
+  });
+
   it("stops comparing after a visible change while still restoring all collection states", (t) => {
     const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
     const server = createServer(Board);
