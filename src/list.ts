@@ -40,15 +40,26 @@ export interface ListDeleteOperation<Path extends string = string> {
   readonly id: Readonly<ElementId>;
 }
 
+export interface ListSetOperation<
+  Path extends string = string,
+  T extends JsonValue = JsonValue,
+> {
+  readonly type: "list/set";
+  readonly path: Path;
+  readonly id: Readonly<ElementId>;
+  readonly value: T;
+}
+
 export type ListOperation<
   Path extends string = string,
   T extends JsonValue = JsonValue,
-> = ListInsertOperation<Path, T> | ListDeleteOperation<Path>;
+> = ListInsertOperation<Path, T> | ListDeleteOperation<Path> | ListSetOperation<Path, T>;
 
 /** An optimistic collaborative list of immutable values. */
 export interface List<T extends JsonValue> extends Iterable<T> {
   readonly length: number;
   get(index: number): T;
+  set(index: number, value: T): void;
   insert(index: number, value: T): void;
   push(value: T): void;
   delete(index: number): void;
@@ -201,6 +212,15 @@ export class ListState<T extends JsonValue> {
     return new ListState(this.idList.delete(operation.id), nextValues);
   }
 
+  set(operation: ListSetOperation<string, T>): ListState<T> {
+    if (!this.idList.isKnown(operation.id)) {
+      throw new CollectionConflictError(`Unknown list element id: ${idKey(operation.id)}`);
+    }
+    if (!this.idList.has(operation.id) || Object.is(this.valueFor(operation.id), operation.value)) return this;
+
+    return new ListState(this.idList, this.valuesById.set(idKey(operation.id), operation.value));
+  }
+
   *values(): IterableIterator<T> {
     for (const id of this.idList) yield this.valueFor(id);
   }
@@ -264,6 +284,9 @@ export function freezeListOperation<
 export function freezeListOperation<Path extends string>(
   operation: ListDeleteOperation<Path>
 ): ListDeleteOperation<Path>;
+export function freezeListOperation<Path extends string, T extends JsonValue>(
+  operation: ListSetOperation<Path, T>
+): ListSetOperation<Path, T>;
 export function freezeListOperation<
   Path extends string,
   T extends JsonValue,
@@ -280,6 +303,10 @@ export function freezeListOperation<
       id: ownId(operation.id),
       value: operation.value,
     });
+  }
+  if (operation.type === "list/set") {
+    return Object.freeze({ type: operation.type, path: operation.path,
+      id: ownId(operation.id), value: operation.value });
   }
   return Object.freeze({
     type: operation.type,
@@ -333,6 +360,20 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
 
   get(index: number): T {
     return this.current.get(index);
+  }
+
+  set(index: number, value: T): void {
+    if (!Number.isSafeInteger(index) || index < 0 || index >= this.length) {
+      throw new Error(`Index out of bounds: ${index} (length: ${this.length})`);
+    }
+
+    this.beforeMutation();
+    validateJsonValue(value, [this.path]);
+    const operation = freezeListOperation({
+      type: "list/set", path: this.path, id: this.current.idAt(index), value,
+    });
+    this.current = this.current.set(operation);
+    this.mutate(operation);
   }
 
   insert(index: number, value: T): void {

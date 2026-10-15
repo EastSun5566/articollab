@@ -95,6 +95,7 @@ assert.deepEqual(visible(source), visible(peer));
 
 source.transact(() => {
   source.state.count.value = 2;
+  source.state.items.set(0, "updated");
   source.state.items.push("pending");
   source.state.body.insert(source.state.body.length, "B");
 });
@@ -117,6 +118,7 @@ assert.deepEqual(visible(source), visible(peer));
 
 source.transact(() => {
   source.state.count.value = 3;
+  source.state.items.set(0, "updated after restore");
   source.state.items.push("restored");
   source.state.body.insert(source.state.body.length, "C");
 });
@@ -126,7 +128,7 @@ for (const path of ["items", "body"]) {
   assert.ok(source.checkpoint().lastBunchSeqs[path] > savedClient.lastBunchSeqs[path]);
 }
 assert.equal(submit(restoredOutgoing[0]).serverSeq, 3);
-assert.deepEqual(visible(source), { count: 3, items: ["first", "pending", "restored"], body: "A😀BC" });
+assert.deepEqual(visible(source), { count: 3, items: ["updated after restore", "pending", "restored"], body: "A😀BC" });
 for (const doc of [source, peer]) {
   assert.deepEqual(visible(doc), visible(source));
   assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
@@ -165,7 +167,7 @@ import {
   createClient, createServer, defineDocument, list, text, value,
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeSnapshot,
   type Value, type List, type Text, type DocumentOperation, type DocumentSnapshot,
-  type ListSnapshotData, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
+  type ListSnapshotData, type ListSetOperation, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
   type CreateServerOptions, type ClientBatch, type ServerCommit,
 } from "articollab";
 
@@ -192,6 +194,9 @@ type ValuePath = Expect<Equal<Extract<Operation, { type: "value/set" }>['path'],
 type ValuePayload = Expect<Equal<Extract<Operation, { type: "value/set" }>['value'], number>>;
 type ListPath = Expect<Equal<Extract<Operation, { type: "list/insert" }>['path'], "items">>;
 type ListPayload = Expect<Equal<Extract<Operation, { type: "list/insert" }>['value'], string>>;
+type ListSet = Expect<Equal<Extract<Operation, { type: "list/set" }>, ListSetOperation<"items", string>>>;
+type ListSetArgs = Expect<Equal<Parameters<typeof doc.state.items.set>, [index: number, value: string]>>;
+type ListSetResult = Expect<Equal<ReturnType<typeof doc.state.items.set>, void>>;
 type TextPath = Expect<Equal<Extract<Operation, { type: "text/insert" }>['path'], "body">>;
 type TextPayload = Expect<Equal<Extract<Operation, { type: "text/insert" }>['value'], string>>;
 type Snapshot = Expect<Equal<typeof snapshot, DocumentSnapshot<Shape>>>;
@@ -213,6 +218,7 @@ type BunchCounters = Expect<Equal<typeof checkpoint.lastBunchSeqs, Readonly<{ it
 
 doc.state.count.value = 1;
 doc.state.items.push("valid");
+doc.state.items.set(0, "updated");
 doc.state.body.insert(0, "😀");
 const batch = decodeClientBatch(Board, {});
 assertClientBatchNamespace(batch, "types");
@@ -238,6 +244,8 @@ createServer(Board, { maxClients: "2" });
 doc.state.count.value = "wrong";
 // @ts-expect-error List elements remain string.
 doc.state.items.push(123);
+// @ts-expect-error List set retains the element payload type.
+doc.state.items.set(0, 123);
 // @ts-expect-error Text insertion requires a string.
 doc.state.body.insert(0, 123);
 // @ts-expect-error The schema has no missing path.
@@ -248,6 +256,10 @@ const unknownPath: Operation = { type: "value/set", path: "missing", value: 1 };
 const wrongKind: Operation = { type: "value/set", path: "items", value: 1 };
 // @ts-expect-error A List insertion cannot use a numeric payload.
 const wrongPayload: Operation = { type: "list/insert", path: "items", before: null, id: { bunchId: "id", counter: 0 }, value: 1 };
+// @ts-expect-error List set cannot use a numeric payload.
+const wrongSetPayload: Operation = { type: "list/set", path: "items", id: { bunchId: "id", counter: 0 }, value: 1 };
+// @ts-expect-error List set cannot target a Text path.
+const wrongSetPath: Operation = { type: "list/set", path: "body", id: { bunchId: "id", counter: 0 }, value: "x" };
 // @ts-expect-error Value snapshot payloads retain their schema type.
 const wrongValueSnapshot: DocumentSnapshot<Shape> = { ...snapshot, data: { ...snapshot.data, count: "wrong" } };
 // @ts-expect-error List snapshot values retain their element type.

@@ -127,6 +127,14 @@ Your storage and subscription handoff are application responsibilities. Same URL
 
 The repository's browser recovery demo uses document-ID envelopes/headers and session storage. Those are application examples, not core wire fields or authentication. Neither ordinary checkpoint containers nor these examples promise power-loss durability or cross-file transactions.
 
+## Upgrading from 0.2 to 0.3
+
+The `0.3.0-beta.0` checkout adds List `set()` and its `list/set` wire operation. This version is not published yet; the npm installation instructions still refer to the published library. Coordinate the server and all participating clients before using the new operation. A 0.2 runtime cannot decode or apply it, including when it appears in pending batches, retry results or history.
+
+Snapshot and checkpoint envelopes have not changed. The 0.3 runtime accepts existing legal 0.2 checkpoints for the same schema and document lineage; no conversion is needed. This does not make a checkpoint containing 0.3 operations readable by a 0.2 runtime. Preserve backups and do not mix old writers with a document that has begun using `list/set`.
+
+Set updates target the original stable ID even if its index changes. A target deleted by a peer makes the update a no-op, not a replay conflict or resurrection; unrelated operations in that batch can still apply. An unknown ID, such as one from a rejected insertion, still blocks pending replay and requires normal recovery. See [List update semantics](collections.md#update-an-existing-element-upcoming-03).
+
 ## Upgrading from 0.1
 
 The 0.2 API requires an explicitly opened server session for a fresh writer. Use `server.openClient()` for creation; use the original checkpoint ID for restore. Disconnect keeps the session; `closeClient()` permanently retires it. `maxClients` counts open sessions, including those with no batch.

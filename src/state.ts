@@ -55,6 +55,12 @@ export function applyOperations(
         }
         states.set(operation.path, current.delete(operation));
         break;
+      case "list/set":
+        if (!(current instanceof ListState)) {
+          throw wrongCollectionKind(operation.path);
+        }
+        states.set(operation.path, current.set(operation));
+        break;
       case "text/insert":
         if (!(current instanceof TextState)) {
           throw wrongCollectionKind(operation.path);

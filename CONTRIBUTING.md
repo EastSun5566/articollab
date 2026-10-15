@@ -94,7 +94,7 @@ The benchmark builds production ESM and uses the public entrypoint. It measures 
 
 Workloads cover local edits, in-process sync, remote receive with 20 pending insertions, materialization, snapshots, unused policy snapshots, unchanged receive and retained heap. Heap measures one hydrated client, not peak memory, allocation rate or RSS. Snapshot/checkpoint UTF-8 JSON bytes are reported separately.
 
-Four additional List workloads use `{ label: "x" }` elements: JSON-decoded insertion ack, in-memory replacement ack, JSON-decoded replacement ack and remote replacement. Each times only `receive()`; local edits, submission, serialization/decoding and assertions are outside the timer. Replacement targets the last element so unchanged-prefix comparisons remain visible. These are single-bunch fixtures, not fragmented-document measurements. The full matrix contains 66 workloads; the original 54 keep their measurement boundaries.
+Seven additional List workloads use `{ label: "x" }` elements. JSON-decoded insertion ack, in-memory replacement ack, JSON-decoded replacement ack and remote replacement time only `receive()`; local edits, submission, serialization/decoding and assertions are outside the timer. New set workloads measure local `set()` (submission/ack excluded), JSON-decoded set ack and remote set receive. All replacements/sets target the last element. These are single-bunch fixtures, not fragmented-document measurements. The full matrix contains 75 workloads; the original 66 keep their measurement boundaries.
 
 Each worker has a 30-second timeout, one warm-up and five fresh-fixture samples. Timing averages ten operations per sample, except pending replay's single receive. Setup, explicit GC and assertions are excluded; natural GC during operations is included. Heap uses explicit GC before/after hydration and retains signed deltas, including negative measurements. Smoke uses size 32, two samples and two operations, still with 20 pending batches.
 
@@ -106,9 +106,9 @@ For vendor upgrades, review adaptations, run collision/version-isolation regress
 
 Local Value/List JSON validation visits the supplied payload without a copy or cache; measure large-payload replacement separately from primitive-element collection benchmarks. Reconciliation optimizations must preserve ordered validation, visible equality, conflict and notification contracts. Neither improvement establishes constant-time receive.
 
-Conflict-free own acks whose operations differ only in List insertion payloads compare values at the affected stable IDs, rather than scanning the full List. Authoritative application and pending replay still run; decoded references are adopted and `Object.is` remains the equality rule. Other own-operation changes and replay conflicts retain full comparison. Use the change oracle and object receive workloads when modifying this shortcut.
+Conflict-free own acks whose operations differ only in List insert/set payloads compare values at the affected stable IDs, rather than scanning the full List. Authoritative application and pending replay still run; decoded references are adopted and `Object.is` remains the equality rule. Other own-operation changes and replay conflicts retain full comparison. Use the change oracle and object receive workloads when modifying this shortcut.
 
-Remote commits on clients without pending work or replay conflicts compare only the inserted/deleted List IDs. Existing elements cannot move or change payload, so final ID visibility captures List changes, including same-length replacement. An insertion deleted within the same commit stays silent. Full authoritative validation still runs; remote commits with pending work retain the existing comparison path. Text comparison is unchanged. Revisit this proof before adding List replacement or move operations.
+Remote commits on clients without pending work or replay conflicts compare final visibility and `Object.is` payloads at List insert/delete/set targets. Only those IDs can change; untouched elements cannot move or change payload. An insertion deleted within the same commit or a set to a known tombstone stays silent. Full authoritative validation still runs; remote commits with pending work retain the existing comparison path. Text comparison is unchanged. Revisit this proof before adding move operations.
 
 Decoded List/Text snapshots reuse the persistent states loaded during validation. This cache is keyed only by decoder-owned frozen payloads; raw typed snapshots still load and validate normally. Constructors decode checkpoints again, so reuse is within each decoding boundary, not across every decode/restore call. Retaining a decoded snapshot also retains its cached state; measure that memory tradeoff when changing hydration.
 
@@ -135,6 +135,8 @@ Before enabling Pages, review the staged assets, select GitHub Actions as the re
 Fetch main and tags, then confirm a clean `main` synchronized with `origin/main`. Review compatibility/upgrade guidance, run the checks above and full browser JSDoc, and inspect the packed manifest, exports, allowlist and vendor MIT notice. Tooling and this guide remain outside the tarball.
 
 Choose an explicit unpublished target version. In the commands below, replace `<target-version>` and `<release-tag>`; they are placeholders, not literal shell arguments. Beta tags are `vX.Y.Z-beta.N`; stable tags are `vX.Y.Z`.
+
+The current checkout prepares `0.3.0-beta.0`, including the new `list/set` operation; it is not a release authorization. See [upgrade guidance](docs/recovery.md#upgrading-from-02-to-03) for coordinated runtime upgrades and checkpoint compatibility.
 
 ```sh
 pnpm release --release-as <target-version> --dry-run

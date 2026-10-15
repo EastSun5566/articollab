@@ -253,6 +253,16 @@ function decodeOperation<S extends SchemaShape>(
         value: decodeJsonValue(record.value, [...path, "value"]),
       }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; business payload T remains the caller’s responsibility.
     }
+    case "list/set": {
+      requireExactFields(record, path, ["type", "path", "id", "value"]);
+      requireKind(descriptor.kind, "list", [...path, "path"]);
+      return Object.freeze({
+        type,
+        path: descriptor.path,
+        id: decodeElementId(record.id, [...path, "id"]),
+        value: decodeJsonValue(record.value, [...path, "value"]),
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; business payload T remains the caller’s responsibility.
+    }
     case "list/delete": {
       requireExactFields(record, path, ["type", "path", "id"]);
       requireKind(descriptor.kind, "list", [...path, "path"]);

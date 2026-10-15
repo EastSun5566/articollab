@@ -19,6 +19,7 @@ export {
   type List,
   type ListDeleteOperation,
   type ListInsertOperation,
+  type ListSetOperation,
   type ListOperation,
   type ListSnapshotData,
   type SavedIdRange,
