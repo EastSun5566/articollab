@@ -55,8 +55,13 @@ it("bounds registry reads without retrying publication or hiding errors", async 
 
   await run([JSON.stringify(ready)], 1, 0);
   await run([missing, JSON.stringify({ ...ready, "dist-tags": { beta: "0.1.0-beta.0" } }), JSON.stringify(ready)], 3, 2);
-  await assert.rejects(run(Array.from({ length: 12 }, () => missing), 12, 11), /Publishing already succeeded/);
-  await assert.rejects(run(Array.from({ length: 12 }, () => JSON.stringify({ ...ready, "dist-tags": { beta: "old" } })), 12, 11), /Publishing already succeeded/);
+  // Processing can exceed the old 12-read window, then expose a stale dist-tag first.
+  await run([...Array.from({ length: 12 }, () => missing),
+    ...Array.from({ length: 8 }, () => JSON.stringify({ ...ready, "dist-tags": { beta: "old" } })),
+    JSON.stringify(ready)], 21, 20);
+  await run([...Array.from({ length: 23 }, () => missing), JSON.stringify(ready)], 24, 23);
+  await assert.rejects(run(Array.from({ length: 24 }, () => missing), 24, 23), /public availability is unconfirmed/);
+  await assert.rejects(run(Array.from({ length: 24 }, () => JSON.stringify({ ...ready, "dist-tags": { beta: "old" } })), 24, 23), /public availability is unconfirmed/);
   const denied = Object.assign(new Error("unauthorized"), {
     stdout: JSON.stringify({ error: { code: "E401" } }),
   });
@@ -67,4 +72,8 @@ it("bounds registry reads without retrying publication or hiding errors", async 
   await assert.rejects(run(["null"], 1, 0));
   const timedOut = new Error("request timed out");
   await assert.rejects(run([timedOut], 1, 0), (error: unknown) => error === timedOut);
+  const publishJob = workflow.match(/^  publish:\n[\s\S]*?timeout-minutes: (\d+)/m);
+  assert.ok(publishJob);
+  // 24 reads (at most 15 seconds each) plus 23 waits need room for setup/publish too.
+  assert.equal(Number(publishJob[1]), 15);
 });

@@ -38,9 +38,9 @@ Insertion positions are `0..length`. Reads/deletes require `0..length-1`; invali
 
 Local positions become stable insertion anchors or deletion targets on the wire. The field named `before` is the **preceding anchor**, with `null` meaning the start. Deleted known IDs remain tombstones and may still anchor pending insertions.
 
-### Update an existing element (upcoming 0.3)
+### Update an existing element
 
-`set()` is part of the unreleased `0.3.0-beta.0` checkout, not the published 0.2 package. With the List above containing `"Design API"`:
+`set()` is available in the published beta. Install `articollab@beta` before using this method; the stable release does not include it. With the List above containing `"Design API"`:
 
 ```ts
 doc.state.items.set(0, "Implement API");

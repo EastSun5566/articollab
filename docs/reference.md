@@ -4,7 +4,7 @@ Look up the public API and exact collaboration contracts here. For a runnable in
 
 ## Compatibility
 
-These docs cover the published 0.2 API plus the upcoming, unreleased 0.3 List `set()` extension. `list/set` requires a coordinated 0.3 upgrade; it is not available in the published 0.2 package. Do not mix incompatible runtimes or document lineages. See [0.3 upgrade guidance](recovery.md#upgrading-from-02-to-03) and the [0.1 upgrade guide](recovery.md#upgrading-from-01).
+These docs cover the stable API and the published 0.3 beta's List `set()` extension. Install `articollab@beta` for `list/set`, and upgrade all participating runtimes before exchanging it. Do not mix incompatible runtimes or document lineages. See [0.3 upgrade guidance](recovery.md#upgrading-from-02-to-03) and the [0.1 upgrade guide](recovery.md#upgrading-from-01).
 
 Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` promises its documented `name`, JSON Pointer `path` and readable message, not exact wording.
 
@@ -37,7 +37,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `SchemaShape`, `CollectionSchema`, `ValueSchema`, `ListSchema`, `TextSchema`, `ValueType`, `ListType` | Schema descriptors and inferred element types. |
 | `Value`, `List`, `Text`, `DocumentState` | Typed collection views. |
 | `CreateClientOptions`, `CreateServerOptions`, `ServerResolveContext`, `ServerResolver` | Construction and batch policy contracts. |
-| `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation` (upcoming 0.3), `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextOperation`, `TextIdRange`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
+| `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation` (0.3 beta), `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextOperation`, `TextIdRange`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
 | `ClientBatchRef`, `ClientBatch`, `ServerCommit`, `ServerReceipt`, `ServerReplayEntry` | Batch identity, authoritative result, local routing metadata and retry entries. |
 | `LocalChangeEvent`, `ServerChangeEvent`, `ChangeEvent`, `PendingReplayConflict` | Local/server notifications and the first blocked pending operation. |
 | `DocumentSnapshotData`, `DocumentSnapshot`, `ListSnapshotData`, `TextSnapshotData`, `SavedIdRange` | Typed snapshot payloads, including List/Text tombstones. |
@@ -50,7 +50,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | Collection | Reads | Mutations |
 | --- | --- | --- |
 | `Value<T>` | `.value` | `.value = next` or `.set(next)`; replace the whole JSON value. |
-| `List<T>` | `.length`, `.get(index)`, `.values()`, `.toArray()`, iteration | `.insert(index, value)`, `.push(value)`, `.delete(index)`; upcoming 0.3 `.set(index, value)` updates one element without changing its ID. |
+| `List<T>` | `.length`, `.get(index)`, `.values()`, `.toArray()`, iteration | `.insert(index, value)`, `.push(value)`, `.delete(index)`; `.set(index, value)` (0.3 beta) updates one element without changing its ID. |
 | `Text` | `.length`, `.values()`, `.toString()`, iteration | `.insert(index, string)`, `.delete(index, count = 1)`; Unicode code points. |
 
 Values and List elements must be JSON-compatible and immutable after being supplied. Nested object/array edits are not intercepted: replace a Value rather than editing its fields; in 0.3, use List `set()` to replace the whole element value while preserving identity. Delete + insert creates a new identity instead. The public state container, operation/ID containers and library-owned wire arrays are frozen, but user payloads are not generally deep-cloned or deep-frozen. `toArray()` copies the array, but its shared elements must still remain immutable.
@@ -155,7 +155,7 @@ Runtime errors have readable messages, not a stable error-code hierarchy. `WireD
 
 ## Boundaries
 
-The published 0.2 release uses explicit sessions. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
+The stable and beta releases use explicit sessions. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
 
 There is no production transport or storage adapter, background sync, automatic retry/reconnect, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing, move, public stable positions or cursor API. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
 
