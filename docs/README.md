@@ -13,7 +13,7 @@ Start with the [Counter quick start](quick-start.md). It runs in memory so you c
 ## What you build with
 
 - **Value** replaces an immutable JSON payload.
-- **List** inserts and deletes elements with stable identities.
+- **List** inserts, updates and deletes elements with stable identities.
 - **Text** edits plain text using Unicode code-point indices.
 - **Transactions** group edits into one batch.
 - **Policy, decoders and checkpoints** help you control submissions and recover unconfirmed work.
@@ -34,6 +34,6 @@ The library is available on npm:
 pnpm add articollab
 ```
 
-These docs describe the 0.2 API. Use an ESM project; the runnable Node.js examples require Node 24+. You do not need a repository checkout to use the package. Existing applications should read [upgrade guidance](recovery.md#upgrading-from-01) before mixing versions or checkpoints.
+General examples use the stable release. List `set()` is available in the published beta; install `articollab@beta` and follow the [upgrade guidance](recovery.md#upgrading-from-02-to-03) before using it. Use an ESM project; the runnable Node.js examples require Node 24+. You do not need a repository checkout to use the package.
 
 [Next: Counter quick start](quick-start.md)

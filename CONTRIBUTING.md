@@ -136,7 +136,7 @@ Fetch main and tags, then confirm a clean `main` synchronized with `origin/main`
 
 Choose an explicit unpublished target version. In the commands below, replace `<target-version>` and `<release-tag>`; they are placeholders, not literal shell arguments. Beta tags are `vX.Y.Z-beta.N`; stable tags are `vX.Y.Z`.
 
-The current checkout prepares `0.3.0-beta.0`, including the new `list/set` operation; it is not a release authorization. See [upgrade guidance](docs/recovery.md#upgrading-from-02-to-03) for coordinated runtime upgrades and checkpoint compatibility.
+Review [upgrade guidance](docs/recovery.md#upgrading-from-02-to-03) for coordinated runtime upgrades and checkpoint compatibility before choosing a release target.
 
 ```sh
 pnpm release --release-as <target-version> --dry-run
@@ -182,6 +182,8 @@ The publish job receives publishing OIDC permission; the checks job does not. It
 
 After checks, the publish job builds and packs one tarball outside the checkout, dry-runs it, then publishes that file with explicit registry, public access, channel and disabled lifecycle scripts. Tag runs are not automatically cancelled.
 
-Registry verification checks version, dist-tag and SHA-512. It makes at most 12 online reads, 15 seconds apart with 15-second timeouts. Only a missing version or stale dist-tag is retried; other errors fail. Publication itself is never retried.
+npm may accept an upload before the version becomes publicly available. Registry verification checks version, dist-tag and SHA-512 with at most 24 online reads, 15 seconds apart with 15-second request timeouts. The publish job has a 15-minute limit to allow verification plus setup and publishing. Only a missing version or stale dist-tag is retried; other errors fail. Publication itself is never retried.
+
+If verification times out, public availability is unconfirmed, not proof that the upload failed. Check the registry again without republishing. Do not rerun the publish job just to repeat verification: it would attempt another upload.
 
 A failed response may still mean publication completed. Inspect the registry before taking action; do not bump automatically, overwrite a published version or move its tag. Local dry-run is not evidence that OIDC publishing works.

@@ -128,7 +128,7 @@ jobs:
     needs: checks
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && needs.checks.outputs.dist-tag != ''
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
@@ -205,7 +205,8 @@ jobs:
 
           const { name, version } = JSON.parse(readFileSync("package.json", "utf8"));
           // The registry may expose an accepted release later. Retry reads, never publication.
-          for (let attempt = 1; attempt <= 12; attempt++) {
+          const maxAttempts = 24;
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             let published;
             try {
               published = JSON.parse(execFileSync("npm", [
@@ -222,10 +223,10 @@ jobs:
                 break;
               }
             }
-            if (attempt === 12) {
-              throw new Error("Registry verification timed out after 12 reads. Publishing already succeeded; inspect the registry before retrying anything.");
+            if (attempt === maxAttempts) {
+              throw new Error("Registry verification timed out after " + maxAttempts + " reads. The publish command completed, but public availability is unconfirmed; inspect npm before retrying anything.");
             }
-            console.log("Waiting for registry version and dist-tag (attempt " + attempt + "/12)");
+            console.log("Waiting for registry version and dist-tag (attempt " + attempt + "/" + maxAttempts + ")");
             await new Promise((resolve) => setTimeout(resolve, 15_000));
           }
           NODE
