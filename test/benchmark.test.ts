@@ -88,9 +88,81 @@ describe("collection benchmark", () => {
     assert.match(output.stdout, /signed GC estimate/);
   });
 
+  it("runs the extended matrix with reproducible fragmented fixtures across two runs", async () => {
+    const fingerprints: unknown[][] = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const output = await run(["--expose-gc", script, "--extended", "--smoke", "--json"]);
+      assert.equal(output.stderr, "");
+      const report = record(JSON.parse(output.stdout)), environment = record(report.environment);
+      assert.equal(environment.node, process.version);
+      assert.match(String(environment.gitSha), /^[a-f0-9]{40}$/);
+      assert.equal(typeof environment.dirty, "boolean");
+      assert.deepEqual(report.config, { sizes: [32], samples: 2, iterations: 2, pending: 20, warmups: 1,
+        historyLimits: [0, 2, 4, 8], seed: 42 });
+      assert.ok(Array.isArray(report.results));
+      assert.equal(report.results.length, 13);
+      const cases: string[] = [], structures: unknown[] = [];
+      for (const input of report.results) {
+        const row = record(input), heap = row.scenario === "retained-heap";
+        assert.ok(row.kind === "text" || row.kind === "history");
+        cases.push(`${row.kind}/${String(row.size)}/${String(row.scenario)}`);
+        assert.equal(row.unit, heap ? "bytes" : "ms/op");
+        const once = ["bulk-delete", "pending-replay", "client-decode-restore", "server-decode-restore", "retained-heap"].includes(String(row.scenario));
+        assert.equal(row.operationsPerSample, once ? 1 : 2);
+        assert.ok(Array.isArray(row.samples));
+        assert.equal(row.samples.length, 2);
+        const samples: number[] = [];
+        for (const sample of row.samples) {
+          assert.ok(typeof sample === "number" && Number.isFinite(sample));
+          if (!heap) assert.ok(sample >= 0);
+          samples.push(sample);
+        }
+        assert.equal(row.min, Math.min(...samples));
+        assert.equal(row.max, Math.max(...samples));
+        assert.equal(row.median, (samples[0]! + samples[1]!) / 2);
+        for (const field of ["snapshotBytes", "checkpointBytes"]) {
+          assert.ok(typeof row[field] === "number" && Number.isSafeInteger(row[field]) && row[field] > 0);
+        }
+        if (row.kind === "text") {
+          assert.equal(row.size, 32);
+          const fixture = record(row.fixture);
+          assert.deepEqual(fixture, { seed: 42, visibleIds: 32, deletedIds: 8, savedRanges: 33, bunches: 21,
+            snapshotSha256: "7244aba77c8395d87cf78798d8abbc761e661672f3942534baa1c6d1873ef13b" });
+          structures.push([row.kind, row.size, row.scenario, fixture, row.snapshotBytes, row.checkpointBytes]);
+        } else {
+          assert.equal(row.fixture, undefined);
+          structures.push([row.kind, row.size, row.scenario, row.snapshotBytes, row.checkpointBytes]);
+        }
+      }
+      const scenarios = ["local-insert", "local-delete", "bulk-delete", "remote-replace", "remote-noop-delete",
+        "pending-replay", "client-decode-restore", "server-decode-restore", "retained-heap"];
+      assert.deepEqual(cases.toSorted(), [...scenarios.map((scenario) => `text/32/${scenario}`),
+        ...[0, 2, 4, 8].map((limit) => `history/${limit}/history-receive`)].toSorted());
+      fingerprints.push(structures);
+    }
+    assert.deepEqual(fingerprints[0], fingerprints[1]);
+  });
+
+  it("prints extended units and measurement boundaries without mixing in original workloads", async () => {
+    const output = await run(["--expose-gc", script, "--extended", "--smoke"]);
+    assert.equal(output.stderr, "");
+    assert.equal(output.stdout.split("\n").filter((line) => /^(text|history)\t/.test(line)).length, 13);
+    assert.doesNotMatch(output.stdout, /^list\t/m);
+    assert.match(output.stdout, /history size is commit capacity/);
+    assert.match(output.stdout, /decode \+ constructor, excluding JSON.parse/);
+    assert.match(output.stdout, /signed GC estimate/);
+  });
+
   it("rejects invalid flags before starting a workload", async () => {
     for (const args of [["--unknown"], ["--smoke", "extra"],
-      ["--worker", "text", "32", "object-json-ack", "smoke"]]) {
+      ["--worker", "text", "32", "object-json-ack", "smoke"], ["--extended", "extra"],
+      ["--extended-worker", "list", "32", "local-insert", "smoke"],
+      ["--extended-worker", "history", "3", "history-receive", "smoke"],
+      ["--extended-worker", "text", "32", "history-receive", "smoke"],
+      ["--extended-worker", "history", "2", "local-insert", "smoke"],
+      ["--extended-worker", "text", "10000", "local-insert", "smoke"],
+      ["--extended-worker", "text", "32", "local-insert", "full"],
+      ["--extended-worker", "text", "32", "unknown", "smoke"]]) {
       await assert.rejects(run([script, ...args]), (error: unknown) => {
         assert.ok(error instanceof Error && "code" in error && error.code === 1);
         assert.ok("stdout" in error && error.stdout === "");

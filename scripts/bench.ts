@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { arch, cpus, platform, release } from "node:os";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs, promisify } from "node:util";
 
 import type {
-  ClientBatch, ClientDocument, DocumentOperation, DocumentSnapshot,
+  ClientBatch, ClientDocument, DocumentOperation, DocumentSnapshot, ServerCommit,
   ListSchema, TextSchema, ValueSchema,
 } from "../src/index.ts";
 
@@ -19,6 +20,9 @@ const scenarios = ["local-insert", "local-delete", "sync-insert", "pending-repla
   "materialize", "snapshot", "unused-policy-snapshot", "unchanged-receive", "retained-heap"] as const;
 const objectScenarios = ["object-json-ack", "object-own-replace-ack", "object-json-replace-ack",
   "object-remote-replace", "object-local-set", "object-json-set-ack", "object-remote-set"] as const;
+const extendedScenarios = ["local-insert", "local-delete", "bulk-delete", "remote-replace",
+  "remote-noop-delete", "pending-replay", "client-decode-restore", "server-decode-restore", "retained-heap"] as const;
+type ExtendedScenario = typeof extendedScenarios[number];
 type Kind = typeof kinds[number];
 type Scenario = typeof scenarios[number] | typeof objectScenarios[number];
 type Shape = { count: ValueSchema<number>; items: ListSchema<string>; body: TextSchema };
@@ -38,6 +42,26 @@ interface Result {
   max: number;
   snapshotBytes: number;
   checkpointBytes: number;
+}
+
+interface FixtureStats {
+  seed: number;
+  visibleIds: number;
+  deletedIds: number;
+  savedRanges: number;
+  bunches: number;
+  snapshotSha256: string;
+}
+
+interface ExtendedResult extends Omit<Result, "kind" | "scenario"> {
+  kind: "text" | "history";
+  scenario: ExtendedScenario | "history-receive";
+  fixture?: FixtureStats;
+}
+
+function extendedSettings(smoke: boolean) {
+  return { ...settings(smoke), sizes: smoke ? [32] : [10_000, 50_000, 100_000],
+    historyLimits: smoke ? [0, 2, 4, 8] : [0, 1_000, 10_000, 100_000], seed: 42 };
 }
 
 function settings(smoke: boolean) {
@@ -267,6 +291,209 @@ function objectTrial(api: Api, size: number, scenario: typeof objectScenarios[nu
   return elapsed / iterations;
 }
 
+function fragmentedFixture(api: Api, size: number) {
+  const schema = board(api), server = api.createServer(schema, { historyLimit: 0 });
+  const doc = api.createClient(schema, { clientId: server.openClient(),
+    onBatch(batch) { doc.receive(server.receive(batch).commit); } });
+  const oracle: string[] = [];
+  let seed = 42;
+  const choose = (bound: number) => {
+    seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+    return (seed >>> 0) % bound;
+  };
+  const deleted = Math.floor(size / 4);
+  doc.transact(() => {
+    for (let index = 0; index < size + deleted; index++) {
+      const position = choose(oracle.length + 1), value = (index + 1) % 11 === 0 ? "😀" : "x";
+      doc.state.body.insert(position, value);
+      oracle.splice(position, 0, value);
+    }
+  });
+  doc.transact(() => {
+    for (let index = 0; index < deleted; index++) {
+      const position = choose(oracle.length);
+      doc.state.body.delete(position);
+      oracle.splice(position, 1);
+    }
+  });
+  assert.equal(doc.state.body.toString(), oracle.join(""));
+  assert.equal(doc.state.body.length, size);
+  assert.equal(doc.replayConflict, null);
+  const checkpoint = doc.checkpoint(), snapshot = server.snapshot();
+  assert.deepEqual(checkpoint.snapshot, snapshot);
+  assert.equal(checkpoint.pendingBatches.length, 0);
+  const remoteId = server.openClient();
+  const ranges = snapshot.data.body.idList;
+  const tombstone = ranges.find((range) => range.isDeleted);
+  assert.ok(tombstone !== undefined);
+  const snapshotJson = JSON.stringify(snapshot), serverJson = JSON.stringify(server.checkpoint());
+  const stats: FixtureStats = { seed: 42, visibleIds: size,
+    deletedIds: ranges.filter((range) => range.isDeleted).reduce((sum, range) => sum + range.count, 0),
+    savedRanges: ranges.length, bunches: new Set(ranges.map((range) => range.bunchId)).size,
+    snapshotSha256: createHash("sha256").update(snapshotJson).digest("hex") };
+  assert.equal(stats.deletedIds, deleted);
+  return { snapshotJson, serverJson, clientJson: JSON.stringify(checkpoint), value: oracle.join(""),
+    watermark: snapshot.serverSeq, remoteId, stats,
+    tombstone: { bunchId: tombstone.bunchId, counter: tombstone.startCounter },
+    snapshotBytes: Buffer.byteLength(snapshotJson, "utf8"), checkpointBytes: Buffer.byteLength(serverJson, "utf8") };
+}
+
+function fragmentedTrial(api: Api, fragment: ReturnType<typeof fragmentedFixture>,
+  scenario: ExtendedScenario, iterations: number): number {
+  const schema = board(api);
+  // JSON parsing is outside decode+restore and heap measurements; no preloaded state is reused.
+  if (scenario === "server-decode-restore") {
+    const input: unknown = JSON.parse(fragment.serverJson);
+    collect();
+    const start = performance.now();
+    const server = api.createServer(schema, { historyLimit: 0,
+      checkpoint: api.decodeServerCheckpoint(schema, input) });
+    const elapsed = performance.now() - start;
+    assert.equal(server.snapshot().data.body.value, fragment.value);
+    assert.deepEqual(server.checkpoint(), JSON.parse(fragment.serverJson));
+    return elapsed;
+  }
+  if (scenario === "client-decode-restore" || scenario === "retained-heap") {
+    const input: unknown = JSON.parse(fragment.clientJson);
+    collect();
+    const baseline = process.memoryUsage().heapUsed, start = performance.now();
+    const doc = api.createClient(schema, { clientId: "client-1",
+      checkpoint: api.decodeClientCheckpoint(schema, input), onBatch() {} });
+    const elapsed = performance.now() - start;
+    if (scenario === "retained-heap") collect();
+    const retained = process.memoryUsage().heapUsed - baseline;
+    assert.equal(doc.state.body.toString(), fragment.value);
+    assert.equal(doc.replayConflict, null);
+    assert.deepEqual(doc.checkpoint(), input);
+    return scenario === "retained-heap" ? retained : elapsed;
+  }
+  // Raw snapshots load afresh for each trial, outside receive/local-edit timing.
+  const snapshot = api.decodeSnapshot(schema, JSON.parse(fragment.snapshotJson));
+  const batches: Batch[] = [];
+  const doc = api.createClient(schema, { clientId: "client-3", snapshot,
+    onBatch(batch) { batches.push(batch); } });
+  let localChanges = 0, serverChanges = 0;
+  doc.on("change", (event) => { if (event.origin === "local") localChanges++; else serverChanges++; });
+  const points = Array.from(fragment.value), midpoint = Math.floor(points.length / 2);
+  const rounds = scenario === "bulk-delete" || scenario === "pending-replay" ? 1 : iterations;
+  const commits: ServerCommit<DocumentOperation<Shape>>[] = [];
+  if (scenario === "pending-replay") {
+    for (let index = 0; index < 20; index++) doc.state.body.insert(doc.state.body.length, "P");
+  }
+  if (scenario.startsWith("remote-") || scenario === "pending-replay") {
+    const server = api.createServer(schema, { historyLimit: 0,
+      checkpoint: api.decodeServerCheckpoint(schema, JSON.parse(fragment.serverJson)) });
+    const remote = api.createClient(schema, { clientId: fragment.remoteId, snapshot,
+      onBatch(batch) { const commit = server.receive(batch).commit; commits.push(commit); remote.receive(commit); } });
+    for (let index = 0; index < rounds; index++) {
+      if (scenario === "remote-noop-delete") {
+        commits.push(server.receive({ clientId: fragment.remoteId, seq: index + 1,
+          operations: [{ type: "text/delete", path: "body", ranges: [{ start: fragment.tombstone, count: 1 }] }] }).commit);
+      } else if (scenario === "pending-replay") remote.state.body.insert(0, "R");
+      else remote.transact(() => {
+        remote.state.body.delete(remote.state.body.length - 1);
+        remote.state.body.insert(remote.state.body.length, index % 2 === 0 ? "R" : "S");
+      });
+    }
+  }
+  const before = doc.checkpoint();
+  collect();
+  const start = performance.now();
+  for (let index = 0; index < rounds; index++) {
+    if (scenario === "local-insert") doc.state.body.insert(midpoint, "😀");
+    else if (scenario === "local-delete") doc.state.body.delete(midpoint);
+    else if (scenario === "bulk-delete") doc.state.body.delete(0, Math.floor(points.length / 2));
+    else doc.receive(commits[index]!);
+  }
+  const elapsed = (performance.now() - start) / rounds;
+  if (scenario === "local-insert") points.splice(midpoint, 0, ...Array<string>(rounds).fill("😀"));
+  else if (scenario === "local-delete") points.splice(midpoint, rounds);
+  else if (scenario === "bulk-delete") points.splice(0, Math.floor(points.length / 2));
+  else if (scenario === "remote-replace") points[points.length - 1] = rounds % 2 === 0 ? "S" : "R";
+  else if (scenario === "pending-replay") { points.unshift("R"); points.push(...Array<string>(20).fill("P")); }
+  assert.equal(doc.state.body.toString(), points.join(""));
+  assert.equal(doc.state.body.length, points.length);
+  assert.equal(doc.replayConflict, null);
+  const checkpoint = doc.checkpoint(), local = scenario.startsWith("local-") || scenario === "bulk-delete";
+  assert.equal(checkpoint.snapshot.serverSeq, fragment.watermark + (local ? 0 : rounds));
+  assert.equal(checkpoint.snapshot.data.body.value, local ? fragment.value :
+    scenario === "pending-replay" ? "R" + fragment.value : points.join(""));
+  assert.equal(checkpoint.pendingBatches.length, scenario === "pending-replay" ? 20 : local ? rounds : 0);
+  assert.equal(localChanges, scenario === "pending-replay" ? 20 : local ? rounds : 0);
+  assert.equal(serverChanges, scenario === "remote-replace" || scenario === "pending-replay" ? rounds : 0);
+  if (!local) {
+    assert.deepEqual(checkpoint.pendingBatches, before.pendingBatches);
+    assert.deepEqual(checkpoint.lastBunchSeqs, before.lastBunchSeqs);
+    assert.equal(checkpoint.lastLocalSeq, before.lastLocalSeq);
+  } else {
+    assert.deepEqual(checkpoint.pendingBatches, batches);
+    assert.equal(checkpoint.lastLocalSeq, rounds);
+    assert.equal(checkpoint.snapshot.data.body.value, fragment.value);
+  }
+  return elapsed;
+}
+
+function historyFixture(api: Api, limit: number) {
+  const schema = board(api), server = api.createServer(schema, { historyLimit: 0 });
+  const clientId = server.openClient(), history: ServerCommit<DocumentOperation<Shape>>[] = [];
+  for (let seq = 1; seq <= limit; seq++) history.push(server.receive({ clientId, seq,
+    operations: [{ type: "value/set", path: "count", value: seq }] }).commit);
+  // Build a legal, full suffix without repeatedly copying history during prefill.
+  return JSON.stringify({ ...server.checkpoint(), history });
+}
+
+function historyTrial(api: Api, checkpointJson: string, limit: number, iterations: number): number {
+  const schema = board(api), checkpoint = api.decodeServerCheckpoint(schema, JSON.parse(checkpointJson));
+  const server = api.createServer(schema, { historyLimit: limit, checkpoint });
+  const batches: Batch[] = Array.from({ length: iterations }, (_, index) => ({ clientId: "client-1",
+    seq: limit + index + 1, operations: [{ type: "value/set", path: "count", value: limit + index + 1 }] }));
+  collect();
+  const start = performance.now();
+  for (const batch of batches) server.receive(batch);
+  const elapsed = (performance.now() - start) / iterations;
+  const end = limit + iterations, saved = server.checkpoint();
+  assert.equal(saved.snapshot.serverSeq, end);
+  assert.equal(saved.snapshot.data.count, end);
+  assert.equal(saved.history.length, limit);
+  assert.equal(saved.clients[0]!.replay!.batch.seq, end);
+  assert.equal(server.receive(batches.at(-1)!).replayed, true);
+  assert.deepEqual(server.checkpoint(), saved);
+  assert.deepEqual(server.commitsSince(end), []);
+  assert.equal(server.commitsSince(end - limit - 1), null);
+  const suffix = server.commitsSince(end - limit);
+  assert.ok(suffix !== null);
+  assert.deepEqual(suffix.map((commit) => commit.serverSeq), Array.from({ length: limit }, (_, index) => iterations + index + 1));
+  return elapsed;
+}
+
+async function extendedWorker(kind: "text" | "history", size: number,
+  scenario: ExtendedResult["scenario"], smoke: boolean): Promise<ExtendedResult> {
+  const loaded: unknown = await import(import.meta.resolve("articollab"));
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Built self-package has the API checked against source types.
+  const api = loaded as Api;
+  const config = extendedSettings(smoke);
+  const fragment = kind === "text" ? fragmentedFixture(api, size) : undefined;
+  const history = kind === "history" ? historyFixture(api, size) : undefined;
+  const once = ["bulk-delete", "pending-replay", "client-decode-restore", "server-decode-restore", "retained-heap"].includes(scenario);
+  const operationsPerSample = once ? 1 : config.iterations;
+  const trial = () => {
+    if (history !== undefined) return historyTrial(api, history, size, operationsPerSample);
+    assert.ok(fragment !== undefined && scenario !== "history-receive");
+    return fragmentedTrial(api, fragment, scenario, operationsPerSample);
+  };
+  for (let index = 0; index < config.warmups; index++) trial();
+  const samples = Array.from({ length: config.samples }, trial), sorted = samples.toSorted((a, b) => a - b);
+  assert.ok(samples.every((sample) => Number.isFinite(sample) && (scenario === "retained-heap" || sample >= 0)));
+  const midpoint = Math.floor(sorted.length / 2);
+  return { kind, size, scenario, unit: scenario === "retained-heap" ? "bytes" : "ms/op", operationsPerSample,
+    samples, min: sorted[0]!, max: sorted.at(-1)!,
+    median: sorted.length % 2 === 0 ? (sorted[midpoint - 1]! + sorted[midpoint]!) / 2 : sorted[midpoint]!,
+    ...(fragment === undefined ? {
+      snapshotBytes: Buffer.byteLength(JSON.stringify(api.decodeServerCheckpoint(board(api), JSON.parse(history!)).snapshot), "utf8"),
+      checkpointBytes: Buffer.byteLength(history!, "utf8"),
+    } : { snapshotBytes: fragment.snapshotBytes, checkpointBytes: fragment.checkpointBytes, fixture: fragment.stats }) };
+}
+
 async function worker(kind: Kind, size: number, scenario: Scenario, smoke: boolean): Promise<Result> {
   // Type-only source references allow check-before-build; runtime always resolves production ESM.
   const loaded: unknown = await import(import.meta.resolve("articollab"));
@@ -312,6 +539,17 @@ async function metadata() {
 }
 
 async function main(args: string[]): Promise<void> {
+  if (args[0] === "--extended-worker") {
+    const kind = args[1], size = Number(args[2]);
+    const scenario = [...extendedScenarios, "history-receive" as const].find((candidate) => candidate === args[3]);
+    assert.ok(args.length === 5 && (kind === "text" || kind === "history") && scenario !== undefined &&
+      (args[4] === "smoke" || args[4] === "full"), "Invalid extended worker arguments");
+    const smoke = args[4] === "smoke", config = extendedSettings(smoke);
+    assert.ok(kind === "history" ? scenario === "history-receive" && config.historyLimits.includes(size) :
+      scenario !== "history-receive" && config.sizes.includes(size), "Invalid extended workload");
+    console.log(JSON.stringify(await extendedWorker(kind, size, scenario, smoke)));
+    return;
+  }
   if (args[0] === "--worker") {
     const kind = kinds.find((candidate) => candidate === args[1]);
     const scenario = [...scenarios, ...objectScenarios].find((candidate) => candidate === args[3]);
@@ -323,11 +561,31 @@ async function main(args: string[]): Promise<void> {
     console.log(JSON.stringify(await worker(kind, size, scenario, smoke)));
     return;
   }
-  const { values } = parseArgs({ args, options: { json: { type: "boolean" }, smoke: { type: "boolean" } } });
-  const config = settings(values.smoke === true);
+  const { values } = parseArgs({ args, options: { json: { type: "boolean" }, smoke: { type: "boolean" },
+    extended: { type: "boolean" } } });
+  const config = values.extended ? extendedSettings(values.smoke === true) : settings(values.smoke === true);
   const environment = await metadata();
-  const results: Result[] = [];
-  for (const kind of kinds) {
+  const results: (Result | ExtendedResult)[] = [];
+  if (values.extended) {
+    const extended = extendedSettings(values.smoke === true);
+    const workloads = [
+      ...extended.sizes.flatMap((size) => extendedScenarios.map((scenario) => ({ kind: "text", size, scenario }))),
+      ...extended.historyLimits.map((size) => ({ kind: "history", size, scenario: "history-receive" })),
+    ];
+    for (const { kind, size, scenario } of workloads) {
+      try {
+        const output = await execute(process.execPath, ["--expose-gc", filename, "--extended-worker", kind,
+          String(size), scenario, values.smoke ? "smoke" : "full"],
+        { cwd: root, timeout: 120_000, maxBuffer: 1024 * 1024 });
+        assert.equal(output.stderr, "");
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Private worker constructs this result; smoke tests validate its report.
+        results.push(JSON.parse(output.stdout) as ExtendedResult);
+      } catch (cause) {
+        const stderr = cause instanceof Error && "stderr" in cause && typeof cause.stderr === "string" ? cause.stderr : "";
+        throw new Error(`extended/${kind}/${size}/${scenario} worker failed\n${stderr}`, { cause });
+      }
+    }
+  } else for (const kind of kinds) {
     for (const size of config.sizes) {
       for (const scenario of [...scenarios, ...(kind === "list" ? objectScenarios : [])]) {
         const workerArgs = ["--expose-gc", filename, "--worker", kind, String(size), scenario,
@@ -355,6 +613,7 @@ async function main(args: string[]): Promise<void> {
       console.log([row.kind, row.size, row.scenario, row.median.toFixed(digits), row.min.toFixed(digits),
         row.max.toFixed(digits), row.unit, row.snapshotBytes, row.checkpointBytes].join("\t"));
     }
+    if (values.extended) console.log("Extended: text size is visible code points; history size is commit capacity. Restore measures decode + constructor, excluding JSON.parse.");
     console.log("Retained heap is a signed GC estimate, not peak memory, allocations or RSS. Results are not an SLA.");
   }
 }

@@ -100,6 +100,28 @@ Each worker has a 30-second timeout, one warm-up and five fresh-fixture samples.
 
 JSON includes raw samples, settings, Node/V8, system information, versions and Git SHA/dirty status. Save results outside the checkout. Compare repeated runs on the same machine, Node version and workload without unrelated load; five samples do not support p95 claims. There is no CI latency threshold, SLA or browser-performance promise.
 
+### Fragmented Text and bounded history
+
+The opt-in extended matrix is separate from the original 75 workloads:
+
+```sh
+pnpm bench --extended
+pnpm --silent bench --extended --json
+pnpm bench --extended --smoke
+```
+
+Text fixtures use seed 42 with unsigned 32-bit xorshift (13, 17, 5). Public API transactions insert `size + floor(size / 4)` code points at random positions, then delete `floor(size / 4)` random visible points. Every eleventh insertion is `"😀"`; the others are `"x"`. Both transactions are acknowledged before measurement, and an independent code-point array verifies the result. Reports include visible/deleted ID counts, saved ranges, distinct bunches and the snapshot SHA-256. This is one deterministic editing pattern, not a claim to model every workload.
+
+The full matrix has 31 workloads: nine Text scenarios at 10,000, 50,000 and 100,000 visible code points, plus server submission at history capacities 0, 1,000, 10,000 and 100,000. Each worker prepares its fixture once; every trial starts with fresh documents from the same snapshot/checkpoint. Workers run sequentially with a fixed 120-second timeout (original workers remain at 30 seconds); failures are not retried.
+
+Text scenarios measure local single insert/delete, local deletion of the first half (including range construction), receive-only remote last-code-point replacement, receive-only deletion of a known tombstone, overlapping remote insert with 20 pending end insertions, client/server decode + restore, and one restored client's retained heap. Remote replacement alternates `"R"`/`"S"`; pending replay inserts `"R"` at the start remotely and preserves the local `"P"` suffix. History uses small Value batches with no client delivery: prefill with history disabled, then restore the full legal suffix at the target capacity before timing new submissions.
+
+Each worker uses one warm-up and five samples. Bulk deletion, pending replay, restore and heap have one operation per sample; other timings average ten. Smoke has 13 workloads: Text size 32 and history capacities 0, 2, 4 and 8, with two samples and two operations for repeated timings. Smoke tests compare fixture fingerprints across two runs, never time or heap equality.
+
+Fixture generation, trial setup, assertions, explicit GC and serialization are outside timing. Decode + restore includes the public decoder and constructor but excludes `JSON.parse`; it is not pure hydration. Local edits do not submit/ack, and receive-only scenarios exclude server submission. JSON byte counts describe the prepared snapshot/server checkpoint, not post-trial output or compression. Heap is the signed post-GC delta for a restored client above its already-parsed input, not peak memory or RSS. Keep raw full-run results outside the checkout and compare two runs before proposing storage or reconciliation changes.
+
+### Vendor and reconciliation maintenance
+
 List/Text payload storage vendors a typed string-key subset of [hamt_plus](https://github.com/mattbierner/hamt_plus) at `b8845c7343fdde3966f875d732248fec597cf538`. Keep the source revision, adaptations and full MIT notice intact through packing. Payloads retain references; `Object.is` preserves signed zero. Transient drafts stay within synchronous, finally-scoped callbacks; IdList defines visible order and tombstones.
 
 For vendor upgrades, review adaptations, run collision/version-isolation regressions and compare benchmarks, including retained heap. Persistent storage avoids whole-Map copies, not every linear scan or worst-case hash collision.
