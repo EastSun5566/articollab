@@ -120,6 +120,25 @@ Each worker uses one warm-up and five samples. Bulk deletion, pending replay, re
 
 Fixture generation, trial setup, assertions, explicit GC and serialization are outside timing. Decode + restore includes the public decoder and constructor but excludes `JSON.parse`; it is not pure hydration. Local edits do not submit/ack, and receive-only scenarios exclude server submission. JSON byte counts describe the prepared snapshot/server checkpoint, not post-trial output or compression. Heap is the signed post-GC delta for a restored client above its already-parsed input, not peak memory or RSS. Keep raw full-run results outside the checkout and compare two runs before proposing storage or reconciliation changes.
 
+### Receive-only Text CPU profiles
+
+Use an existing directory outside the checkout. Each invocation creates a unique child directory without overwriting previous artifacts:
+
+```sh
+pnpm bench --profile-remote-replace <existing-output-directory>
+pnpm bench --profile-remote-replace <existing-output-directory> --smoke --json
+```
+
+This mode cannot be combined with `--extended`. It reuses the fragmented fixtures and remote tail replacement assertions above. For each size (10,000, 50,000 and 100,000), a control worker runs first with no profiler, followed by a separate profiled worker. Both use one warm-up, five fresh-document samples and ten receives per sample. Smoke uses size 32, two samples and two receives. Each worker has the same fixed 120-second timeout; no failure is retried. All workers run sequentially.
+
+The profiler uses a local `node:inspector/promises` session with a 1,000-microsecond sampling interval; it does not open a debugger port. Setup, server submission, commit preparation and explicit GC finish before profiling starts. Only the synchronous receive loop is measured; the profiler stops before assertions, summaries or file output. Session cleanup preserves the first failure. Profiler start/stop overhead may still appear in samples, so profiled wall times are reported separately from controls.
+
+`manifest.json` records environment, SHA/dirty status, settings, fixture fingerprints and artifact paths. Each sample has a raw `.cpuprofile` and `.summary.json`; `control-<size>.json` preserves the unprofiled samples. JSON stdout is only the manifest; human output points to the artifact directory. Failures stop the run and retain completed artifacts (and worker errors when writable), rather than pretending to produce a complete manifest.
+
+Summary times weight samples by their microsecond deltas; these are estimates, not exact CPU time. Exclusive groups separate authoritative apply, visible Text equality, other runtime work, GC and profiler/unattributed work. Within equality, recognizable leaf frames are assigned to ID iteration, key encoding or HAMT lookup; the remainder stays `other`. Function rows report self and inclusive estimates by name, URL and source position. Inclusive costs overlap and must not be added. Inlined functions and unrecognized/native frames cannot always be attributed; inspect the raw call tree before choosing an optimization. Small smoke runs may have too few samples to identify a hotspot, and tests do not require any particular attribution or latency.
+
+Keep artifacts outside Git. For a focused repeat, build first, create a fresh external output directory and use the same private workers: `node --expose-gc scripts/bench.ts --extended-worker text 100000 remote-replace full` for the control, then `node --expose-gc scripts/bench.ts --profile-worker 100000 full <existing-output-directory>` for profiles. Capture control stdout and environment/SHA alongside them. These internal entrypoints have no compatibility guarantee; do not run a second profile worker into the same directory. Full-process `--cpu-prof` is not equivalent: it includes fixture generation and restore.
+
 ### Vendor and reconciliation maintenance
 
 List/Text payload storage vendors a typed string-key subset of [hamt_plus](https://github.com/mattbierner/hamt_plus) at `b8845c7343fdde3966f875d732248fec597cf538`. Keep the source revision, adaptations and full MIT notice intact through packing. Payloads retain references; `Object.is` preserves signed zero. Transient drafts stay within synchronous, finally-scoped callbacks; IdList defines visible order and tombstones.

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -151,6 +154,142 @@ describe("collection benchmark", () => {
     assert.match(output.stdout, /history size is commit capacity/);
     assert.match(output.stdout, /decode \+ constructor, excluding JSON.parse/);
     assert.match(output.stdout, /signed GC estimate/);
+  });
+
+  it("writes isolated receive-only profiles with consistent samples and never overwrites a previous run", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "articollab-profile-test-")));
+    try {
+      const directories: string[] = [];
+      let previousManifest = "";
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const output = await run(["--expose-gc", script, "--profile-remote-replace", directory, "--smoke",
+          ...(attempt === 0 ? ["--json"] : [])]);
+        assert.equal(output.stderr, "");
+        let manifest: Record<string, unknown>;
+        if (attempt === 0) manifest = record(JSON.parse(output.stdout));
+        else {
+          const match = output.stdout.match(/^Receive-only Text profiles: (.+)$/m);
+          assert.ok(match);
+          assert.match(output.stdout, /control and profiled wall times are separate/);
+          manifest = record(JSON.parse(await readFile(join(match[1]!, "manifest.json"), "utf8")));
+        }
+        assert.equal(typeof manifest.directory, "string");
+        assert.ok(typeof manifest.directory === "string" && manifest.directory.startsWith(directory));
+        directories.push(manifest.directory);
+        const saved = await readFile(join(manifest.directory, "manifest.json"), "utf8");
+        assert.deepEqual(JSON.parse(saved), manifest);
+        if (attempt === 0) previousManifest = saved;
+        assert.equal(record(manifest.environment).node, process.version);
+        assert.deepEqual(manifest.config, { sizes: [32], samples: 2, iterations: 2, warmups: 1, seed: 42, samplingIntervalMicros: 1000 });
+        assert.ok(Array.isArray(manifest.results));
+        assert.equal(manifest.results.length, 1);
+        const pair = record(manifest.results[0]), control = record(pair.control), profiled = record(pair.profiled);
+        assert.deepEqual(control.fixture, profiled.fixture);
+        assert.equal(record(control.fixture).snapshotSha256, "7244aba77c8395d87cf78798d8abbc761e661672f3942534baa1c6d1873ef13b");
+        assert.equal(control.snapshotBytes, profiled.snapshotBytes);
+        assert.equal(control.checkpointBytes, profiled.checkpointBytes);
+        assert.equal(profiled.operationsPerSample, 2);
+        assert.ok(Array.isArray(control.samples));
+        assert.equal(control.samples.length, 2);
+        assert.ok(control.samples.every((sample) => typeof sample === "number" && Number.isFinite(sample) && sample >= 0));
+        assert.deepEqual(JSON.parse(await readFile(join(manifest.directory, "control-32.json"), "utf8")), control);
+        assert.ok(Array.isArray(profiled.profiles));
+        assert.equal(profiled.profiles.length, 2);
+        const files = ["manifest.json", "control-32.json"];
+        for (const [index, input] of profiled.profiles.entries()) {
+          const entry = record(input);
+          assert.equal(entry.profile, `text-32-${index + 1}.cpuprofile`);
+          assert.equal(entry.summary, `text-32-${index + 1}.summary.json`);
+          assert.ok(typeof entry.wallMsPerOp === "number" && Number.isFinite(entry.wallMsPerOp) && entry.wallMsPerOp >= 0);
+          const profileFile = entry.profile, summaryFile = entry.summary;
+          files.push(profileFile, summaryFile);
+          const profile = record(JSON.parse(await readFile(join(manifest.directory, profileFile), "utf8")));
+          const summary = record(JSON.parse(await readFile(join(manifest.directory, summaryFile), "utf8")));
+          assert.ok(Array.isArray(profile.nodes) && profile.nodes.length > 0);
+          assert.ok(Array.isArray(profile.samples) && Array.isArray(profile.timeDeltas));
+          assert.equal(profile.samples.length, profile.timeDeltas.length);
+          let total = 0;
+          for (const delta of profile.timeDeltas) {
+            assert.ok(typeof delta === "number" && Number.isFinite(delta) && delta >= 0);
+            total += delta;
+          }
+          assert.equal(summary.totalSampleMicros, total);
+          assert.equal(summary.sampleCount, profile.samples.length);
+          const groups = record(summary.groups), equality = record(summary.equality);
+          const sum = (values: unknown[]) => values.reduce<number>((accumulator, value) => {
+            assert.ok(typeof value === "number" && Number.isFinite(value) && value >= 0);
+            return accumulator + value;
+          }, 0);
+          assert.deepEqual(Object.keys(groups).sort(), ["authoritativeApply", "visibleEquality", "otherRuntime", "gc", "profilerOrUnattributed"].sort());
+          assert.equal(sum(Object.values(groups)), total);
+          assert.equal(sum(Object.values(equality)), groups.visibleEquality);
+          for (const [key, value] of Object.entries(groups)) {
+            assert.equal(record(summary.groupPercent)[key], total === 0 ? 0 : Number(value) / total * 100);
+          }
+          assert.ok(Array.isArray(summary.functions));
+          let self = 0;
+          for (const row of summary.functions) {
+            const fn = record(row);
+            assert.ok(typeof fn.selfMicros === "number" && typeof fn.inclusiveMicros === "number" && fn.inclusiveMicros >= fn.selfMicros);
+            self += fn.selfMicros;
+          }
+          assert.equal(self, total);
+          // Setup, materialization and assertions must not appear as sampled leaf work.
+          const frames = new Map(profile.nodes.map((node: unknown) => {
+            const row = record(node); return [row.id, record(row.callFrame)];
+          }));
+          for (const id of profile.samples) assert.ok(!["fragmentedFixture", "prepareFragmentedEdit", "verify", "collect"].includes(String(frames.get(id)?.functionName)));
+        }
+        assert.deepEqual((await readdir(manifest.directory)).sort(), files.sort());
+      }
+      assert.notEqual(directories[0], directories[1]);
+      assert.equal(await readFile(join(directories[0]!, "manifest.json"), "utf8"), previousManifest);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it("disconnects on profiling failure and preserves that error over a cleanup error", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "articollab-profile-failure-"));
+    try {
+      const log = join(directory, "lifecycle.json");
+      for (const failAt of ["Profiler.start", "Profiler.stop"]) {
+        const preload = `import { Session } from 'node:inspector/promises';
+          import { writeFileSync } from 'node:fs';
+          const originalPost = Session.prototype.post, originalDisconnect = Session.prototype.disconnect, events = [];
+          Session.prototype.post = function(method, params) {
+            events.push(method);
+            if (method === ${JSON.stringify(failAt)}) throw new Error('profile-primary-failure');
+            return originalPost.call(this, method, params);
+          };
+          Session.prototype.disconnect = function() {
+            events.push('disconnect'); originalDisconnect.call(this); throw new Error('cleanup-secondary-failure');
+          };
+          process.on('exit', () => writeFileSync(${JSON.stringify(log)}, JSON.stringify(events)));`;
+        await assert.rejects(run(["--expose-gc", "--import", `data:text/javascript,${encodeURIComponent(preload)}`,
+          script, "--profile-worker", "32", "smoke", directory]), (error: unknown) => {
+          assert.ok(error instanceof Error && "stderr" in error && typeof error.stderr === "string");
+          assert.match(error.stderr, /^Error: profile-primary-failure$/m);
+          assert.doesNotMatch(error.stderr, /^Error: cleanup-secondary-failure$/m);
+          return true;
+        });
+        assert.deepEqual(JSON.parse(await readFile(log, "utf8")), ["Profiler.enable", "Profiler.setSamplingInterval", "Profiler.start",
+          ...(failAt === "Profiler.stop" ? ["Profiler.stop", "Profiler.stop"] : []), "disconnect"]);
+        assert.deepEqual(await readdir(directory), ["lifecycle.json"]);
+      }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it("validates profile output and mode before creating artifacts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "articollab-profile-invalid-"));
+    try {
+      for (const args of [["--profile-remote-replace"], ["--profile-remote-replace", ""],
+        ["--profile-remote-replace", directory, "--extended"], ["--profile-remote-replace", directory, "extra"],
+        ["--profile-remote-replace", join(directory, "missing")], ["--profile-remote-replace", script],
+        ["--profile-remote-replace", root], ["--profile-worker", "32", "full", directory],
+        ["--profile-worker", "33", "smoke", directory], ["--profile-worker", "32", "smoke", root]]) {
+        await assert.rejects(run([script, ...args]));
+        assert.deepEqual(await readdir(directory), []);
+      }
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
   it("rejects invalid flags before starting a workload", async () => {

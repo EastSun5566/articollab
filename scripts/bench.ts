@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import type { Profiler } from "node:inspector";
+import { Session } from "node:inspector/promises";
 import { arch, cpus, platform, release } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs, promisify } from "node:util";
 
@@ -367,6 +369,18 @@ function fragmentedTrial(api: Api, fragment: ReturnType<typeof fragmentedFixture
     assert.deepEqual(doc.checkpoint(), input);
     return scenario === "retained-heap" ? retained : elapsed;
   }
+  const trial = prepareFragmentedEdit(api, fragment, scenario, iterations);
+  collect();
+  const start = performance.now();
+  trial.run();
+  const elapsed = (performance.now() - start) / trial.rounds;
+  trial.verify();
+  return elapsed;
+}
+
+function prepareFragmentedEdit(api: Api, fragment: ReturnType<typeof fragmentedFixture>,
+  scenario: ExtendedScenario, iterations: number) {
+  const schema = board(api);
   // Raw snapshots load afresh for each trial, outside receive/local-edit timing.
   const snapshot = api.decodeSnapshot(schema, JSON.parse(fragment.snapshotJson));
   const batches: Batch[] = [];
@@ -397,40 +411,39 @@ function fragmentedTrial(api: Api, fragment: ReturnType<typeof fragmentedFixture
     }
   }
   const before = doc.checkpoint();
-  collect();
-  const start = performance.now();
-  for (let index = 0; index < rounds; index++) {
-    if (scenario === "local-insert") doc.state.body.insert(midpoint, "😀");
-    else if (scenario === "local-delete") doc.state.body.delete(midpoint);
-    else if (scenario === "bulk-delete") doc.state.body.delete(0, Math.floor(points.length / 2));
-    else doc.receive(commits[index]!);
-  }
-  const elapsed = (performance.now() - start) / rounds;
-  if (scenario === "local-insert") points.splice(midpoint, 0, ...Array<string>(rounds).fill("😀"));
-  else if (scenario === "local-delete") points.splice(midpoint, rounds);
-  else if (scenario === "bulk-delete") points.splice(0, Math.floor(points.length / 2));
-  else if (scenario === "remote-replace") points[points.length - 1] = rounds % 2 === 0 ? "S" : "R";
-  else if (scenario === "pending-replay") { points.unshift("R"); points.push(...Array<string>(20).fill("P")); }
-  assert.equal(doc.state.body.toString(), points.join(""));
-  assert.equal(doc.state.body.length, points.length);
-  assert.equal(doc.replayConflict, null);
-  const checkpoint = doc.checkpoint(), local = scenario.startsWith("local-") || scenario === "bulk-delete";
-  assert.equal(checkpoint.snapshot.serverSeq, fragment.watermark + (local ? 0 : rounds));
-  assert.equal(checkpoint.snapshot.data.body.value, local ? fragment.value :
-    scenario === "pending-replay" ? "R" + fragment.value : points.join(""));
-  assert.equal(checkpoint.pendingBatches.length, scenario === "pending-replay" ? 20 : local ? rounds : 0);
-  assert.equal(localChanges, scenario === "pending-replay" ? 20 : local ? rounds : 0);
-  assert.equal(serverChanges, scenario === "remote-replace" || scenario === "pending-replay" ? rounds : 0);
-  if (!local) {
-    assert.deepEqual(checkpoint.pendingBatches, before.pendingBatches);
-    assert.deepEqual(checkpoint.lastBunchSeqs, before.lastBunchSeqs);
-    assert.equal(checkpoint.lastLocalSeq, before.lastLocalSeq);
-  } else {
-    assert.deepEqual(checkpoint.pendingBatches, batches);
-    assert.equal(checkpoint.lastLocalSeq, rounds);
-    assert.equal(checkpoint.snapshot.data.body.value, fragment.value);
-  }
-  return elapsed;
+  return { rounds, run() {
+    for (let index = 0; index < rounds; index++) {
+      if (scenario === "local-insert") doc.state.body.insert(midpoint, "😀");
+      else if (scenario === "local-delete") doc.state.body.delete(midpoint);
+      else if (scenario === "bulk-delete") doc.state.body.delete(0, Math.floor(points.length / 2));
+      else doc.receive(commits[index]!);
+    }
+  }, verify() {
+    if (scenario === "local-insert") points.splice(midpoint, 0, ...Array<string>(rounds).fill("😀"));
+    else if (scenario === "local-delete") points.splice(midpoint, rounds);
+    else if (scenario === "bulk-delete") points.splice(0, Math.floor(points.length / 2));
+    else if (scenario === "remote-replace") points[points.length - 1] = rounds % 2 === 0 ? "S" : "R";
+    else if (scenario === "pending-replay") { points.unshift("R"); points.push(...Array<string>(20).fill("P")); }
+    assert.equal(doc.state.body.toString(), points.join(""));
+    assert.equal(doc.state.body.length, points.length);
+    assert.equal(doc.replayConflict, null);
+    const checkpoint = doc.checkpoint(), local = scenario.startsWith("local-") || scenario === "bulk-delete";
+    assert.equal(checkpoint.snapshot.serverSeq, fragment.watermark + (local ? 0 : rounds));
+    assert.equal(checkpoint.snapshot.data.body.value, local ? fragment.value :
+      scenario === "pending-replay" ? "R" + fragment.value : points.join(""));
+    assert.equal(checkpoint.pendingBatches.length, scenario === "pending-replay" ? 20 : local ? rounds : 0);
+    assert.equal(localChanges, scenario === "pending-replay" ? 20 : local ? rounds : 0);
+    assert.equal(serverChanges, scenario === "remote-replace" || scenario === "pending-replay" ? rounds : 0);
+    if (!local) {
+      assert.deepEqual(checkpoint.pendingBatches, before.pendingBatches);
+      assert.deepEqual(checkpoint.lastBunchSeqs, before.lastBunchSeqs);
+      assert.equal(checkpoint.lastLocalSeq, before.lastLocalSeq);
+    } else {
+      assert.deepEqual(checkpoint.pendingBatches, batches);
+      assert.equal(checkpoint.lastLocalSeq, rounds);
+      assert.equal(checkpoint.snapshot.data.body.value, fragment.value);
+    }
+  } };
 }
 
 function historyFixture(api: Api, limit: number) {
@@ -464,6 +477,155 @@ function historyTrial(api: Api, checkpointJson: string, limit: number, iteration
   assert.ok(suffix !== null);
   assert.deepEqual(suffix.map((commit) => commit.serverSeq), Array.from({ length: limit }, (_, index) => iterations + index + 1));
   return elapsed;
+}
+
+function summarizeProfile(profile: Profiler.Profile) {
+  const nodes = new Map(profile.nodes.map((node) => [node.id, node]));
+  const parents = new Map<number, number>();
+  for (const node of profile.nodes) for (const child of node.children ?? []) parents.set(child, node.id);
+  const groups = { authoritativeApply: 0, visibleEquality: 0, otherRuntime: 0, gc: 0, profilerOrUnattributed: 0 };
+  const equality = { idIteration: 0, keyEncoding: 0, hamtLookup: 0, other: 0 };
+  const functions = new Map<string, { functionName: string; url: string; lineNumber: number;
+    columnNumber: number; selfMicros: number; inclusiveMicros: number }>();
+  const samples = profile.samples ?? [], deltas = profile.timeDeltas ?? [];
+  assert.equal(samples.length, deltas.length, "CPU profile samples and deltas must align");
+  let totalSampleMicros = 0;
+  for (const [index, sample] of samples.entries()) {
+    const weight = deltas[index]!;
+    assert.ok(Number.isFinite(weight) && weight >= 0);
+    const stack: Profiler.ProfileNode[] = [];
+    for (let id: number | undefined = sample; id !== undefined; id = parents.get(id)) {
+      const node = nodes.get(id);
+      assert.ok(node !== undefined);
+      stack.push(node);
+    }
+    const top = stack[0]!.callFrame;
+    totalSampleMicros += weight;
+    const seen = new Set<string>();
+    for (const [depth, node] of stack.entries()) {
+      const { functionName, url, lineNumber, columnNumber } = node.callFrame;
+      const key = JSON.stringify([functionName, url, lineNumber, columnNumber]);
+      const row = functions.get(key) ?? { functionName, url, lineNumber, columnNumber, selfMicros: 0, inclusiveMicros: 0 };
+      if (depth === 0) row.selfMicros += weight;
+      // A recursive function is inclusive once per sample, not once per frame.
+      if (!seen.has(key)) row.inclusiveMicros += weight;
+      seen.add(key);
+      functions.set(key, row);
+    }
+    const has = (name: string, suffix: string) => stack.some(({ callFrame }) =>
+      callFrame.functionName === name && callFrame.url.endsWith(suffix));
+    if (top.functionName === "(garbage collector)") groups.gc += weight;
+    else if (has("visibleEquals", "/dist/text.js")) {
+      groups.visibleEquality += weight;
+      if (top.url.endsWith("/dist/vendor/hamt.js")) equality.hamtLookup += weight;
+      else if (top.functionName === "idKey" && top.url.endsWith("/dist/text.js") ||
+        has("idKey", "/dist/text.js") && top.functionName === "stringify") equality.keyEncoding += weight;
+      else if (top.url.includes("/articulated/")) equality.idIteration += weight;
+      else equality.other += weight;
+    } else if (has("applyOperations", "/dist/state.js")) groups.authoritativeApply += weight;
+    else if (top.url.includes("/dist/") || top.url.includes("/articulated/")) groups.otherRuntime += weight;
+    else groups.profilerOrUnattributed += weight;
+  }
+  assert.equal(Object.values(groups).reduce((sum, value) => sum + value, 0), totalSampleMicros);
+  assert.equal(Object.values(equality).reduce((sum, value) => sum + value, 0), groups.visibleEquality);
+  const percent = (value: number, total: number) => total === 0 ? 0 : value / total * 100;
+  return { sampleCount: samples.length, totalSampleMicros, durationMicros: profile.endTime - profile.startTime,
+    groups, equality,
+    groupPercent: Object.fromEntries(Object.entries(groups).map(([key, value]) => [key, percent(value, totalSampleMicros)])),
+    equalityPercentOfEquality: Object.fromEntries(Object.entries(equality).map(([key, value]) => [key, percent(value, groups.visibleEquality)])),
+    functions: [...functions.values()].toSorted((left, right) => right.selfMicros - left.selfMicros).map((row) =>
+      ({ ...row, selfPercent: percent(row.selfMicros, totalSampleMicros), inclusivePercent: percent(row.inclusiveMicros, totalSampleMicros) })),
+    note: "Microsecond-weighted samples are estimates, not exact CPU time. Groups are exclusive; equality details partition visibleEquality. Inclusive function times overlap and must not be summed. Inlining/unrecognized frames remain unattributed." };
+}
+
+async function profileDirectory(directory: string): Promise<string> {
+  const target = await realpath(directory), checkout = await realpath(root);
+  assert.ok((await stat(target)).isDirectory(), "Profile output must be an existing directory");
+  const location = relative(checkout, target);
+  assert.ok(location === ".." || location.startsWith(".." + sep) || isAbsolute(location),
+    "Profile output must be outside the checkout");
+  return target;
+}
+
+async function profiledWorker(size: number, smoke: boolean, directory: string) {
+  const loaded: unknown = await import(import.meta.resolve("articollab"));
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Built self-package matches the source API, as for the existing benchmark workers.
+  const api = loaded as Api;
+  const config = extendedSettings(smoke), fragment = fragmentedFixture(api, size);
+  for (let index = 0; index < config.warmups; index++) fragmentedTrial(api, fragment, "remote-replace", config.iterations);
+  const profiles: { profile: string; summary: string; wallMsPerOp: number }[] = [];
+  for (let index = 0; index < config.samples; index++) {
+    const trial = prepareFragmentedEdit(api, fragment, "remote-replace", config.iterations);
+    const session = new Session();
+    let active = false, disconnectFailed = false, disconnectError: unknown;
+    let captured: Profiler.Profile, elapsed: number;
+    try {
+      session.connect();
+      await session.post("Profiler.enable");
+      await session.post("Profiler.setSamplingInterval", { interval: 1000 });
+      collect();
+      await session.post("Profiler.start");
+      active = true;
+      const start = performance.now();
+      trial.run();
+      elapsed = (performance.now() - start) / trial.rounds;
+      captured = (await session.post("Profiler.stop")).profile;
+      active = false;
+    } catch (error) {
+      if (active) { try { await session.post("Profiler.stop"); } catch { /* Preserve the first failure. */ } }
+      throw error;
+    } finally {
+      try { session.disconnect(); } catch (error) { disconnectFailed = true; disconnectError = error; }
+    }
+    if (disconnectFailed) throw disconnectError;
+    // No assertions, summary work or file writes while the profiler is running.
+    trial.verify();
+    const profile = `text-${size}-${index + 1}.cpuprofile`, summary = `text-${size}-${index + 1}.summary.json`;
+    await writeFile(join(directory, profile), JSON.stringify(captured), { flag: "wx" });
+    await writeFile(join(directory, summary), JSON.stringify(summarizeProfile(captured), null, 2), { flag: "wx" });
+    profiles.push({ profile, summary, wallMsPerOp: elapsed });
+  }
+  return { kind: "text", size, scenario: "remote-replace", fixture: fragment.stats,
+    snapshotBytes: fragment.snapshotBytes, checkpointBytes: fragment.checkpointBytes,
+    operationsPerSample: config.iterations, profiles };
+}
+
+async function profileRemoteReplace(parent: string, smoke: boolean, json: boolean) {
+  const directory = await mkdtemp(join(await profileDirectory(parent), "articollab-text-profile-"));
+  const environment = await metadata(), config = extendedSettings(smoke);
+  const results: { control: ExtendedResult; profiled: Awaited<ReturnType<typeof profiledWorker>> }[] = [];
+  const runWorker = async (args: string[]) => {
+    try {
+      const output = await execute(process.execPath, ["--expose-gc", filename, ...args],
+        { cwd: root, timeout: 120_000, maxBuffer: 1024 * 1024 });
+      assert.equal(output.stderr, "");
+      return output.stdout;
+    } catch (cause) {
+      const stderr = cause instanceof Error && "stderr" in cause && typeof cause.stderr === "string" ? cause.stderr : "";
+      try {
+        await writeFile(join(directory, "failure.txt"), `${args.join(" ")}\n${String(cause)}\n${stderr}`, { flag: "wx" });
+      } catch { /* Artifact cleanup/output must not replace the worker failure. */ }
+      throw new Error(`Profile worker failed; artifacts retained in ${directory}\n${stderr}`, { cause });
+    }
+  };
+  for (const size of config.sizes) {
+    const mode = smoke ? "smoke" : "full";
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The existing private worker constructs ExtendedResult; smoke tests validate the manifest.
+    const control = JSON.parse(await runWorker(["--extended-worker", "text", String(size), "remote-replace", mode])) as ExtendedResult;
+    await writeFile(join(directory, `control-${size}.json`), JSON.stringify(control, null, 2), { flag: "wx" });
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The private profile worker constructs this return type; smoke tests inspect every artifact.
+    const profiled = JSON.parse(await runWorker(["--profile-worker", String(size), mode, directory])) as Awaited<ReturnType<typeof profiledWorker>>;
+    assert.deepEqual(profiled.fixture, control.fixture);
+    assert.equal(profiled.snapshotBytes, control.snapshotBytes);
+    assert.equal(profiled.checkpointBytes, control.checkpointBytes);
+    results.push({ control, profiled });
+  }
+  const manifest = { directory, environment, config: { sizes: config.sizes, samples: config.samples,
+    iterations: config.iterations, warmups: config.warmups, seed: 42, samplingIntervalMicros: 1000 }, results,
+    note: "Only synchronous receive loops are profiled; setup, explicit GC, assertions and output are excluded. Profiler start/stop overhead and unrecognized frames may still be sampled. Profiled wall times are not control timings or an SLA." };
+  await writeFile(join(directory, "manifest.json"), JSON.stringify(manifest, null, 2), { flag: "wx" });
+  if (json) console.log(JSON.stringify(manifest, null, 2));
+  else console.log(`Receive-only Text profiles: ${directory}\n${results.length} sizes; control and profiled wall times are separate. See manifest.json and *.summary.json. Sampling estimates are not an SLA.`);
 }
 
 async function extendedWorker(kind: "text" | "history", size: number,
@@ -539,6 +701,14 @@ async function metadata() {
 }
 
 async function main(args: string[]): Promise<void> {
+  if (args[0] === "--profile-worker") {
+    const size = Number(args[1]), smoke = args[2] === "smoke";
+    assert.ok(args.length === 4 && (smoke || args[2] === "full") &&
+      extendedSettings(smoke).sizes.includes(size), "Invalid profile worker arguments");
+    const directory = await profileDirectory(args[3]!);
+    console.log(JSON.stringify(await profiledWorker(size, smoke, directory)));
+    return;
+  }
   if (args[0] === "--extended-worker") {
     const kind = args[1], size = Number(args[2]);
     const scenario = [...extendedScenarios, "history-receive" as const].find((candidate) => candidate === args[3]);
@@ -562,7 +732,13 @@ async function main(args: string[]): Promise<void> {
     return;
   }
   const { values } = parseArgs({ args, options: { json: { type: "boolean" }, smoke: { type: "boolean" },
-    extended: { type: "boolean" } } });
+    extended: { type: "boolean" }, "profile-remote-replace": { type: "string" } } });
+  if (values["profile-remote-replace"] !== undefined) {
+    assert.ok(!values.extended, "Profiling and --extended are separate modes");
+    assert.ok(values["profile-remote-replace"].length > 0, "Profile output directory must not be empty");
+    await profileRemoteReplace(values["profile-remote-replace"], values.smoke === true, values.json === true);
+    return;
+  }
   const config = values.extended ? extendedSettings(values.smoke === true) : settings(values.smoke === true);
   const environment = await metadata();
   const results: (Result | ExtendedResult)[] = [];
