@@ -129,9 +129,15 @@ The repository's browser recovery demo uses document-ID envelopes/headers and se
 
 ## Upgrading from 0.2 to 0.3
 
-`0.3.0-beta.0` is published on the `beta` dist-tag and adds List `set()` and its `list/set` wire operation. Install it with `pnpm add articollab@beta`; `pnpm add articollab` still selects the stable release. Coordinate the server and all participating clients before using the new operation. A 0.2 runtime cannot decode or apply it, including when it appears in pending batches, retry results or history.
+`0.3.0-beta.0` is published on the `beta` dist-tag and adds List `set()` and its `list/set` wire operation. Install it with `pnpm add articollab@beta`; `pnpm add articollab` still selects the stable release.
 
-Snapshot and checkpoint envelopes have not changed. The 0.3 runtime accepts existing legal 0.2 checkpoints for the same schema and document lineage; no conversion is needed. This does not make a checkpoint containing 0.3 operations readable by a 0.2 runtime. Preserve backups and do not mix old writers with a document that has begun using `list/set`.
+Roll out support before allowing the new operation:
+
+1. Preserve matching client/server checkpoint backups and stop the old writers.
+2. Upgrade the server and every participating client, including writers that will later restore from a checkpoint. Restore their original identities against the same document lineage; do not open replacement sessions.
+3. Allow List `set()` only after those runtimes support `list/set`.
+
+Snapshot and checkpoint envelopes have not changed. The 0.3 runtime accepts existing legal 0.2 checkpoints for the same schema and document lineage; no conversion is needed. A 0.2 runtime cannot decode or apply `list/set` in a batch, commit, pending work, retry result or history. Once the document contains this operation, rolling back is not just a package downgrade: do not strip saved operations, clear checkpoints or attach old writers to a fresh server to bypass the incompatibility.
 
 Set updates target the original stable ID even if its index changes. A target deleted by a peer makes the update a no-op, not a replay conflict or resurrection; unrelated operations in that batch can still apply. An unknown ID, such as one from a rejected insertion, still blocks pending replay and requires normal recovery. See [List update semantics](collections.md#update-an-existing-element).
 
