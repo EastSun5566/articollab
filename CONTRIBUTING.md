@@ -185,6 +185,22 @@ pnpm release --release-as <target-version> --dry-run
 
 Review the expected version, changelog and tag. Dry-run must not modify tracked files, HEAD or tags.
 
+### Review a beta-to-stable promotion
+
+Compare the candidate with the previous stable release, not just the latest beta:
+
+- Review API and wire changes, including operations retained in pending batches, retry results and history. Check upgrade instructions against the existing collection and recovery tests. Read the full commit range too: the default changelog can omit performance, test and documentation commits.
+- Confirm what remains compatible for the same schema/document lineage and where rollback requires application planning. Keep transport, storage, authentication and writer coordination as application responsibilities.
+- Verify the installed package's runtime/declarations and inspect its manifest, production file allowlist and complete vendor notices. Performance measurements are evidence for specific workloads, not compatibility or latency guarantees.
+
+For a stable target, dry-run the inspected tarball with an explicit channel override:
+
+```sh
+npm publish <tarball> --dry-run --ignore-scripts --tag latest --access public --registry=https://registry.npmjs.org/
+```
+
+Replace `<tarball>` with its actual path. This validates packaging, not OIDC authentication, and uploads nothing. A tarball packed before the real release still has the checkout's beta version; rebuild, repack and verify the final version after the signed release. Do not call the stable version published or change beta-only installation notes until registry publication is confirmed. Actual publication remains the tag workflow below.
+
 ### Create the signed release
 
 After approval, use that same version:
