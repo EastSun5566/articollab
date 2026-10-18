@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { IdList } from "articulated";
 import { TextState } from "../src/text.ts";
 
 import {
@@ -15,6 +16,7 @@ import {
   type DocumentSnapshot,
   type TextDeleteOperation,
   type TextInsertOperation,
+  type TextOperation,
 } from "../src/index.ts";
 
 const Note = defineDocument({
@@ -36,6 +38,53 @@ function setup(clientId = "client-1") {
 }
 
 describe("text runtime", () => {
+  it("compares final Unicode targets across bunches, overlaps and cancelled insertions", () => {
+    const seed: TextInsertOperation = { type: "text/insert", path: "body", before: null,
+      id: { bunchId: "base", counter: 0 }, value: "A😀BC" };
+    const base = TextState.empty().insert(seed);
+    assert.ok(base.visibleEqualsAt(TextState.load(base.save()), [seed]));
+    assert.equal(base.visibleEqualsAt(TextState.load({ ...base.save(), value: "A🦊BC" }), [seed]), false);
+    const insert: TextInsertOperation = { type: "text/insert", path: "body",
+      before: { bunchId: "base", counter: 1 }, id: { bunchId: "temporary", counter: 0 }, value: "🦊Q" };
+    const cancel: TextDeleteOperation = { type: "text/delete", path: "body", ranges: [
+      { start: insert.id, count: 1 }, { start: insert.id, count: 2 },
+    ] };
+    const cancelled = base.insert(insert).delete(cancel);
+    assert.ok(base.visibleEqualsAt(cancelled, [insert, cancel]));
+    assert.ok(base.visibleEquals(cancelled));
+    const restored = TextState.load(cancelled.save());
+    assert.ok(cancelled.visibleEqualsAt(restored, [cancel]));
+    assert.ok(cancelled.visibleEqualsAt(cancelled, []));
+
+    const deletion: TextDeleteOperation = { type: "text/delete", path: "body", ranges: [
+      { start: { bunchId: "base", counter: 1 }, count: 2 }, ...cancel.ranges,
+    ] };
+    const replacement: TextInsertOperation = { ...insert, id: { bunchId: "replacement", counter: 0 },
+      before: { bunchId: "base", counter: 0 }, value: "😀B" };
+    const replaced = cancelled.delete(deletion).insert(replacement);
+    assert.equal(replaced.toString(), cancelled.toString());
+    assert.equal(cancelled.visibleEqualsAt(replaced, [deletion, replacement]), false);
+    assert.equal(cancelled.visibleEquals(replaced), false);
+    assert.equal(base.visibleEqualsAt(base.insert(insert), [insert]), false);
+    assert.equal(base.toString(), "A😀BC");
+  });
+
+  it("stops targeted Text comparison at the first differing ID", (t) => {
+    const base = TextState.empty().insert({ type: "text/insert", path: "body", before: null,
+      id: { bunchId: "base", counter: 0 }, value: "A😀B" });
+    const deletion: TextDeleteOperation = { type: "text/delete", path: "body",
+      ranges: [{ start: { bunchId: "base", counter: 2 }, count: 1 }] };
+    const insertion: TextInsertOperation = { type: "text/insert", path: "body",
+      before: { bunchId: "base", counter: 1 }, id: { bunchId: "next", counter: 0 }, value: "B" };
+    const operations: readonly TextOperation[] = [deletion, insertion];
+    const next = base.delete(deletion).insert(insertion);
+    const has = t.mock.method(IdList.prototype, "has");
+    assert.equal(base.visibleEqualsAt(next, operations), false);
+    assert.equal(has.mock.calls.length, 2);
+    has.mock.restore();
+    assert.equal(base.toString(), next.toString());
+  });
+
   it("rejects rounded range overflow atomically in typed receive and policy output", () => {
     for (const mode of ["typed", "policy"] as const) {
       let overflow = true;

@@ -313,7 +313,8 @@ function runtimeVisibleEquals(
   state: CollectionState,
   path: string,
   skipComparison: boolean,
-  listComparisonIds?: readonly Readonly<ElementId>[]
+  listComparisonIds?: readonly Readonly<ElementId>[],
+  textComparisonOperations?: readonly TextOperation[]
 ): boolean {
   if (runtime instanceof RuntimeList) {
     if (!(state instanceof ListState)) throw wrongCollectionKind(path);
@@ -322,7 +323,8 @@ function runtimeVisibleEquals(
   }
   if (runtime instanceof RuntimeText) {
     if (!(state instanceof TextState)) throw wrongCollectionKind(path);
-    return skipComparison || runtime.visibleEquals(state);
+    return skipComparison || (textComparisonOperations === undefined ? runtime.visibleEquals(state) :
+      runtime.state.visibleEqualsAt(state, textComparisonOperations));
   }
   if (state instanceof ListState || state instanceof TextState) {
     throw wrongCollectionKind(path);
@@ -661,18 +663,25 @@ export class ClientDocument<S extends SchemaShape> {
     // Both replays must be conflict-free; otherwise compare the entire visible prefix.
     const compareOwnListValues = isOwnCommit && previous === null && conflict === null &&
       sameOperations(commit.operations, this.pendingBatches[0]!.operations, true);
-    // shortcut: without pending, compare final visibility/values at List insert/delete/set targets.
-    const compareRemoteListIds = !isOwnCommit && remainingBatches.length === 0 &&
+    // shortcut: without pending, only operation targets can change; revisit if collections gain moves.
+    const compareRemoteTargets = !isOwnCommit && remainingBatches.length === 0 &&
       previous === null && conflict === null;
-    const listComparisonIds = compareOwnListValues || compareRemoteListIds
+    const listComparisonIds = compareOwnListValues || compareRemoteTargets
       ? new Map<string, Readonly<ElementId>[]>() : undefined;
+    const textComparisonOperations = compareRemoteTargets
+      ? new Map<string, TextOperation[]>() : undefined;
     if (listComparisonIds !== undefined) {
       for (const operation of commit.operations) {
         if (operation.type === "list/insert" || operation.type === "list/set" ||
-          (compareRemoteListIds && operation.type === "list/delete")) {
+          (compareRemoteTargets && operation.type === "list/delete")) {
           const ids = listComparisonIds.get(operation.path) ?? [];
           ids.push(operation.id);
           listComparisonIds.set(operation.path, ids);
+        } else if (textComparisonOperations !== undefined &&
+          (operation.type === "text/insert" || operation.type === "text/delete")) {
+          const operations = textComparisonOperations.get(operation.path) ?? [];
+          operations.push(operation);
+          textComparisonOperations.set(operation.path, operations);
         }
       }
     }
@@ -683,7 +692,8 @@ export class ClientDocument<S extends SchemaShape> {
         throw new Error(`Missing document path: ${path}`);
       }
       const ids = listComparisonIds === undefined ? undefined : listComparisonIds.get(path) ?? [];
-      if (!runtimeVisibleEquals(runtime, nextState, path, changed, ids)) changed = true;
+      const textOperations = textComparisonOperations === undefined ? undefined : textComparisonOperations.get(path) ?? [];
+      if (!runtimeVisibleEquals(runtime, nextState, path, changed, ids, textOperations)) changed = true;
     }
 
     this.authoritativeStates = nextAuthoritativeStates;

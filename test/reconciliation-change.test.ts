@@ -207,6 +207,39 @@ describe("full visible change comparison", () => {
     assert.deepEqual(peer.doc.checkpoint().snapshot, network.server.snapshot());
   });
 
+  it("matches full Text comparison for Unicode replacement, cancellation, deleted anchors and concurrent deletes", () => {
+    const network = setup();
+    const [writer, peer] = network.clients;
+    assert.ok(writer !== undefined && peer !== undefined);
+    const deliver = (target = writer, decision: Mode = "accept") => {
+      const commit = network.submit(target, decision)!;
+      for (const recipient of network.clients) network.receive(recipient, commit);
+    };
+    writer.doc.state.body.insert(0, "A😀B"); deliver();
+    peer.restore();
+    const before = peer.changes;
+    writer.doc.transact(() => { writer.doc.state.body.delete(1); writer.doc.state.body.insert(1, "😀"); });
+    deliver();
+    assert.equal(peer.doc.state.body.toString(), "A😀B");
+    assert.equal(peer.changes, before + 1);
+    writer.doc.transact(() => { writer.doc.state.body.insert(0, "q😀"); writer.doc.state.body.delete(0, 2); });
+    deliver();
+    assert.equal(peer.changes, before + 1);
+    writer.doc.transact(() => { writer.doc.state.body.delete(2); writer.doc.state.body.insert(2, "z"); });
+    deliver(writer, "transform");
+    writer.doc.state.body.delete(1); peer.doc.state.body.delete(1);
+    deliver();
+    const deleted = writer.changes + peer.changes;
+    deliver(peer);
+    assert.equal(writer.changes + peer.changes, deleted);
+    writer.doc.transact(() => {
+      writer.doc.state.body.insert(0, "q😀"); writer.doc.state.body.insert(2, "🦊"); writer.doc.state.body.delete(0, 2);
+    });
+    deliver();
+    assert.equal(peer.doc.state.body.toString(), "🦊AZ");
+    assert.deepEqual(peer.doc.checkpoint().snapshot, network.server.snapshot());
+  });
+
   it("distinguishes cancellation, object identity, signed zero and dependent rejection", () => {
     const network = setup();
     const [writer, peer] = network.clients;
@@ -271,22 +304,38 @@ describe("full visible change comparison", () => {
         if (action <= 4 && target.doc.replayConflict === null) {
           const size = target.doc.state.items.length;
           const index = choose(Math.max(size, 1));
-          if (action === 0 || size === 0) target.doc.state.items.insert(choose(size + 1), { label: String(step) });
-          else if (action === 1) {
-            if (step % 2 === 0) target.doc.state.items.set(index, { label: String(step) });
-            else target.doc.transact(() => {
-              target.doc.state.items.delete(index); target.doc.state.items.insert(index, { label: String(step) });
-            });
-          }
-          else if (action === 2) target.doc.state.items.delete(index);
-          else if (action === 3) target.doc.transact(() => {
-            target.doc.state.items.push({ label: "cancel" }); target.doc.state.items.delete(size);
-          });
-          else target.doc.transact(() => {
-            target.doc.state.count.value = step;
-            target.doc.state.items.set(index, { label: "updated:" + step });
-            target.doc.state.items.push({ label: String(step) });
-            target.doc.state.body.insert(target.doc.state.body.length, "a😀");
+          target.doc.transact(() => {
+            if (action === 0 || size === 0) target.doc.state.items.insert(choose(size + 1), { label: String(step) });
+            else if (action === 1) {
+              if (step % 2 === 0) target.doc.state.items.set(index, { label: String(step) });
+              else {
+                target.doc.state.items.delete(index); target.doc.state.items.insert(index, { label: String(step) });
+              }
+            }
+            else if (action === 2) target.doc.state.items.delete(index);
+            else if (action === 3) {
+              target.doc.state.items.push({ label: "cancel" }); target.doc.state.items.delete(size);
+            }
+            else {
+              target.doc.state.count.value = step;
+              target.doc.state.items.set(index, { label: "updated:" + step });
+              target.doc.state.items.push({ label: String(step) });
+              target.doc.state.body.insert(target.doc.state.body.length, "a😀");
+            }
+            const length = target.doc.state.body.length, position = choose(Math.max(length, 1));
+            if (action === 0 || length === 0) {
+              target.doc.state.body.insert(choose(length + 1), "a😀"); network.coverage.add("text-insert");
+            } else if (action === 1) {
+              const previous = [...target.doc.state.body][position]!;
+              target.doc.state.body.delete(position);
+              target.doc.state.body.insert(position, step % 2 === 0 ? previous : "🦊");
+              network.coverage.add("text-replace");
+            } else if (action === 2) {
+              target.doc.state.body.delete(position, Math.min(3, length - position)); network.coverage.add("text-delete");
+            } else if (action === 3) {
+              target.doc.state.body.insert(position, "q😀"); target.doc.state.body.delete(position, 2);
+              network.coverage.add("text-cancel");
+            }
           });
         } else if (action === 5 || action === 8) {
           const decision = (["accept", "reject", "transform", "explicit-reject"] as const)[submissions++ % 4]!;
@@ -310,7 +359,8 @@ describe("full visible change comparison", () => {
         assert.deepEqual(target.doc.checkpoint().snapshot, network.server.snapshot());
       }
       for (const action of ["accept", "reject", "transform", "explicit-reject", "restore",
-        "own", "remote", "decoded", "in-memory", "changed", "silent"]) {
+        "own", "remote", "decoded", "in-memory", "changed", "silent",
+        "text-insert", "text-delete", "text-replace", "text-cancel"]) {
         assert.ok(network.coverage.has(action), `seed did not cover ${action}`);
       }
     } catch (cause) {
