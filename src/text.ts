@@ -215,6 +215,33 @@ export class TextState {
     return [...this.values()].join("");
   }
 
+  /** Only valid for fully applied operations with no optimistic pending work. */
+  visibleEqualsAt(other: TextState, operations: readonly TextOperation[]): boolean {
+    if (this === other) return true;
+    if (this.length !== other.length) return false;
+
+    const sameValue = (id: Readonly<ElementId>): boolean => {
+      const present = this.idList.has(id);
+      if (present !== other.idList.has(id)) return false;
+      return !present || this.valueFor(id) === other.valueFor(id);
+    };
+    for (const operation of operations) {
+      if (operation.type === "text/insert") {
+        let counter = operation.id.counter;
+        for (const _ of operation.value) {
+          if (!sameValue({ bunchId: operation.id.bunchId, counter: counter++ })) return false;
+        }
+      } else {
+        for (const range of operation.ranges) {
+          for (const id of idsInRange(range.start, range.count)) {
+            if (!sameValue(id)) return false;
+          }
+        }
+      }
+    }
+    return true;
+  }
+
   visibleEquals(other: TextState): boolean {
     if (this === other) return true;
     if (this.length !== other.length) return false;

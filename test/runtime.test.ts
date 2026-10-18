@@ -723,6 +723,157 @@ describe("client runtime", () => {
     assert.equal(changes, 1);
   });
 
+  it("compares idle remote Text replacements after decoding and restore without full iteration", (t) => {
+    const Board = defineDocument({ body: text(), other: text(), items: list<string>(), count: valueSchema(0) });
+    for (const restored of [false, true]) {
+      const server = createServer(Board);
+      const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+      const writer = createClient(Board, { clientId: server.openClient(), onBatch: (batch) => batches.push(batch) });
+      writer.transact(() => { writer.state.body.insert(0, "A😀B"); writer.state.other.insert(0, "keep"); });
+      writer.receive(server.receive(batches[0]!).commit);
+      const clientId = server.openClient();
+      let doc = createClient(Board, { clientId, snapshot: server.snapshot(), onBatch() {} });
+      if (restored) doc = createClient(Board, { clientId,
+        checkpoint: decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(doc.checkpoint()))), onBatch() {},
+      });
+      let changes = 0;
+      doc.on("change", () => changes++);
+      writer.transact(() => {
+        writer.state.body.delete(1); writer.state.body.insert(1, "😀");
+        writer.state.other.insert(0, "q😀"); writer.state.other.delete(0, 2);
+        writer.state.items.push("mixed"); writer.state.count.set(1);
+      });
+      const commit = decodeServerCommit(Board, JSON.parse(JSON.stringify(server.receive(batches[1]!).commit)));
+      const comparison = t.mock.method(TextState.prototype, "visibleEquals");
+      const iteration = t.mock.method(IdList.prototype, "values");
+      doc.receive(commit);
+      assert.equal(comparison.mock.calls.length, 0);
+      assert.equal(iteration.mock.calls.length, 0);
+      comparison.mock.restore(); iteration.mock.restore();
+      assert.equal(changes, 1);
+      assert.equal(doc.state.body.toString(), "A😀B");
+      assert.equal(doc.state.other.toString(), "keep");
+      assert.deepEqual(doc.state.items.toArray(), ["mixed"]);
+      assert.equal(doc.state.count.value, 1);
+      assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
+      assert.deepEqual(doc.checkpoint().pendingBatches, []);
+    }
+  });
+
+  it("compares final Text targets per path for cancellation, surviving insertions and empty commits", (t) => {
+    const Board = defineDocument({ body: text(), other: text() });
+    const server = createServer(Board);
+    const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const writer = createClient(Board, { clientId: server.openClient(), onBatch: (batch) => batches.push(batch) });
+    writer.transact(() => { writer.state.body.insert(0, "A😀B"); writer.state.other.insert(0, "Z"); });
+    const seed = server.receive(batches[0]!).commit;
+    writer.receive(seed);
+    const doc = createClient(Board, { clientId: server.openClient(), snapshot: server.snapshot(), onBatch() {} });
+    writer.transact(() => {
+      writer.state.body.insert(0, "q😀"); writer.state.body.delete(0, 2);
+      writer.state.other.insert(0, "anchor"); writer.state.other.insert(6, "🦊"); writer.state.other.delete(0, 6);
+    });
+    const commit = server.receive(batches[1]!).commit;
+    let changes = 0;
+    doc.on("change", () => changes++);
+    const comparison = t.mock.method(TextState.prototype, "visibleEquals");
+    const targeted = t.mock.method(TextState.prototype, "visibleEqualsAt");
+    const iteration = t.mock.method(IdList.prototype, "values");
+    doc.receive(commit);
+    assert.equal(targeted.mock.calls.length, 2);
+    doc.receive({ serverSeq: 3, source: { clientId: seed.source.clientId, seq: 3 }, operations: [] });
+    assert.equal(comparison.mock.calls.length, 0);
+    assert.equal(iteration.mock.calls.length, 0);
+    comparison.mock.restore(); targeted.mock.restore(); iteration.mock.restore();
+    assert.equal(changes, 1);
+    assert.equal(doc.state.body.toString(), "A😀B");
+    assert.equal(doc.state.other.toString(), "🦊Z");
+    assert.equal(doc.checkpoint().snapshot.serverSeq, 3);
+  });
+
+  it("retains full Text comparison for pending work and transformed own acks", (t) => {
+    const Board = defineDocument({ body: text(), count: valueSchema(0) });
+    for (const mode of ["overlap", "disjoint", "own-transform"] as const) {
+      const server = createServer(Board, mode === "own-transform" ? { resolve: ({ batch }) =>
+        batch.operations.map((operation) => operation.type === "text/insert" ? { ...operation, value: operation.value.toUpperCase() } : operation),
+      } : {});
+      const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+      const writer = createClient(Board, { clientId: server.openClient(), onBatch: (batch) => batches.push(batch) });
+      writer.state.body.insert(0, "AB"); writer.receive(server.receive(batches[0]!).commit);
+      const doc = mode === "own-transform" ? writer : createClient(Board, {
+        clientId: server.openClient(), snapshot: server.snapshot(), onBatch() {},
+      });
+      if (mode === "overlap") doc.state.body.insert(2, "P");
+      if (mode === "disjoint") doc.state.count.set(1);
+      const before = doc.checkpoint();
+      writer.transact(() => { writer.state.body.delete(1); writer.state.body.insert(1, "b"); });
+      const afterMutation = doc.checkpoint();
+      const commit = server.receive(batches[1]!).commit;
+      const comparison = t.mock.method(TextState.prototype, "visibleEquals");
+      const targeted = t.mock.method(TextState.prototype, "visibleEqualsAt");
+      doc.receive(commit);
+      assert.equal(comparison.mock.calls.length, 1);
+      assert.equal(targeted.mock.calls.length, 0);
+      comparison.mock.restore(); targeted.mock.restore();
+      assert.equal(doc.state.body.toString(), mode === "own-transform" ? "AB" : mode === "overlap" ? "AbP" : "Ab");
+      assert.deepEqual(doc.checkpoint().pendingBatches, mode === "own-transform" ? [] : before.pendingBatches);
+      assert.deepEqual(doc.checkpoint().lastBunchSeqs, afterMutation.lastBunchSeqs);
+    }
+  });
+
+  it("keeps targeted Text comparison disabled while pending replay is blocked", (t) => {
+    const Board = defineDocument({ body: text() });
+    const server = createServer(Board);
+    const batches: ClientBatch<DocumentOperation<typeof Board.definition>>[] = [];
+    const doc = createClient(Board, { clientId: server.openClient(), onBatch: (batch) => batches.push(batch) });
+    doc.state.body.insert(0, "A"); doc.state.body.insert(1, "B");
+    doc.receive(server.reject(batches[0]!).commit);
+    const before = doc.checkpoint();
+    assert.notEqual(doc.replayConflict, null);
+    const peerId = server.openClient();
+    const remote = server.receive({ clientId: peerId, seq: 1, operations: [{ type: "text/insert", path: "body",
+      before: null, id: { bunchId: JSON.stringify([peerId, "body", 1]), counter: 0 }, value: "R",
+    }] }).commit;
+    const comparison = t.mock.method(TextState.prototype, "visibleEquals");
+    const targeted = t.mock.method(TextState.prototype, "visibleEqualsAt");
+    doc.receive(remote);
+    assert.equal(comparison.mock.calls.length, 1);
+    assert.equal(targeted.mock.calls.length, 0);
+    comparison.mock.restore(); targeted.mock.restore();
+    assert.notEqual(doc.replayConflict, null);
+    assert.equal(doc.state.body.toString(), "R");
+    assert.deepEqual(doc.checkpoint().pendingBatches, before.pendingBatches);
+    assert.deepEqual(doc.checkpoint().lastBunchSeqs, before.lastBunchSeqs);
+    doc.receive(server.reject(batches[1]!).commit);
+    assert.equal(doc.replayConflict, null);
+  });
+
+  it("validates every authoritative Text operation before targeted comparison", (t) => {
+    const Board = defineDocument({ body: text() });
+    const doc = createClient(Board, { clientId: "observer", onBatch() {} });
+    const before = doc.checkpoint();
+    let changes = 0;
+    doc.on("change", () => changes++);
+    const insert = { type: "text/insert", path: "body", before: null,
+      id: { bunchId: "remote", counter: 0 }, value: "😀" } as const;
+    const invalid: DocumentOperation<typeof Board.definition>[] = [insert,
+      { ...insert, before: { bunchId: "missing", counter: 0 }, id: { bunchId: "other", counter: 0 } },
+      { type: "text/delete", path: "body", ranges: [
+        { start: insert.id, count: 1 }, { start: { bunchId: "missing", counter: 0 }, count: 1 },
+      ] },
+    ];
+    const targeted = t.mock.method(TextState.prototype, "visibleEqualsAt");
+    for (const operation of invalid) {
+      assert.throws(() => doc.receive({ serverSeq: 1, source: { clientId: "peer", seq: 1 }, operations: [insert, operation] }));
+      assert.equal(targeted.mock.calls.length, 0);
+      assert.deepEqual(doc.checkpoint(), before);
+      assert.equal(changes, 0);
+    }
+    doc.receive({ serverSeq: 1, source: { clientId: "peer", seq: 1 }, operations: [insert] });
+    assert.equal(changes, 1);
+    assert.equal(doc.state.body.toString(), "😀");
+  });
+
   it("does not iterate Text for a remote deletion whose targets are already tombstones", (t) => {
     const Board = defineDocument({ body: text() });
     const server = createServer(Board);
