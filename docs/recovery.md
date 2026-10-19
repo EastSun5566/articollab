@@ -129,7 +129,7 @@ The repository's browser recovery demo uses document-ID envelopes/headers and se
 
 ## Upgrading from 0.2 to 0.3
 
-`0.3.0-beta.0` is published on the `beta` dist-tag and adds List `set()` and its `list/set` wire operation. Install it with `pnpm add articollab@beta`; `pnpm add articollab` still selects the stable release.
+The 0.3 release adds List `set()` and its `list/set` wire operation. Install the stable release with `pnpm add articollab`.
 
 Roll out support before allowing the new operation:
 

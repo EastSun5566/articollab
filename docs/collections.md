@@ -40,7 +40,7 @@ Local positions become stable insertion anchors or deletion targets on the wire.
 
 ### Update an existing element
 
-`set()` is available in the published beta. Install `articollab@beta` before using this method; the stable release does not include it. With the List above containing `"Design API"`:
+With the List above containing `"Design API"`:
 
 ```ts
 doc.state.items.set(0, "Implement API");

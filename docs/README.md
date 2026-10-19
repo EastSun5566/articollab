@@ -34,6 +34,6 @@ The library is available on npm:
 pnpm add articollab
 ```
 
-General examples use the stable release. List `set()` is available in the published beta; install `articollab@beta` and follow the [upgrade guidance](recovery.md#upgrading-from-02-to-03) before using it. Use an ESM project; the runnable Node.js examples require Node 24+. You do not need a repository checkout to use the package.
+Use an ESM project; the runnable Node.js examples require Node 24+. You do not need a repository checkout to use the package. For an existing document, follow the [upgrade guidance](recovery.md#upgrading-from-02-to-03) before exchanging new operations between runtimes.
 
 [Next: Counter quick start](quick-start.md)
