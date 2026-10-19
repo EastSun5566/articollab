@@ -11,7 +11,8 @@ import { initialStates, replayPending } from "../src/state.ts";
 import { ListState } from "../src/list.ts";
 import { TextState } from "../src/text.ts";
 
-const Board = defineDocument({ count: value(0), items: list<{ label: string } | number | null>(), body: text() });
+const Board = defineDocument({ count: value(0), items: list<{ label: string } | number | null>(), body: text(),
+  meta: value<{ label: string } | null>(null) });
 type Shape = typeof Board.definition;
 type Doc = ClientDocument<Shape>;
 type Commit = ServerCommit<DocumentOperation<Shape>>;
@@ -43,7 +44,9 @@ function view(doc: Doc) {
   for (const [index, payload] of visible.entries()) assert.ok(Object.is(payload, listSnapshot.values[index]));
   assert.equal(doc.state.body.toString(), textSnapshot.value);
   assert.ok(Object.is(doc.state.count.value, count));
-  return { count, items: listSnapshot.values, itemIds: visibleIds(listSnapshot.idList),
+  const meta = states.get("meta");
+  assert.ok(Object.is(doc.state.meta.value, meta));
+  return { count, meta, items: listSnapshot.values, itemIds: visibleIds(listSnapshot.idList),
     body: textSnapshot.value, textIds: visibleIds(textSnapshot.idList), conflict: doc.replayConflict };
 }
 
@@ -53,7 +56,7 @@ function changed(before: ReturnType<typeof view>, after: ReturnType<typeof view>
   const left = before.conflict, right = after.conflict;
   const sameConflict = left === null || right === null ? left === right :
     left.batch === right.batch && left.operationIndex === right.operationIndex && left.message === right.message;
-  return !sameConflict || !Object.is(before.count, after.count) ||
+  return !sameConflict || !Object.is(before.count, after.count) || !Object.is(before.meta, after.meta) ||
     !sameIds(before.itemIds, after.itemIds) || before.items.length !== after.items.length ||
     before.items.some((payload, index) => !Object.is(payload, after.items[index])) ||
     !sameIds(before.textIds, after.textIds) || before.body !== after.body;
@@ -69,7 +72,10 @@ function setup() {
         typeof operation.value === "object" && operation.value !== null) {
         return { ...operation, value: { label: "server:" + operation.value.label } };
       }
-      if (operation.type === "value/set") return { ...operation, value: -operation.value };
+      if (operation.type === "value/set") {
+        if (operation.path === "count") return { ...operation, value: -operation.value };
+        return { ...operation, value: operation.value === null ? null : { label: "server:" + operation.value.label } };
+      }
       if (operation.type === "text/insert") return { ...operation, value: operation.value.toUpperCase() };
       return operation;
     });
@@ -93,7 +99,7 @@ function setup() {
   const clients = [client(), client()];
   type Client = typeof clients[number];
   function receive(target: Client, commit: Commit, decoded = true): void {
-    const before = view(target.doc), count = target.changes;
+    const before = view(target.doc), count = target.changes, pending = target.doc.checkpoint().pendingBatches;
     target.doc.receive(decoded ? decodeServerCommit(Board, json(commit)) : commit);
     const after = view(target.doc);
     const expected = changed(before, after);
@@ -103,6 +109,13 @@ function setup() {
     coverage.add(expected ? "changed" : "silent");
     coverage.add(commit.source.clientId === target.clientId ? "own" : "remote");
     coverage.add(decoded ? "decoded" : "in-memory");
+    if (commit.source.clientId !== target.clientId && pending.length > 0 && before.conflict === null && after.conflict === null) {
+      const paths = new Set(commit.operations.map((operation) => operation.path));
+      const overlap = pending.some((batch) => batch.operations.some((operation) => paths.has(operation.path)));
+      coverage.add("remote-pending");
+      coverage.add(overlap ? "remote-pending-same" : "remote-pending-disjoint");
+      coverage.add(expected ? "remote-pending-changed" : "remote-pending-silent");
+    }
     if (after.conflict !== null) coverage.add("blocked");
   }
   function catchUp(target: Client): void {
@@ -132,6 +145,67 @@ function random(seed: number) {
 }
 
 describe("full visible change comparison", () => {
+  it("matches the oracle for remote sets and replacements with masking and disjoint pending", () => {
+    for (const kind of ["list", "text"] as const) for (const overlap of [false, true]) {
+      const network = setup();
+      const [writer, peer] = network.clients;
+      assert.ok(writer !== undefined && peer !== undefined);
+      writer.doc.transact(() => { writer.doc.state.items.push({ label: "seed" }); writer.doc.state.body.insert(0, "A😀B"); });
+      const seed = network.submit(writer, "accept")!;
+      network.receive(writer, seed); network.receive(peer, seed);
+      if (!overlap) peer.doc.state.meta.set({ label: "disjoint" });
+      else if (kind === "list") peer.doc.state.items.set(0, { label: "pending" });
+      else peer.doc.state.body.delete(1);
+      peer.restore();
+      const pending = peer.doc.checkpoint(), before = peer.changes;
+      if (kind === "list") writer.doc.state.items.set(0, { label: "remote" });
+      else writer.doc.state.body.delete(1);
+      const hidden = network.submit(writer, "accept")!;
+      network.receive(writer, hidden); network.receive(peer, hidden);
+      assert.equal(peer.changes - before, overlap ? 0 : 1);
+      writer.doc.transact(() => {
+        if (kind === "list") {
+          writer.doc.state.items.delete(0); writer.doc.state.items.insert(0, { label: "replacement" });
+        } else {
+          writer.doc.state.body.delete(1); writer.doc.state.body.insert(1, "B"); // Same string, new visible ID.
+        }
+      });
+      const replacement = network.submit(writer, "accept")!;
+      network.receive(writer, replacement); network.receive(peer, replacement);
+      assert.equal(peer.changes - before, overlap ? 1 : 2);
+      assert.deepEqual(peer.doc.checkpoint().pendingBatches, pending.pendingBatches);
+      assert.deepEqual(peer.doc.checkpoint().lastBunchSeqs, pending.lastBunchSeqs);
+      assert.ok(network.coverage.has(overlap ? "remote-pending-same" : "remote-pending-disjoint"));
+      assert.ok(network.coverage.has("remote-pending-changed"));
+      if (overlap) assert.ok(network.coverage.has("remote-pending-silent"));
+    }
+  });
+
+  it("matches object Value references and unchanged Text for decoded mixed own acks", () => {
+    for (const hidden of [false, true]) {
+      const network = setup();
+      const [writer, peer] = network.clients;
+      assert.ok(writer !== undefined && peer !== undefined);
+      writer.doc.transact(() => { writer.doc.state.meta.set({ label: "A" }); writer.doc.state.body.insert(0, "a😀"); });
+      writer.doc.transact(() => {
+        if (hidden) writer.doc.state.meta.set({ label: "pending" });
+        writer.doc.state.body.insert(2, "P");
+      });
+      writer.restore();
+      const pending = writer.doc.state.meta.value, before = writer.changes;
+      const head = network.submit(writer, "accept")!;
+      network.receive(writer, head); network.receive(peer, head);
+      assert.equal(writer.changes - before, hidden ? 0 : 1);
+      assert.equal(Object.is(writer.doc.state.meta.value, pending), hidden);
+      assert.equal(writer.doc.state.body.toString(), "a😀P");
+      const tail = network.submit(writer, "transform")!;
+      network.receive(writer, tail); network.receive(peer, tail);
+      assert.deepEqual(writer.doc.state.meta.value, { label: hidden ? "server:pending" : "A" });
+      assert.deepEqual(writer.doc.checkpoint().snapshot, network.server.snapshot());
+      assert.deepEqual(writer.doc.checkpoint().pendingBatches, []);
+    }
+  });
+
   it("matches full comparison for sets, hidden own payloads and deleted targets", () => {
     const network = setup();
     const [writer, peer] = network.clients;
@@ -318,6 +392,7 @@ describe("full visible change comparison", () => {
             }
             else {
               target.doc.state.count.value = step;
+              target.doc.state.meta.set({ label: "mixed:" + step });
               target.doc.state.items.set(index, { label: "updated:" + step });
               target.doc.state.items.push({ label: String(step) });
               target.doc.state.body.insert(target.doc.state.body.length, "a😀");
@@ -359,7 +434,7 @@ describe("full visible change comparison", () => {
         assert.deepEqual(target.doc.checkpoint().snapshot, network.server.snapshot());
       }
       for (const action of ["accept", "reject", "transform", "explicit-reject", "restore",
-        "own", "remote", "decoded", "in-memory", "changed", "silent",
+        "own", "remote", "decoded", "in-memory", "changed", "silent", "remote-pending",
         "text-insert", "text-delete", "text-replace", "text-cancel"]) {
         assert.ok(network.coverage.has(action), `seed did not cover ${action}`);
       }

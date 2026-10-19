@@ -276,7 +276,7 @@ function sameAnchor(left: Readonly<ElementId> | null, right: Readonly<ElementId>
 
 /** JSON equality would lose payload identity and signed-zero changes. */
 function sameOperations(
-  left: readonly Operation[], right: readonly Operation[], allowListValueChanges = false
+  left: readonly Operation[], right: readonly Operation[], allowValueChanges = false
 ): boolean {
   if (left.length !== right.length) return false;
   return left.every((operation, index) => {
@@ -284,15 +284,15 @@ function sameOperations(
     if (operation.path !== other.path) return false;
     switch (operation.type) {
       case "value/set":
-        return other.type === "value/set" && Object.is(operation.value, other.value);
+        return other.type === "value/set" && (allowValueChanges || Object.is(operation.value, other.value));
       case "list/insert":
         return other.type === "list/insert" && sameAnchor(operation.before, other.before) &&
-          equalsId(operation.id, other.id) && (allowListValueChanges || Object.is(operation.value, other.value));
+          equalsId(operation.id, other.id) && (allowValueChanges || Object.is(operation.value, other.value));
       case "list/delete":
         return other.type === "list/delete" && equalsId(operation.id, other.id);
       case "list/set":
         return other.type === "list/set" && equalsId(operation.id, other.id) &&
-          (allowListValueChanges || Object.is(operation.value, other.value));
+          (allowValueChanges || Object.is(operation.value, other.value));
       case "text/insert":
         return other.type === "text/insert" && sameAnchor(operation.before, other.before) &&
           equalsId(operation.id, other.id) && operation.value === other.value;
@@ -313,6 +313,7 @@ function runtimeVisibleEquals(
   state: CollectionState,
   path: string,
   skipComparison: boolean,
+  ownTextUnchanged: boolean,
   listComparisonIds?: readonly Readonly<ElementId>[],
   textComparisonOperations?: readonly TextOperation[]
 ): boolean {
@@ -323,7 +324,7 @@ function runtimeVisibleEquals(
   }
   if (runtime instanceof RuntimeText) {
     if (!(state instanceof TextState)) throw wrongCollectionKind(path);
-    return skipComparison || (textComparisonOperations === undefined ? runtime.visibleEquals(state) :
+    return skipComparison || ownTextUnchanged || (textComparisonOperations === undefined ? runtime.visibleEquals(state) :
       runtime.state.visibleEqualsAt(state, textComparisonOperations));
   }
   if (state instanceof ListState || state instanceof TextState) {
@@ -659,14 +660,13 @@ export class ClientDocument<S extends SchemaShape> {
       : previous.batch === conflict.batch &&
         previous.operationIndex === conflict.operationIndex &&
         previous.message === conflict.message;
-    // shortcut: matching own operations preserve IDs; only List insert/set values can differ.
+    // shortcut: matching own structure preserves IDs and Text; Value/List payloads may differ.
     // Both replays must be conflict-free; otherwise compare the entire visible prefix.
-    const compareOwnListValues = isOwnCommit && previous === null && conflict === null &&
+    const compareOwnPayloads = isOwnCommit && previous === null && conflict === null &&
       sameOperations(commit.operations, this.pendingBatches[0]!.operations, true);
-    // shortcut: without pending, only operation targets can change; revisit if collections gain moves.
-    const compareRemoteTargets = !isOwnCommit && remainingBatches.length === 0 &&
-      previous === null && conflict === null;
-    const listComparisonIds = compareOwnListValues || compareRemoteTargets
+    // shortcut: complete fixed-ID replay preserves untouched IDs/values; revisit for moves or undelete.
+    const compareRemoteTargets = !isOwnCommit && previous === null && conflict === null;
+    const listComparisonIds = compareOwnPayloads || compareRemoteTargets
       ? new Map<string, Readonly<ElementId>[]>() : undefined;
     const textComparisonOperations = compareRemoteTargets
       ? new Map<string, TextOperation[]>() : undefined;
@@ -693,7 +693,7 @@ export class ClientDocument<S extends SchemaShape> {
       }
       const ids = listComparisonIds === undefined ? undefined : listComparisonIds.get(path) ?? [];
       const textOperations = textComparisonOperations === undefined ? undefined : textComparisonOperations.get(path) ?? [];
-      if (!runtimeVisibleEquals(runtime, nextState, path, changed, ids, textOperations)) changed = true;
+      if (!runtimeVisibleEquals(runtime, nextState, path, changed, compareOwnPayloads, ids, textOperations)) changed = true;
     }
 
     this.authoritativeStates = nextAuthoritativeStates;
