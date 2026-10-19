@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.3.1](https://github.com/EastSun5566/articollab/compare/v0.3.0...v0.3.1) (2026-10-19)
+
+### Performance Improvements
+
+* **client:** compare pending reconciliation at affected IDs ([21bfc08](https://github.com/EastSun5566/articollab/commit/21bfc087c1713372f32bc476e1f39890bb2a7ed4))
+
 ## [0.3.0](https://github.com/EastSun5566/articollab/compare/v0.2.0...v0.3.0) (2026-10-18)
 
 ### ⚠ BREAKING CHANGES
