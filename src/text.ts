@@ -215,7 +215,7 @@ export class TextState {
     return [...this.values()].join("");
   }
 
-  /** Only valid for fully applied operations with no optimistic pending work. */
+  /** Requires complete replay on both sides, with differences confined to these targets. */
   visibleEqualsAt(other: TextState, operations: readonly TextOperation[]): boolean {
     if (this === other) return true;
     if (this.length !== other.length) return false;

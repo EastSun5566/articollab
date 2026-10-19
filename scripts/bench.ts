@@ -22,11 +22,15 @@ const scenarios = ["local-insert", "local-delete", "sync-insert", "pending-repla
   "materialize", "snapshot", "unused-policy-snapshot", "unchanged-receive", "retained-heap"] as const;
 const objectScenarios = ["object-json-ack", "object-own-replace-ack", "object-json-replace-ack",
   "object-remote-replace", "object-local-set", "object-json-set-ack", "object-remote-set"] as const;
+const pendingListScenarios = ["object-remote-set-pending-same", "object-remote-set-pending-disjoint",
+  "object-remote-replace-pending-same", "object-remote-replace-pending-disjoint", "object-json-mixed-ack"] as const;
+const pendingTextScenarios = ["remote-replace-pending-same", "remote-replace-pending-disjoint", "value-json-mixed-ack"] as const;
+type ReconciliationScenario = typeof pendingListScenarios[number] | typeof pendingTextScenarios[number];
 const extendedScenarios = ["local-insert", "local-delete", "bulk-delete", "remote-replace",
   "remote-noop-delete", "pending-replay", "client-decode-restore", "server-decode-restore", "retained-heap"] as const;
 type ExtendedScenario = typeof extendedScenarios[number];
 type Kind = typeof kinds[number];
-type Scenario = typeof scenarios[number] | typeof objectScenarios[number];
+type Scenario = typeof scenarios[number] | typeof objectScenarios[number] | ReconciliationScenario;
 type Shape = { count: ValueSchema<number>; items: ListSchema<string>; body: TextSchema };
 type Doc = ClientDocument<Shape>;
 type Batch = ClientBatch<DocumentOperation<Shape>>;
@@ -290,6 +294,87 @@ function objectTrial(api: Api, size: number, scenario: typeof objectScenarios[nu
       assert.equal(doc.checkpoint().lastBunchSeqs.items, 0);
     }
   }
+  return elapsed / iterations;
+}
+
+function reconciliationFixture(kind: Kind, size: number, scenario: ReconciliationScenario) {
+  const range = (bunchId: string) => [{ bunchId, startCounter: 0, count: size, isDeleted: false }];
+  const hasText = kind === "text" || scenario === "object-json-mixed-ack";
+  return { serverSeq: 0, data: {
+    body: { idList: hasText ? range("text-seed") : [], value: hasText ? "x".repeat(size) : "" },
+    items: { idList: kind === "list" ? range("list-seed") : [],
+      values: kind === "list" ? Array.from({ length: size }, () => ({ label: "x" })) : [] },
+    meta: null,
+  } };
+}
+
+function reconciliationTrial(api: Api, kind: Kind, size: number,
+  scenario: ReconciliationScenario, iterations: number): number {
+  // Text comes first so another changed collection cannot hide an unnecessary Text scan.
+  const schema = api.defineDocument({ body: api.text(), items: api.list<{ label: string }>(),
+    meta: api.value<{ edited: number } | null>(null) });
+  const snapshot = reconciliationFixture(kind, size, scenario);
+  const server = api.createServer(schema, { historyLimit: 0,
+    checkpoint: { snapshot, lastClientNumber: 0, clients: [], history: [] } });
+  const batches: ClientBatch<DocumentOperation<typeof schema.definition>>[] = [];
+  const writer = api.createClient(schema, { clientId: server.openClient(), snapshot,
+    onBatch: (batch) => batches.push(batch) });
+  const peer = api.createClient(schema, { clientId: server.openClient(), snapshot, onBatch() {} });
+  const own = scenario.endsWith("mixed-ack"), samePath = scenario.endsWith("pending-same");
+  const recipient = own ? writer : peer;
+  if (!own) for (let index = 0; index < 20; index++) {
+    if (!samePath) peer.state.meta.set({ edited: index });
+    else if (kind === "list") peer.state.items.push({ label: "pending" });
+    else peer.state.body.insert(peer.state.body.length, "P");
+  }
+  const before = recipient.checkpoint();
+  let changes = 0, elapsed = 0;
+  recipient.on("change", (event) => { if (event.origin === "server") changes++; });
+  collect();
+  for (let index = 0; index < iterations; index++) {
+    writer.transact(() => {
+      if (own) {
+        writer.state.body.insert(writer.state.body.length, "😀");
+        if (kind === "list") writer.state.items.set(size - 1, { label: String(index) });
+        else writer.state.meta.set({ edited: index });
+      } else if (kind === "text") {
+        writer.state.body.delete(size - 1);
+        writer.state.body.insert(size - 1, index % 2 === 0 ? "R" : "S");
+      } else {
+        if (scenario.startsWith("object-remote-replace")) {
+          writer.state.items.delete(size - 1);
+          writer.state.items.insert(size - 1, { label: String(index) });
+        } else writer.state.items.set(size - 1, { label: String(index) });
+      }
+    });
+    const commit = api.decodeServerCommit(schema, JSON.parse(JSON.stringify(server.receive(batches[index]!).commit)));
+    if (!own) writer.receive(commit);
+    const start = performance.now();
+    recipient.receive(commit);
+    elapsed += performance.now() - start;
+    assert.equal(changes, index + 1);
+    assert.equal(recipient.replayConflict, null);
+    const operation = commit.operations.at(-1)!;
+    if (operation.type === "list/set" || operation.type === "list/insert") {
+      assert.strictEqual(recipient.state.items.get(size - 1), operation.value);
+    } else if (operation.type === "value/set") assert.strictEqual(recipient.state.meta.value, operation.value);
+  }
+  const checkpoint = recipient.checkpoint();
+  assert.deepEqual(checkpoint.snapshot, server.snapshot());
+  assert.equal(checkpoint.snapshot.serverSeq, iterations);
+  assert.equal(checkpoint.lastLocalSeq, own ? iterations : 20);
+  assert.deepEqual(checkpoint.pendingBatches, own ? [] : before.pendingBatches);
+  if (!own) assert.deepEqual(checkpoint.lastBunchSeqs, before.lastBunchSeqs);
+  else assert.deepEqual(checkpoint.lastBunchSeqs, { body: 1, items: 0 });
+  const items = kind === "list" ? Array.from({ length: size - 1 }, () => ({ label: "x" })) : [];
+  if (kind === "list") items.push({ label: String(iterations - 1) });
+  if (!own && samePath && kind === "list") items.push(...Array.from({ length: 20 }, () => ({ label: "pending" })));
+  const body = own ? "x".repeat(size) + "😀".repeat(iterations) : kind === "text"
+    ? "x".repeat(size - 1) + (iterations % 2 === 0 ? "S" : "R") + (samePath ? "P".repeat(20) : "") : "";
+  assert.deepEqual(recipient.state.items.toArray(), items);
+  assert.equal(recipient.state.body.toString(), body);
+  assert.deepEqual(recipient.state.meta.value, own ? kind === "text" ? { edited: iterations - 1 } : null
+    : samePath ? null : { edited: 19 });
   return elapsed / iterations;
 }
 
@@ -664,13 +749,18 @@ async function worker(kind: Kind, size: number, scenario: Scenario, smoke: boole
   const config = settings(smoke);
   const objectScenario = objectScenarios.find((candidate) => candidate === scenario);
   assert.ok(objectScenario === undefined || kind === "list", "Object workloads require List");
-  const objectSnapshot = objectScenario === undefined ? undefined : objectFixture(size);
+  const reconciliationScenario = (kind === "list" ? pendingListScenarios : pendingTextScenarios)
+    .find((candidate) => candidate === scenario);
+  const objectSnapshot = reconciliationScenario === undefined
+    ? objectScenario === undefined ? undefined : objectFixture(size)
+    : reconciliationFixture(kind, size, reconciliationScenario);
   const bytes = objectSnapshot === undefined ? serializedSizes(api, kind, size) : {
     snapshotBytes: Buffer.byteLength(JSON.stringify(objectSnapshot), "utf8"),
     checkpointBytes: Buffer.byteLength(JSON.stringify({ snapshot: objectSnapshot,
       lastClientNumber: 0, clients: [], history: [] }), "utf8"),
   };
   const trial = () => {
+    if (reconciliationScenario !== undefined) return reconciliationTrial(api, kind, size, reconciliationScenario, config.iterations);
     if (objectScenario !== undefined) return objectTrial(api, size, objectScenario, config.iterations);
     if (scenario === "retained-heap") return heapTrial(api, kind, size);
     const primitiveScenario = scenarios.find((candidate) => candidate === scenario);
@@ -722,7 +812,8 @@ async function main(args: string[]): Promise<void> {
   }
   if (args[0] === "--worker") {
     const kind = kinds.find((candidate) => candidate === args[1]);
-    const scenario = [...scenarios, ...objectScenarios].find((candidate) => candidate === args[3]);
+    const scenario = [...scenarios, ...(kind === "list" ? [...objectScenarios, ...pendingListScenarios] : pendingTextScenarios)]
+      .find((candidate) => candidate === args[3]);
     const size = Number(args[2]);
     assert.ok(args.length === 5 && kind !== undefined && scenario !== undefined &&
       (args[4] === "smoke" || args[4] === "full"), "Invalid benchmark worker arguments");
@@ -763,7 +854,7 @@ async function main(args: string[]): Promise<void> {
     }
   } else for (const kind of kinds) {
     for (const size of config.sizes) {
-      for (const scenario of [...scenarios, ...(kind === "list" ? objectScenarios : [])]) {
+      for (const scenario of [...scenarios, ...(kind === "list" ? [...objectScenarios, ...pendingListScenarios] : pendingTextScenarios)]) {
         const workerArgs = ["--expose-gc", filename, "--worker", kind, String(size), scenario,
           values.smoke ? "smoke" : "full"];
         try {
