@@ -48,6 +48,16 @@ Here `resolve` is your existing synchronous policy; omit it for accept-only beha
 
 Use the same schema/document lineage and the original still-open session. Only one writer may use a client ID. Disconnect or reload is not permanent session closure.
 
+### Text snapshot boundaries
+
+The unreleased Text snapshot extension preserves each visible element, including surrogate halves inserted separately. One `insert(0, "😀")` creates one element. Separate insertions of `"\ud83d"` and `"\ude00"` create two; although both cases join to the same string, their lengths, IDs and editing indices differ.
+
+Ordinary Text snapshots remain `{ idList, value }`. Only when joining would merge separate surrogate elements does saving add `surrogateBoundaries`, an array of UTF-16 offsets in `value`. For the two-half example it is `[1]`. This field is an encoding detail: Text operations and observer notifications still use element indices. Snapshot and checkpoint restore preserve the original IDs, element boundaries and tombstones.
+
+New runtimes accept existing valid snapshots without conversion. Older runtimes reject the new field, so upgrade every reader that may receive an affected snapshot or checkpoint. Batch/commit operations and checkpoint envelopes have not changed; this is not a promise of bidirectional format compatibility.
+
+If an older snapshot already lost the boundaries and its present-ID count no longer matches its text, restore still fails. Do not guess segmentation, discard IDs or clear checkpoints. Preserve the original data and any still-running state or operation records; recovery of such data needs separate investigation, not automatic migration.
+
 ## Catch up before resubmitting
 
 With `restored` and its matching `server`:

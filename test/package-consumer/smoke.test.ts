@@ -175,6 +175,28 @@ assert.deepEqual(restoredCustom.receive(custom), { commit: customResult.commit, 
 assert.deepEqual(peerText, [...peer.state.body]);
 assert.equal(textNotifications, 3);
 stopObserving(); stopObserving();
+
+const Unicode = defineDocument({ body: text() });
+let unicodeServer = createServer(Unicode);
+const unicodeId = unicodeServer.openClient();
+const unicodeBatches = [];
+let unicode = createClient(Unicode, { clientId: unicodeId, onBatch: (batch) => unicodeBatches.push(batch) });
+for (const half of ["\\ud83d", "\\ude00"]) {
+  unicode.state.body.insert(unicode.state.body.length, half);
+  unicode.receive(decodeServerCommit(Unicode, roundTrip(unicodeServer.receive(unicodeBatches.at(-1)).commit)));
+}
+assert.deepEqual([...unicode.state.body], ["\\ud83d", "\\ude00"]);
+assert.deepEqual(unicodeServer.snapshot().data.body.surrogateBoundaries, [1]);
+const unicodeSave = decodeClientCheckpoint(Unicode, roundTrip(unicode.checkpoint()));
+unicodeServer = createServer(Unicode, { checkpoint: decodeServerCheckpoint(Unicode, roundTrip(unicodeServer.checkpoint())) });
+unicode = createClient(Unicode, { clientId: unicodeId, checkpoint: unicodeSave,
+  onBatch: (batch) => unicodeBatches.push(batch) });
+assert.deepEqual([...unicode.state.body], ["\\ud83d", "\\ude00"]);
+assert.deepEqual(unicode.checkpoint(), unicodeSave);
+unicode.state.body.delete(0);
+unicode.receive(unicodeServer.receive(unicodeBatches.at(-1)).commit);
+assert.deepEqual([...unicode.state.body], ["\\ude00"]);
+assert.equal(Object.hasOwn(unicodeServer.snapshot().data.body, "surrogateBoundaries"), false);
 `;
 
 const typesFixture = `
@@ -233,6 +255,17 @@ type Snapshot = Expect<Equal<typeof snapshot, DocumentSnapshot<Shape>>>;
 type SnapshotData = Expect<Equal<typeof snapshot.data, Readonly<{
   count: number; items: ListSnapshotData<string>; body: TextSnapshotData;
 }>>>;
+type SurrogateBoundaries = Expect<Equal<TextSnapshotData["surrogateBoundaries"], readonly number[] | undefined>>;
+const legacyText: TextSnapshotData = { idList: [], value: "" };
+const splitText: TextSnapshotData = { idList: [], value: "😀", surrogateBoundaries: [1] };
+// @ts-expect-error Snapshot boundary arrays are readonly.
+splitText.surrogateBoundaries!.push(2);
+// @ts-expect-error Snapshot boundary metadata is readonly.
+splitText.surrogateBoundaries = [2];
+// @ts-expect-error Boundary offsets must be numbers.
+const wrongBoundary: TextSnapshotData = { idList: [], value: "😀", surrogateBoundaries: ["1"] };
+// @ts-expect-error An explicitly supplied optional field cannot be undefined.
+const undefinedBoundary: TextSnapshotData = { idList: [], value: "", surrogateBoundaries: undefined };
 type ClientSave = Expect<Equal<typeof checkpoint, ClientCheckpoint<Shape>>>;
 type ServerSave = Expect<Equal<ReturnType<typeof server.checkpoint>, ServerCheckpoint<Shape>>>;
 type ClientId = Expect<Equal<ReturnType<typeof server.openClient>, string>>;

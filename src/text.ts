@@ -8,10 +8,43 @@ import {
 import { loadIdList, type SavedIdRange } from "./list.ts";
 import { CollectionConflictError } from "./conflict.ts";
 import { HamtMap } from "./vendor/hamt.ts";
+import { jsonArray, jsonPointer, type JsonPathSegment } from "./json.ts";
 
 export interface TextSnapshotData {
   readonly idList: readonly SavedIdRange[];
   readonly value: string;
+  /** UTF-16 offsets where adjacent surrogate halves belong to separate elements. */
+  readonly surrogateBoundaries?: readonly number[];
+}
+
+type BoundaryFailure = (path: readonly JsonPathSegment[], message: string) => never;
+
+function isHighSurrogate(unit: number): boolean {
+  return unit >= 0xd800 && unit <= 0xdbff;
+}
+
+function isLowSurrogate(unit: number): boolean {
+  return unit >= 0xdc00 && unit <= 0xdfff;
+}
+
+function snapshotElements(value: string, input: unknown, fail: BoundaryFailure): string[] {
+  const boundaries = jsonArray(input, [], "Text snapshot surrogateBoundaries", fail);
+  if (boundaries.length === 0) fail([], "surrogateBoundaries must not be empty");
+  const values: string[] = [];
+  let start = 0;
+  for (const [index, offset] of boundaries.entries()) {
+    if (typeof offset !== "number" || !Number.isSafeInteger(offset) ||
+      offset <= start || offset >= value.length) {
+      fail([index], "boundary must be an increasing safe integer within the string");
+    }
+    if (!isHighSurrogate(value.charCodeAt(offset - 1)) || !isLowSurrogate(value.charCodeAt(offset))) {
+      fail([index], "boundary must separate a high and low surrogate");
+    }
+    for (const element of value.slice(start, offset)) values.push(element);
+    start = offset;
+  }
+  for (const element of value.slice(start)) values.push(element);
+  return values;
 }
 
 export interface TextInsertOperation<Path extends string = string> {
@@ -117,7 +150,9 @@ export class TextState {
     return new TextState(IdList.new(), HamtMap.empty<string>());
   }
 
-  static load(snapshot: TextSnapshotData): TextState {
+  static load(snapshot: TextSnapshotData, failBoundary: BoundaryFailure = (path, message) => {
+    throw new Error(`Invalid Text snapshot surrogateBoundaries at ${jsonPointer(path)}: ${message}`);
+  }): TextState {
     const data = requireObject(snapshot, "Text snapshot") as Partial<
       TextSnapshotData
     >;
@@ -129,8 +164,10 @@ export class TextState {
     }
 
     const idList = loadIdList(data.idList, "Text snapshot idList");
-    // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
-    const values = [...data.value];
+    const values = Object.hasOwn(data, "surrogateBoundaries")
+      ? snapshotElements(data.value, data.surrogateBoundaries, failBoundary)
+      // oxlint-disable-next-line typescript/no-misused-spread -- Unmarked Text uses Unicode code points, not grapheme clusters.
+      : [...data.value];
     if (idList.length !== values.length) {
       throw new Error(
         `Text snapshot has ${idList.length} present ids but ${values.length} code points`
@@ -334,7 +371,17 @@ export class TextState {
     const idList = Object.freeze(
       this.idList.save().map((range) => Object.freeze({ ...range }))
     );
-    return Object.freeze({ idList, value: this.toString() });
+    const values: string[] = [], boundaries: number[] = [];
+    let offset = 0, previous = NaN;
+    for (const element of this.values()) {
+      if (isHighSurrogate(previous) && isLowSurrogate(element.charCodeAt(0))) boundaries.push(offset);
+      values.push(element);
+      offset += element.length;
+      previous = element.charCodeAt(element.length - 1);
+    }
+    return Object.freeze({ idList, value: values.join(""),
+      ...(boundaries.length === 0 ? {} : { surrogateBoundaries: Object.freeze(boundaries) }),
+    });
   }
 
   private valueFor(id: Readonly<ElementId>): string {

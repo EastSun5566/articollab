@@ -6,7 +6,10 @@ import { TextState } from "../src/text.ts";
 import {
   createClient,
   createServer,
+  decodeClientCheckpoint,
   decodeServerCheckpoint,
+  decodeServerCommit,
+  decodeSnapshot,
   defineDocument,
   list,
   text,
@@ -38,6 +41,99 @@ function setup(clientId = "client-1") {
 }
 
 describe("text runtime", () => {
+  it("saves only the surrogate boundaries needed to preserve visible elements", () => {
+    for (const elements of [[], ["A", "😀", "🦊"], ["\ud83d"], ["\ude00"],
+      ["A", "😀", "\ud83d", "\ude00", "\ud800", "\udc00", "\ude00", "\ud83d"]]) {
+      let state = TextState.empty();
+      for (const [counter, element] of elements.entries()) state = state.insert({
+        type: "text/insert", path: "body", before: counter === 0 ? null : { bunchId: "seed", counter: counter - 1 },
+        id: { bunchId: "seed", counter }, value: element,
+      });
+      const saved = state.save();
+      assert.ok(Object.isFrozen(saved) && Object.isFrozen(saved.idList));
+      assert.equal(saved.value, elements.join(""));
+      if (elements.length === 8) {
+        assert.deepEqual(saved.surrogateBoundaries, [4, 6]);
+        assert.ok(Object.isFrozen(saved.surrogateBoundaries));
+      } else {
+        assert.equal(Object.hasOwn(saved, "surrogateBoundaries"), false);
+        assert.equal(JSON.stringify(saved), JSON.stringify({ idList: saved.idList, value: elements.join("") }));
+      }
+      const restored = TextState.load(saved);
+      assert.deepEqual([...restored.values()], elements);
+      assert.equal(restored.length, elements.length);
+      assert.ok(state.visibleEquals(restored));
+    }
+  });
+
+  it("updates surrogate boundaries after deletions while retaining tombstones", () => {
+    const base = TextState.empty().insert({ type: "text/insert", path: "body", before: null,
+      id: { bunchId: "seed", counter: 0 }, value: "A😀\ud83dX\ude00" });
+    const remove = (state: TextState, counter: number, count = 1) => state.delete({
+      type: "text/delete", path: "body", ranges: [{ start: { bunchId: "seed", counter }, count }],
+    });
+    const joined = remove(base, 3);
+    assert.deepEqual(joined.save().surrogateBoundaries, [4]);
+    assert.deepEqual([...TextState.load(joined.save()).values()], ["A", "😀", "\ud83d", "\ude00"]);
+    const shifted = remove(TextState.load(joined.save()), 0, 2);
+    assert.deepEqual(shifted.save().surrogateBoundaries, [1]);
+    const lone = remove(TextState.load(shifted.save()), 2);
+    assert.equal(Object.hasOwn(lone.save(), "surrogateBoundaries"), false);
+    assert.deepEqual([...TextState.load(lone.save()).values()], ["\ude00"]);
+    assert.ok(lone.save().idList.some((range) => range.isDeleted));
+    assert.deepEqual(base.save(), { idList: base.save().idList, value: "A😀\ud83dX\ude00" });
+  });
+
+  it("restores client and server element boundaries, pending work, retries and late joins", () => {
+    const roundTrip = (input: unknown): unknown => JSON.parse(JSON.stringify(input));
+    let server = createServer(Note);
+    const clientId = server.openClient();
+    const { doc: original, batches } = setup(clientId);
+    original.transact(() => {
+      original.state.body.insert(0, "A😀\ud83dX\ude00");
+      original.state.body.delete(3);
+    });
+    const first = server.receive(batches[0]!);
+    original.receive(decodeServerCommit(Note, roundTrip(first.commit)));
+    original.state.body.insert(original.state.body.length, "\ud800");
+    original.state.body.insert(original.state.body.length, "\udc00");
+    const clientSave = decodeClientCheckpoint(Note, roundTrip(original.checkpoint()));
+    const serverSave = decodeServerCheckpoint(Note, roundTrip(server.checkpoint()));
+    assert.deepEqual(clientSave.snapshot.data.body.surrogateBoundaries, [4]);
+    assert.equal(clientSave.pendingBatches.length, 2);
+    const emitted: NoteBatch[] = [];
+    const restored = createClient(Note, { clientId, checkpoint: clientSave, onBatch: (batch) => emitted.push(batch) });
+    server = createServer(Note, { checkpoint: serverSave });
+    assert.deepEqual(restored.checkpoint(), clientSave);
+    assert.deepEqual([...restored.state.body], [...original.state.body]);
+    assert.equal(emitted.length, 0);
+    assert.deepEqual(server.receive(batches[0]!), { ...first, replayed: true });
+    const late = createClient(Note, { clientId: server.openClient(),
+      snapshot: decodeSnapshot(Note, roundTrip(server.snapshot())), onBatch() {} });
+    while (restored.checkpoint().pendingBatches.length !== 0) {
+      const receipt = server.receive(restored.checkpoint().pendingBatches[0]!);
+      for (const doc of [restored, late]) doc.receive(decodeServerCommit(Note, roundTrip(receipt.commit)));
+    }
+    assert.deepEqual([...restored.state.body], ["A", "😀", "\ud83d", "\ude00", "\ud800", "\udc00"]);
+    assert.deepEqual([...late.state.body], [...restored.state.body]);
+    assert.deepEqual(restored.checkpoint().snapshot, server.snapshot());
+    assert.deepEqual(restored.checkpoint().lastBunchSeqs, clientSave.lastBunchSeqs);
+    assert.equal(restored.replayConflict, null);
+    restored.state.body.delete(2);
+    const deletion = emitted.at(-1)!;
+    assert.equal(deletion.seq, clientSave.lastLocalSeq + 1);
+    const commit = server.receive(deletion).commit;
+    restored.receive(commit);
+    for (const next of server.commitsSince(late.checkpoint().snapshot.serverSeq)!) late.receive(next);
+    assert.deepEqual([...late.state.body], [...restored.state.body]);
+    restored.state.body.insert(restored.state.body.length, "🦊");
+    assert.ok(restored.checkpoint().lastBunchSeqs.body > clientSave.lastBunchSeqs.body);
+    const last = server.receive(emitted.at(-1)!).commit;
+    restored.receive(last); late.receive(last);
+    assert.deepEqual(restored.checkpoint().snapshot, server.snapshot());
+    assert.deepEqual([...late.state.body], [...restored.state.body]);
+  });
+
   it("compares final Unicode targets across bunches, overlaps and cancelled insertions", () => {
     const seed: TextInsertOperation = { type: "text/insert", path: "body", before: null,
       id: { bunchId: "base", counter: 0 }, value: "A😀BC" };
