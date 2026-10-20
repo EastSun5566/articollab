@@ -37,6 +37,18 @@ export type TextOperation<Path extends string = string> =
   | TextInsertOperation<Path>
   | TextDeleteOperation<Path>;
 
+export interface TextChange {
+  readonly index: number;
+  readonly deleteCount: number;
+  readonly insert: readonly string[];
+}
+
+export interface TextChangeEvent {
+  readonly beforeLength: number;
+  readonly afterLength: number;
+  readonly changes: readonly TextChange[];
+}
+
 /** An optimistic collaborative plain-text string indexed by Unicode code point. */
 export interface Text extends Iterable<string> {
   readonly length: number;
@@ -44,6 +56,8 @@ export interface Text extends Iterable<string> {
   delete(index: number, count?: number): void;
   values(): IterableIterator<string>;
   toString(): string;
+  /** Subscribes from the current view; changes use descending pre-event element offsets. */
+  observe(listener: (event: TextChangeEvent) => void): () => void;
 }
 
 function idKey(id: Readonly<ElementId>): string {
@@ -215,6 +229,61 @@ export class TextState {
     return [...this.values()].join("");
   }
 
+  /** Removing all targets must leave the same ordered elements on both sides. */
+  changesTo(other: TextState, targets?: Iterable<Readonly<ElementId>>): TextChangeEvent {
+    const changes: TextChange[] = [];
+    const result = () => Object.freeze({ beforeLength: this.length,
+      afterLength: other.length, changes: Object.freeze(changes.reverse()) });
+    if (this === other) return result();
+
+    if (targets === undefined) {
+      const before = [...this.values()], after = [...other.values()];
+      let start = 0, endBefore = before.length, endAfter = after.length;
+      while (start < endBefore && start < endAfter && before[start] === after[start]) start++;
+      while (endBefore > start && endAfter > start && before[endBefore - 1] === after[endAfter - 1]) {
+        endBefore--; endAfter--;
+      }
+      if (endBefore !== start || endAfter !== start) changes.push(Object.freeze({
+        index: start, deleteCount: endBefore - start, insert: Object.freeze(after.slice(start, endAfter)),
+      }));
+      return result();
+    }
+
+    const before: Array<{ index: number; value: string }> = [];
+    const after: Array<{ index: number; value: string }> = [];
+    for (const id of targets) {
+      if (this.idList.has(id)) before.push({ index: this.idList.indexOf(id), value: this.valueFor(id) });
+      if (other.idList.has(id)) after.push({ index: other.idList.indexOf(id), value: other.valueFor(id) });
+    }
+    before.sort((a, b) => a.index - b.index);
+    after.sort((a, b) => a.index - b.index);
+    // Skip untouched gaps, then replace adjacent target runs in original coordinates.
+    let left = 0, right = 0, beforeIndex = 0, afterIndex = 0;
+    while (left < before.length || right < after.length) {
+      const gap = Math.min((before[left]?.index ?? this.length) - beforeIndex,
+        (after[right]?.index ?? other.length) - afterIndex);
+      if (gap < 0) return this.changesTo(other);
+      beforeIndex += gap; afterIndex += gap;
+      const index = beforeIndex, removed: string[] = [], insert: string[] = [];
+      while (before[left]?.index === beforeIndex) {
+        removed.push(before[left++]!.value); beforeIndex++;
+      }
+      while (after[right]?.index === afterIndex) {
+        insert.push(after[right++]!.value); afterIndex++;
+      }
+      if (removed.length === 0 && insert.length === 0) return this.changesTo(other);
+      if (removed.length !== insert.length || removed.some((value, offset) => value !== insert[offset])) {
+        changes.push(Object.freeze({ index, deleteCount: removed.length, insert: Object.freeze(insert) }));
+      }
+    }
+    if (this.length - beforeIndex !== other.length - afterIndex) return this.changesTo(other);
+    // Equal-length edits at different offsets can merely redistribute identical characters.
+    if (this.length === other.length && changes.some((change) => change.deleteCount !== change.insert.length)) {
+      return this.changesTo(other);
+    }
+    return result();
+  }
+
   /** Requires complete replay on both sides, with differences confined to these targets. */
   visibleEqualsAt(other: TextState, operations: readonly TextOperation[]): boolean {
     if (this === other) return true;
@@ -329,6 +398,11 @@ function compressIds(ids: readonly ElementId[]): TextIdRange[] {
   return ranges;
 }
 
+interface TextObserver {
+  state: TextState;
+  listener: (event: TextChangeEvent) => void;
+}
+
 /** Internal mutable API wrapper around a persistent TextState. */
 export class RuntimeText implements Text {
   private current: TextState;
@@ -337,6 +411,10 @@ export class RuntimeText implements Text {
   private readonly idGenerator: ElementIdGenerator;
   private readonly beforeMutation: () => void;
   private bunchSeq: number;
+  private readonly beforeObserve: () => () => void;
+  private readonly observers = new Set<TextObserver>();
+  private readonly targets = new Map<string, Readonly<ElementId>>();
+  private fullComparison = false;
 
   constructor(
     mutate: (operation: TextOperation) => void,
@@ -344,13 +422,15 @@ export class RuntimeText implements Text {
     path: string,
     initialState: TextState,
     beforeMutation: () => void,
-    lastBunchSeq = 0
+    lastBunchSeq: number,
+    beforeObserve: () => () => void
   ) {
     this.mutate = mutate;
     this.path = path;
     this.current = initialState;
 
     this.beforeMutation = beforeMutation;
+    this.beforeObserve = beforeObserve;
     this.bunchSeq = lastBunchSeq;
     this.idGenerator = new ElementIdGenerator(() => {
       if (this.bunchSeq === Number.MAX_SAFE_INTEGER) {
@@ -422,6 +502,64 @@ export class RuntimeText implements Text {
 
   toString(): string {
     return this.current.toString();
+  }
+
+  observe(listener: (event: TextChangeEvent) => void): () => void {
+    const release = this.beforeObserve();
+    let observer: TextObserver | undefined = { state: this.current, listener };
+    this.observers.add(observer);
+    return () => {
+      if (observer === undefined) return;
+      this.observers.delete(observer);
+      observer = undefined;
+      this.clearObservedTargets();
+      release();
+    };
+  }
+
+  track(operation: TextOperation): void {
+    if (this.observers.size === 0) return;
+    if (!this.hasPendingObservers) { this.clearObservedTargets(); return; }
+    if (this.fullComparison) return;
+    const add = (id: Readonly<ElementId>) => this.targets.set(idKey(id), ownId(id));
+    if (operation.type === "text/insert") {
+      let counter = operation.id.counter;
+      for (const _ of operation.value) add({ bunchId: operation.id.bunchId, counter: counter++ });
+    } else {
+      for (const range of operation.ranges) for (const id of idsInRange(range.start, range.count)) add(id);
+    }
+  }
+
+  requireFullComparison(): void {
+    if (this.observers.size === 0) return;
+    if (!this.hasPendingObservers) { this.clearObservedTargets(); return; }
+    this.fullComparison = true;
+    this.targets.clear();
+  }
+
+  get hasPendingObservers(): boolean {
+    for (const observer of this.observers) if (observer.state !== this.current) return true;
+    return false;
+  }
+
+  flushObservers(): void {
+    try {
+      for (const observer of [...this.observers]) {
+        if (!this.observers.has(observer)) continue;
+        const state = this.current;
+        const event = observer.state.changesTo(state, this.fullComparison ? undefined : this.targets.values());
+        observer.state = state;
+        if (event.changes.length > 0) observer.listener(event);
+      }
+    } finally {
+      this.clearObservedTargets();
+    }
+  }
+
+  private clearObservedTargets(): void {
+    if (this.hasPendingObservers) return;
+    this.targets.clear();
+    this.fullComparison = false;
   }
 
   [Symbol.iterator](): IterableIterator<string> {
