@@ -58,6 +58,19 @@ const outgoing = [];
 const sourceId = server.openClient();
 let source = createClient(Board, { clientId: sourceId, onBatch: (batch) => outgoing.push(batch) });
 const peer = createClient(Board, { clientId: server.openClient(), onBatch() {} });
+let peerText = [...peer.state.body];
+let textNotifications = 0;
+const stopObserving = peer.state.body.observe((event) => {
+  assert.ok(Object.isFrozen(event) && Object.isFrozen(event.changes));
+  assert.equal(event.beforeLength, peerText.length);
+  for (const { index, deleteCount, insert } of event.changes) {
+    assert.ok(Object.isFrozen(insert));
+    peerText = peerText.slice(0, index).concat(insert, peerText.slice(index + deleteCount));
+  }
+  assert.equal(event.afterLength, peerText.length);
+  assert.deepEqual(peerText, [...peer.state.body]);
+  textNotifications++;
+});
 const insertionIds = new Set();
 function submit(batch) {
   for (const operation of batch.operations) {
@@ -159,6 +172,9 @@ const restoredCustom = createServer(Board, {
   checkpoint: decodeServerCheckpoint(Board, roundTrip(optedOut.checkpoint())),
 });
 assert.deepEqual(restoredCustom.receive(custom), { commit: customResult.commit, replayed: true });
+assert.deepEqual(peerText, [...peer.state.body]);
+assert.equal(textNotifications, 3);
+stopObserving(); stopObserving();
 `;
 
 const typesFixture = `
@@ -166,7 +182,7 @@ import {
   assertClientBatchNamespace,
   createClient, createServer, defineDocument, list, text, value,
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeSnapshot,
-  type Value, type List, type Text, type DocumentOperation, type DocumentSnapshot,
+  type Value, type List, type Text, type TextChange, type TextChangeEvent, type DocumentOperation, type DocumentSnapshot,
   type ListSnapshotData, type ListSetOperation, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
   type CreateServerOptions, type ClientBatch, type ServerCommit,
 } from "articollab";
@@ -190,6 +206,20 @@ type Items = Expect<Equal<typeof doc.state.items, List<string>>>;
 type Body = Expect<Equal<typeof doc.state.body, Text>>;
 type Item = Expect<Equal<ReturnType<typeof doc.state.items.get>, string>>;
 type CodePoints = Expect<Equal<ReturnType<typeof doc.state.body.values>, IterableIterator<string>>>;
+type StopObserving = Expect<Equal<ReturnType<typeof doc.state.body.observe>, () => void>>;
+doc.state.body.observe((event) => {
+  type Event = Expect<Equal<typeof event, TextChangeEvent>>;
+  type Changes = Expect<Equal<typeof event.changes, readonly TextChange[]>>;
+  type Inserted = Expect<Equal<TextChange["insert"], readonly string[]>>;
+  // @ts-expect-error Observed changes are readonly.
+  event.changes.push({ index: 0, deleteCount: 0, insert: [] });
+  // @ts-expect-error Inserted elements are readonly.
+  event.changes[0]!.insert.push("x");
+  // @ts-expect-error Length metadata is readonly.
+  event.beforeLength = 0;
+});
+// @ts-expect-error Observers require a callback.
+doc.state.body.observe(123);
 type ValuePath = Expect<Equal<Extract<Operation, { type: "value/set" }>['path'], "count">>;
 type ValuePayload = Expect<Equal<Extract<Operation, { type: "value/set" }>['value'], number>>;
 type ListPath = Expect<Equal<Extract<Operation, { type: "list/insert" }>['path'], "items">>;

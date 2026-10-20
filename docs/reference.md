@@ -19,6 +19,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.state` | Readonly collection bindings; mutate through Value/List/Text methods. |
 | `doc.transact(callback)` | Groups synchronous mutations and returns the callback result. |
 | `doc.on("change", listener)` | Subscribes to document-level events; returns an unsubscribe function. |
+| `doc.state.body.observe(listener)` | Opt-in visible Text edits; returns an unsubscribe function. Unreleased addition. |
 | `doc.receive(commit)` | Applies the next authoritative commit, acknowledges own pending work and replays the rest. |
 | `doc.replayConflict`, `doc.checkpoint()` | Read the first replay failure or save authoritative state and pending work. |
 | `createServer(schema, options?)` | Optional synchronous `resolve`, restore `checkpoint`, `historyLimit` (default 1000), `maxClients` (optional open-session bound), and `allowCustomClientNamespaces` (default false). |
@@ -40,6 +41,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation`, `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextOperation`, `TextIdRange`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
 | `ClientBatchRef`, `ClientBatch`, `ServerCommit`, `ServerReceipt`, `ServerReplayEntry` | Batch identity, authoritative result, local routing metadata and retry entries. |
 | `LocalChangeEvent`, `ServerChangeEvent`, `ChangeEvent`, `PendingReplayConflict` | Local/server notifications and the first blocked pending operation. |
+| `TextChange`, `TextChangeEvent` | Visible Text element edits from an opt-in subscription. |
 | `DocumentSnapshotData`, `DocumentSnapshot`, `ListSnapshotData`, `TextSnapshotData`, `SavedIdRange` | Typed snapshot payloads, including List/Text tombstones. |
 | `ClientCheckpoint`, `ServerCheckpoint` | Complete client/server restore data. |
 
@@ -78,6 +80,12 @@ The local completion order is **optimistic state → pending batch and local seq
 `onBatch` and listeners are application callbacks, not rollback boundaries. If `onBatch` throws, the batch and sequence are already pending and the following local notification is not emitted. A local listener throw also leaves the completed batch intact. A server listener throw happens after the commit, watermark and reconciliation have completed. Exceptions propagate and can stop remaining listener notifications; the core does not permanently disable the document or undo callback side effects. Transport examples impose their own stop-on-first-error policy.
 
 Server events are `{ origin: "server", commit }`, emitted only when visible state or the replay-conflict descriptor changes, not merely because an ack/watermark advances. Value and List payload equality uses `Object.is`; List/Text additionally compare visible stable IDs. An accepted own commit is silent when that comparison and the conflict are unchanged. Deep-equal JSON objects decoded into new references can still trigger a change. A change listener is not a reliable ack or checkpoint-save trigger.
+
+`Text.observe(listener): () => void` independently subscribes to visible element-content changes. It starts at the current view without an initial event; subscription inside a transaction throws. Unsubscribe is idempotent. The event is `{ beforeLength, afterLength, changes }`; each change is `{ index, deleteCount, insert: readonly string[] }`. All containers are owned/frozen. Indices use the original pre-event element coordinates; changes are disjoint and sorted descending for sequential application. Each inserted string retains one Text element, including separately inserted surrogate halves. There is no minimum-edit or stable-segmentation guarantee, and these offsets are not editor UTF-16 offsets.
+
+Text observers run after existing callbacks at successful outermost local commit/receive boundaries, with synchronous reentrant work coalesced. Each subscriber has its own baseline; notifications are neither one-per-batch nor one-per-commit. Observer mutations drain in later passes rather than recursively. Only content changes notify, not ID/conflict/ack changes alone. Normal changes use affected IDs; conflict or unproven-target cases may scan the whole Text. No diff work or observer snapshots are retained without subscribers. See the [incremental example](transactions.md#update-a-text-view-incrementally).
+
+An `onBatch`/existing-listener throw defers Text notifications until a later successful operation. An observer baseline advances before invoking its callback; a throw stops remaining notifications and propagates without rollback or permanently disabling the document. Uncalled observers retain their baselines. After partially applying a failed observer callback, discard that mirror and resubscribe from the current elements. Subscription state is not part of checkpoints.
 
 ### Ordered reconciliation and blocked pending
 

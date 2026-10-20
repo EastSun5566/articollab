@@ -27,6 +27,8 @@ export {
 
 export {
   type Text,
+  type TextChange,
+  type TextChangeEvent,
   type TextDeleteOperation,
   type TextIdRange,
   type TextInsertOperation,

@@ -411,6 +411,9 @@ export class ClientDocument<S extends SchemaShape> {
   private transactionDepth = 0;
   private operations: Operation[] = [];
   private transactionSnapshot: Map<string, CollectionState> | undefined;
+  private notificationDepth = 0;
+  private drainingTextObservers = false;
+  private textObserverCount = 0;
 
   constructor(schema: DocumentSchema<S>, options: CreateClientOptions<S>) {
     if (options.clientId.length === 0) {
@@ -495,7 +498,12 @@ export class ClientDocument<S extends SchemaShape> {
           path,
           collectionState,
           beforeMutation,
-          lastBunchSeqs?.[path] ?? 0
+          lastBunchSeqs?.[path] ?? 0,
+          () => {
+            if (this.transactionDepth !== 0) throw new Error("Cannot observe Text during a transaction");
+            this.textObserverCount++;
+            return () => { this.textObserverCount--; };
+          }
         );
       }
       this.collections.set(path, runtime);
@@ -602,6 +610,16 @@ export class ClientDocument<S extends SchemaShape> {
 
   /** Applies the next authoritative server commit and replays local changes. */
   receive(commit: ServerCommit<DocumentOperation<S>>): void {
+    this.notificationDepth++;
+    try {
+      this.receiveCommit(commit);
+    } finally {
+      this.notificationDepth--;
+    }
+    this.flushTextObservers();
+  }
+
+  private receiveCommit(commit: ServerCommit<DocumentOperation<S>>): void {
     if (this.transactionDepth !== 0) {
       throw new Error("Cannot receive a server commit during a transaction");
     }
@@ -614,6 +632,7 @@ export class ClientDocument<S extends SchemaShape> {
     }
 
     const isOwnCommit = commit.source.clientId === this.clientId;
+    const ownBatch = isOwnCommit ? this.pendingBatches[0] : undefined;
     if (isOwnCommit) {
       const pending = this.pendingBatches[0];
       if (pending === undefined || pending.seq !== commit.source.seq) {
@@ -703,7 +722,13 @@ export class ClientDocument<S extends SchemaShape> {
 
     for (const [path, runtime] of this.collections) {
       restoreRuntime(runtime, nextOptimisticStates.get(path)!, path);
+      if (runtime instanceof RuntimeText &&
+        (previous !== null || conflict !== null || (isOwnCommit && !compareOwnPayloads))) {
+        runtime.requireFullComparison();
+      }
     }
+    this.trackTextOperations(commit.operations);
+    if (ownBatch !== undefined) this.trackTextOperations(ownBatch.operations);
 
     if (changed) {
       this.emitChange(Object.freeze({ origin: "server", commit }));
@@ -723,8 +748,43 @@ export class ClientDocument<S extends SchemaShape> {
     });
 
     this.pendingBatches.push(batch);
-    this.onBatch(batch);
-    this.emitChange(Object.freeze({ origin: "local", batch }));
+    this.trackTextOperations(operations);
+    this.notificationDepth++;
+    try {
+      this.onBatch(batch);
+      this.emitChange(Object.freeze({ origin: "local", batch }));
+    } finally {
+      this.notificationDepth--;
+    }
+    this.flushTextObservers();
+  }
+
+  private trackTextOperations(operations: readonly Operation[]): void {
+    if (this.textObserverCount === 0) return;
+    for (const operation of operations) {
+      if (operation.type !== "text/insert" && operation.type !== "text/delete") continue;
+      const runtime = this.collections.get(operation.path);
+      if (runtime instanceof RuntimeText) runtime.track(operation);
+    }
+  }
+
+  private flushTextObservers(): void {
+    if (this.textObserverCount === 0 || this.notificationDepth !== 0 || this.drainingTextObservers) return;
+    this.drainingTextObservers = true;
+    try {
+      let pending: boolean;
+      do {
+        pending = false;
+        for (const runtime of this.collections.values()) {
+          if (runtime instanceof RuntimeText && runtime.hasPendingObservers) runtime.flushObservers();
+        }
+        for (const runtime of this.collections.values()) {
+          if (runtime instanceof RuntimeText && runtime.hasPendingObservers) pending = true;
+        }
+      } while (pending);
+    } finally {
+      this.drainingTextObservers = false;
+    }
   }
 
   private emitChange(event: ChangeEvent<DocumentOperation<S>>): void {
