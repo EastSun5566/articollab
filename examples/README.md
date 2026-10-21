@@ -18,8 +18,32 @@ All commands and snippet imports below are relative to the **repository root**, 
 | [Browser core smoke](#browser-core-smoke-example) | Production ESM collection/recovery checks |
 | [Browser HTTP smoke](#browser-http-smoke-example) | Browser clients through the shared HTTP sync controller |
 | [Browser reload recovery](#browser-reload-recovery-example) | Session storage, server restart and document lineage protection |
+| [Text editor prototype](#text-editor-prototype) | Two CodeMirror editors, element/UTF-16 conversion and manual HTTP synchronization |
 
 Use one writer per client ID/document lineage and one writer per checkpoint file. None of these helpers adds authentication, automatic history-gap recovery, rebase or power-loss durability. If a helper returns `false` or throws, preserve the checkpoint; replacing pending work with a fresh snapshot can lose edits.
+
+## Text editor prototype
+
+This independent example requires the checkout and its built public ESM entrypoint. Its private manifest/lockfile installs only CodeMirror state/view and their dependencies; it borrows the checkout's TypeScript, Oxlint and Knip. There is no bundler, CDN dependency or production editor binding.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm build
+pnpm --dir examples/text-editor install --frozen-lockfile
+pnpm --dir examples/text-editor start
+```
+
+Open the printed localhost URL. Type in both writers before synchronizing, then choose **Sync** in A, B, A order. Both editors should converge. **Reject pending** acknowledges the remaining pending range through the existing HTTP flow; it does not undo accepted edits. **Inspect checkpoint** reads the current checkpoint explicitly, including after a failure. Reload opens new sessions and does not restore pending work. This host has no authentication or persistence.
+
+Only `body` is edited; the shared Board's Value/List remain available to integration tests. The host is accept-only by default. Tests supply resolvers to check rejection, same-length transformations and blocked-prefix recovery, without adding policy controls or endpoints.
+
+The bridge translates CodeMirror's UTF-16 ranges to Text element ranges and applies one editor transaction as one Articollab batch. A modification inside a complete surrogate pair replaces the whole affected Text element. Untouched elements retain their boundaries, including separately inserted surrogate halves. Text observer edits become tagged editor transactions, so incoming updates are not submitted again. Selection mapping is CodeMirror's normal transaction mapping, not stable collaborative cursors.
+
+The editor uses LF as its line separator while preserving CR characters. The element mirror and offset conversion use arrays with linear costs; this prototype does not promise constant-time UI updates. It materializes Text once at initialization, not on every keystroke. Checkpoint/status details are read at explicit action boundaries or on inspection.
+
+Synchronization pauses both editors. Finish any IME composition first; there is no Enter-to-sync shortcut. Programmatic untagged document changes cannot bypass the same guard. A false result preserves pending work; a thrown failure stops the page and keeps the first error. Completed document changes and callback side effects are not rolled back. Destroying the page removes subscriptions/views, but does not permanently close writer sessions.
+
+Node tests exercise actual CodeMirror state/change sets and real HTTP, not a simulated DOM or OS input method. Interactive verification should cover emoji edits, selections, pending synchronization and cancellation; test real Chinese composition separately. Synthetic composition events verify guards, not full IME behavior. This is not a production adapter, editor history, presence or automatic reconnect implementation.
 
 ## In-memory broadcast walkthrough
 

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Text editor prototype | Articollab</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { font: 16px/1.55 system-ui, sans-serif; color: #1b2938; background: #f7f9fc; }
+    body { margin: 0; }
+    main { max-width: 80rem; padding: 2rem clamp(1rem, 4vw, 3rem); margin: auto; }
+    h1 { font-size: clamp(1.7rem, 3vw, 2.4rem); line-height: 1.2; margin: 0 0 1rem; }
+    h2 { margin: 0; font-size: 1.3rem; }
+    header p { max-width: 75ch; }
+    a { color: #205faa; }
+    .editors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2rem; margin-top: 2rem; }
+    .identity, .message { color: #4e6477; font-size: .9rem; }
+    .identity { margin-top: .25rem; }
+    .editor { background: white; border: 1px solid #c9d4e0; }
+    .editor:focus-within { outline: 2px solid #205faa; outline-offset: 2px; }
+    .cm-editor { min-height: 16rem; font: 1rem/1.6 ui-monospace, monospace; }
+    .cm-content { min-height: 16rem; }
+    .cm-scroller { overflow: auto; }
+    .cm-editor.cm-focused { outline: none; }
+    .controls { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+    button { font: inherit; padding: .45rem .75rem; border: 1px solid #c9d4e0; border-radius: .25rem; background: white; color: inherit; cursor: pointer; }
+    button:focus-visible { outline: 2px solid #205faa; outline-offset: 2px; }
+    button:disabled { opacity: .55; cursor: default; }
+    .controls button:first-child { background: #205faa; border-color: #205faa; color: white; }
+    [data-state="error"] { color: #a5232b; }
+    pre { font: .8rem/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
+    @media (max-width: 48rem) { .editors { grid-template-columns: 1fr; } }
+  </style>
+  <script type="importmap">
+    { "imports": {
+      "articollab": "/dist/index.js",
+      "articulated": "/vendor/articulated/index.js",
+      "sparse-array-rled": "/vendor/sparse-array-rled/index.js",
+      "@codemirror/state": "/codemirror/state.js",
+      "@codemirror/view": "/codemirror/view.js",
+      "@marijn/find-cluster-break": "/codemirror/find-cluster-break.js",
+      "crelt": "/codemirror/crelt.js",
+      "style-mod": "/codemirror/style-mod.js",
+      "w3c-keyname": "/codemirror/w3c-keyname.js"
+    } }
+  </script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Edit locally. Sync when ready.</h1>
+      <p>Two CodeMirror editors, one authoritative document. Local edits stay optimistic until you choose Sync.
+        Reject pending cancels unconfirmed work, not edits the server already accepted.</p>
+      <p>Sync pauses both editors and is unavailable during text composition. This localhost prototype has no
+        authentication, autosave, undo or reload recovery. Inspect checkpoints before leaving the page.</p>
+    </header>
+    <div id="app"></div>
+  </main>
+  <script type="module">
+    import { mountTextEditors } from "/text-editor/page.js";
+    const page = await mountTextEditors(document.getElementById("app"), location.origin);
+    window.addEventListener("pagehide", () => page.destroy(), { once: true });
+  </script>
+</body>
+</html>

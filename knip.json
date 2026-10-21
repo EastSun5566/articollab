@@ -7,5 +7,6 @@
     "examples/browser-http-smoke/smoke.js",
     "examples/browser-reload-recovery/recovery.js"
   ],
-  "project": ["**/*.{ts,js}"]
+  "project": ["**/*.{ts,js}"],
+  "ignore": ["examples/text-editor/**"]
 }
