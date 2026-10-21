@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.4.0](https://github.com/EastSun5566/articollab/compare/v0.3.1...v0.4.0) (2026-10-21)
+
+### Features
+
+* add opt-in Text visible change subscriptions ([f0967ed](https://github.com/EastSun5566/articollab/commit/f0967ed73bfdce1194419f41c0870d89ea07b78f))
+
+### Bug Fixes
+
+* preserve surrogate boundaries in Text snapshots ([830c782](https://github.com/EastSun5566/articollab/commit/830c782fc640a2637de3156b9dad99b94e45858b))
+
 ## [0.3.1](https://github.com/EastSun5566/articollab/compare/v0.3.0...v0.3.1) (2026-10-19)
 
 ### Performance Improvements
