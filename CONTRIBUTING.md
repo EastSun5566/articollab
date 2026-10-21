@@ -185,7 +185,7 @@ Fetch main and tags, then confirm a clean `main` synchronized with `origin/main`
 
 Choose an explicit unpublished target version. In the commands below, replace `<target-version>` and `<release-tag>`; they are placeholders, not literal shell arguments. Beta tags are `vX.Y.Z-beta.N`; stable tags are `vX.Y.Z`.
 
-Review [upgrade guidance](docs/recovery.md#upgrading-from-02-to-03) for coordinated runtime upgrades and checkpoint compatibility before choosing a release target.
+Review the [Recovery upgrade guides](docs/recovery.md#upgrading-from-03-to-04) for coordinated runtime upgrades and checkpoint compatibility before choosing a release target. Include all snapshot/checkpoint readers, not just batch/commit participants, when a release extends the saved format.
 
 ```sh
 pnpm release --release-as <target-version> --dry-run
@@ -207,7 +207,7 @@ For a stable target, dry-run the inspected tarball with an explicit channel over
 npm publish <tarball> --dry-run --ignore-scripts --tag latest --access public --registry=https://registry.npmjs.org/
 ```
 
-Replace `<tarball>` with its actual path. This validates packaging, not OIDC authentication, and uploads nothing. A tarball packed before the real release still has the checkout's beta version; rebuild, repack and verify the final version after the signed release. Do not call the stable version published or change beta-only installation notes until registry publication is confirmed. Actual publication remains the tag workflow below.
+Replace `<tarball>` with its actual path. This validates packaging, not OIDC authentication, and uploads nothing. A tarball packed before the real release carries the current manifest version, not the dry-run target; rebuild, repack and verify the final version after the signed release. Do not call the target version published or update installation guidance to claim publication until the registry confirms it. Actual publication remains the tag workflow below.
 
 ### Create the signed release
 

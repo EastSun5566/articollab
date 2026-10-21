@@ -137,6 +137,20 @@ Your storage and subscription handoff are application responsibilities. Same URL
 
 The repository's browser recovery demo uses document-ID envelopes/headers and session storage. Those are application examples, not core wire fields or authentication. Neither ordinary checkpoint containers nor these examples promise power-loss durability or cross-file transactions.
 
+## Upgrading from 0.3 to 0.4
+
+This guidance covers the unreleased 0.4 changes: opt-in `Text.observe()` notifications and the optional Text snapshot boundary field. Neither changes batch/commit operations or checkpoint envelopes.
+
+Existing valid 0.3 snapshots and checkpoints can be restored without conversion for the same schema and document lineage. `Text.observe()` is a new local subscription API, not a wire feature. Initialize your element mirror from the restored Text and subscribe again; subscriptions are not saved in checkpoints. See the [incremental view example](transactions.md#update-a-text-view-incrementally).
+
+Coordinate the upgrade before resuming writes:
+
+1. Preserve matching client/server checkpoint backups and stop the old writers.
+2. Upgrade the server, participating clients and every other snapshot/checkpoint reader, including offline clients that will restore later. Keep their original writer identities and document lineage.
+3. Restore from the saved checkpoints, catch up and handle pending work through the normal recovery flow, then resume editing. Do not open replacement sessions for restored writers.
+
+Ordinary Text snapshots keep the old format, but adjacent surrogate halves from separate elements require `surrogateBoundaries`. Older runtimes reject that field, even though batches and commits still use the same operations. Once a saved snapshot contains it, a package downgrade is not enough: preserve the data and use compatible readers. Do not strip the field, merge elements or discard IDs to make it load. See [Text snapshot boundaries](#text-snapshot-boundaries), including the limits on recovering older invalid saves.
+
 ## Upgrading from 0.2 to 0.3
 
 The 0.3 release adds List `set()` and its `list/set` wire operation. Install the stable release with `pnpm add articollab`.
