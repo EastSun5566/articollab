@@ -456,9 +456,11 @@ function validateSnapshotCollection(
       decodedCollectionStates.set(snapshot, ListState.load(snapshot as ListSnapshotData));
     } else {
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The caller constructs this snapshot for the selected collection kind, then hydration validates it.
-      decodedCollectionStates.set(snapshot, TextState.load(snapshot as TextSnapshotData));
+      decodedCollectionStates.set(snapshot, TextState.load(snapshot as TextSnapshotData,
+        (boundaryPath, message) => fail([...path, "surrogateBoundaries", ...boundaryPath], message)));
     }
   } catch (error) {
+    if (error instanceof WireDecodeError) throw error;
     fail(path, `invalid ${kind} snapshot: ${errorMessage(error)}`);
   }
 }
@@ -490,7 +492,11 @@ function decodeSnapshotCollection(
     return snapshot;
   }
 
-  requireExactFields(record, path, ["idList", "value"]);
+  const hasBoundaries = Object.hasOwn(record, "surrogateBoundaries");
+  requireExactFields(record, path, hasBoundaries ? ["idList", "value", "surrogateBoundaries"] : ["idList", "value"]);
+  const boundaries = hasBoundaries ? Object.freeze(decodeDenseArray(record.surrogateBoundaries,
+    [...path, "surrogateBoundaries"], "Text snapshot surrogateBoundaries").map((offset, index) =>
+      decodeSafeInteger(offset, [...path, "surrogateBoundaries", index], "Surrogate boundary", 1))) : undefined;
   const snapshot: TextSnapshotData = Object.freeze({
     idList: decodeSavedIdList(record.idList, [...path, "idList"]),
     value: decodeString(
@@ -498,6 +504,7 @@ function decodeSnapshotCollection(
       [...path, "value"],
       "Text snapshot value"
     ),
+    ...(boundaries === undefined ? {} : { surrogateBoundaries: boundaries }),
   });
   validateSnapshotCollection(kind, snapshot, path);
   return snapshot;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it, mock } from "node:test";
 
 import {
-  createClient, createServer, decodeClientCheckpoint, decodeServerCommit,
+  createClient, createServer, decodeClientCheckpoint, decodeServerCheckpoint, decodeServerCommit,
   defineDocument, list, text, value,
   type ClientBatch, type ClientDocument, type DocumentOperation, type ServerCommit,
   type Text, type TextChangeEvent,
@@ -89,6 +89,55 @@ describe("Text visible changes", () => {
     assert.deepEqual(view.elements, ["\ud83d", "\ude00"]);
     doc.state.body.delete(0);
     assert.deepEqual(view.elements, ["\ude00"]);
+  });
+
+  it("keeps observer mirrors and silent acknowledgements correct after both checkpoints restore", () => {
+    let server = createServer(Board);
+    const outgoing: Batch[] = [];
+    const clientId = server.openClient();
+    let doc = createClient(Board, { clientId, onBatch: (batch) => outgoing.push(batch) });
+    const originalView = mirror(doc.state.body);
+    doc.transact(() => {
+      doc.state.body.insert(0, "\ud83dX\ude00");
+      doc.state.body.delete(1);
+    });
+    doc.receive(wire(server.receive(outgoing[0]!).commit));
+    doc.state.body.insert(doc.state.body.length, "A");
+    const clientSave = decodeClientCheckpoint(Board, json(doc.checkpoint()));
+    const serverSave = decodeServerCheckpoint(Board, json(server.checkpoint()));
+    originalView.stop();
+    server = createServer(Board, { checkpoint: serverSave });
+    let unexpectedBatches = 0;
+    doc = createClient(Board, { clientId, checkpoint: clientSave, onBatch() { unexpectedBatches++; } });
+    const view = mirror(doc.state.body);
+    assert.deepEqual(view.elements, ["\ud83d", "\ude00", "A"]);
+    assert.equal(unexpectedBatches, 0);
+    assert.equal(view.events.length, 0);
+    doc.receive(wire(server.receive(doc.checkpoint().pendingBatches[0]!).commit));
+    assert.equal(view.events.length, 0);
+    assert.deepEqual(doc.checkpoint().pendingBatches, []);
+    assert.deepEqual(doc.checkpoint().snapshot, server.snapshot());
+
+    const peerBatches: Batch[] = [];
+    const peer = createClient(Board, { clientId: server.openClient(), snapshot: server.snapshot(),
+      onBatch: (batch) => peerBatches.push(batch) });
+    const peerView = mirror(peer.state.body);
+    for (const element of ["\ud800", "\udc00"]) {
+      peer.state.body.insert(peer.state.body.length, element);
+      const commit = wire(server.receive(peerBatches.at(-1)!).commit);
+      peer.receive(commit); doc.receive(commit);
+    }
+    assert.deepEqual(view.elements, peerView.elements);
+    assert.deepEqual(view.elements, ["\ud83d", "\ude00", "A", "\ud800", "\udc00"]);
+    assert.deepEqual(server.snapshot().data.body.surrogateBoundaries, [1, 4]);
+    peer.state.body.delete(0);
+    const commit = wire(server.receive(peerBatches.at(-1)!).commit);
+    peer.receive(commit); doc.receive(commit);
+    assert.deepEqual(view.elements, peerView.elements);
+    assert.deepEqual(server.snapshot().data.body.surrogateBoundaries, [3]);
+    assert.equal(doc.replayConflict, null);
+    assert.equal(unexpectedBatches, 0);
+    view.stop(); peerView.stop();
   });
 
   it("groups nested mixed transactions, rolls back failure, and rejects subscription during a transaction", () => {

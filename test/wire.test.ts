@@ -67,6 +67,84 @@ function valueBatch(value: unknown): Record<string, unknown> {
 }
 
 describe("wire decoding", () => {
+  it("owns surrogate boundaries and reuses validated Text state during restore", (t) => {
+    const input = { ...createServer(Board).snapshot(), data: {
+      meta: Board.definition.meta.initialValue, items: { idList: [], values: [] }, body: {
+        idList: [{ bunchId: "seed", startCounter: 0, count: 4, isDeleted: false }],
+        value: "😀😀", surrogateBoundaries: [1, 3],
+      },
+    } };
+    const loads = t.mock.method(TextState, "load");
+    const snapshot = decodeSnapshot(Board, input);
+    assert.equal(loads.mock.calls.length, 1);
+    const doc = createClient(Board, { clientId: "reader", snapshot, onBatch() {} });
+    assert.equal(loads.mock.calls.length, 1);
+    loads.mock.restore();
+    assert.deepEqual([...doc.state.body], ["\ud83d", "\ude00", "\ud83d", "\ude00"]);
+    assert.notStrictEqual(snapshot.data.body.surrogateBoundaries, input.data.body.surrogateBoundaries);
+    assert.ok(Object.isFrozen(snapshot) && Object.isFrozen(snapshot.data.body));
+    assert.ok(Object.isFrozen(snapshot.data.body.surrogateBoundaries));
+    input.data.body.surrogateBoundaries[0] = 2;
+    input.data.body.value = "corrupt";
+    assert.deepEqual(snapshot.data.body.surrogateBoundaries, [1, 3]);
+    assert.deepEqual([...doc.state.body], ["\ud83d", "\ude00", "\ud83d", "\ude00"]);
+  });
+
+  it("rejects malformed surrogate boundaries in both decoded and direct snapshots", () => {
+    const fresh = createServer(Board).snapshot();
+    const candidate = (surrogateBoundaries: unknown, value = "😀😀") => ({ ...fresh,
+      data: { ...fresh.data, body: { idList: [{ bunchId: "seed", startCounter: 0, count: 4, isDeleted: false }],
+        value, surrogateBoundaries } },
+    });
+    const extra = Object.assign([1], { extra: true });
+    const symbolic = Object.assign([1], { [Symbol("invalid")]: true });
+    let getterCalls = 0;
+    const accessor = Object.defineProperty([], "0", { enumerable: true, get() { getterCalls++; return 1; } });
+    for (const [boundaries, suffix] of [
+      [undefined, ""], [null, ""], [{}, ""], [[], ""], [Array(1), ""],
+      [extra, "/extra"], [symbolic, ""], [accessor, "/0"],
+      [[0], "/0"], [[-1], "/0"], [[1.5], "/0"], [[NaN], "/0"], [[Infinity], "/0"],
+      [[Number.MAX_SAFE_INTEGER + 1], "/0"], [[4], "/0"], [["1"], "/0"], [[2], "/0"],
+      [[1, 1], "/1"], [[3, 1], "/1"], [[1, 2], "/1"],
+    ] as const) {
+      const input = candidate(boundaries);
+      assertWireError(() => decodeSnapshot(Board, input), "/data/body/surrogateBoundaries" + suffix);
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately malformed boundary metadata exercises the typed hydration guard.
+      const invalid = input as DocumentSnapshot<typeof Board.definition>;
+      assert.throws(() => createClient(Board, { clientId: "reader", snapshot: invalid, onBatch() {} }));
+    }
+    assert.equal(getterCalls, 0);
+    assertWireError(() => decodeSnapshot(Board, candidate([1], "AB")), "/data/body/surrogateBoundaries/0");
+    assertWireError(() => decodeSnapshot(Board, candidate([1])), "/data/body");
+    const valid = candidate([1, 3]);
+    assertWireError(() => decodeSnapshot(Board, { ...valid, data: { ...valid.data,
+      body: { ...valid.data.body, unexpected: true } } }), "/data/body/unexpected");
+    const serverSave = createServer(Board).checkpoint();
+    assertWireError(() => decodeServerCheckpoint(Board, { ...serverSave, snapshot: candidate([2]) }),
+      "/snapshot/data/body/surrogateBoundaries/0");
+    const clientSave = createClient(Board, { clientId: "reader", onBatch() {} }).checkpoint();
+    assertWireError(() => decodeClientCheckpoint(Board, { ...clientSave, snapshot: candidate([2]) }),
+      "/snapshot/data/body/surrogateBoundaries/0");
+  });
+
+  it("preserves the legacy format and refuses to guess missing Text boundaries", () => {
+    const fresh = createServer(Board).snapshot();
+    for (const value of ["", "A😀🦊", "\ud83d", "\ude00"]) {
+      const idList = value === "" ? [] : [{ bunchId: "seed", startCounter: 0,
+        // oxlint-disable-next-line typescript/no-misused-spread -- Legacy Text snapshots count Unicode code points.
+        count: [...value].length, isDeleted: false }];
+      const input = { ...fresh, data: { ...fresh.data, body: { idList, value } } };
+      const snapshot = decodeSnapshot(Board, jsonRoundTrip(input));
+      const doc = createClient(Board, { clientId: "reader", snapshot, onBatch() {} });
+      assert.deepEqual(snapshot, input);
+      assert.equal(Object.hasOwn(snapshot.data.body, "surrogateBoundaries"), false);
+      assert.equal(doc.state.body.toString(), value);
+    }
+    assertWireError(() => decodeSnapshot(Board, { ...fresh, data: { ...fresh.data, body: {
+      idList: [{ bunchId: "seed", startCounter: 0, count: 2, isDeleted: false }], value: "😀",
+    } } }), "/data/body");
+  });
+
   it("decodes List sets with exact fields, owned payloads and precise error paths", () => {
     const input = { clientId: "client-1", seq: 1, operations: [{ type: "list/set", path: "items",
       id: { bunchId: "another-writer", counter: 0 }, value: { label: "new" } }] };

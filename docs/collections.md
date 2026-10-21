@@ -65,6 +65,10 @@ console.log([...doc.state.body]); // ["A", "B"]
 
 Indices/counts use code points, not UTF-16 code units or grapheme clusters. A composed character or emoji sequence may contain several code points. Convert editor selections at the UI boundary rather than using JS string `.length` as a Text index.
 
+Each insertion is split into elements independently. Inserting `"😀"` creates one element; separately inserting `"\ud83d"` and `"\ude00"` creates two, even though `toString()` joins them into the same displayed emoji. Joining a string does not preserve element boundaries; use iteration when maintaining an element-based mirror.
+
+The unreleased snapshot extension preserves these boundaries across restore. See [Text snapshot boundaries](recovery.md#text-snapshot-boundaries) before exchanging saved data with older runtimes.
+
 One string insertion uses a continuous ID range. One delete produces one operation containing compressed target ranges. `insert(index, "")` and `delete(index, 0)` validate bounds, then do nothing. Counts/indices must be safe integers; deletions must fit completely.
 
 See the [canonical collection contracts](reference.md#collections-and-immutable-values) for the full immutable-value and bounds rules.
