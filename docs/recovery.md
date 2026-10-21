@@ -50,7 +50,7 @@ Use the same schema/document lineage and the original still-open session. Only o
 
 ### Text snapshot boundaries
 
-The unreleased Text snapshot extension preserves each visible element, including surrogate halves inserted separately. One `insert(0, "😀")` creates one element. Separate insertions of `"\ud83d"` and `"\ude00"` create two; although both cases join to the same string, their lengths, IDs and editing indices differ.
+Text snapshots preserve each visible element, including surrogate halves inserted separately. One `insert(0, "😀")` creates one element. Separate insertions of `"\ud83d"` and `"\ude00"` create two; although both cases join to the same string, their lengths, IDs and editing indices differ.
 
 Ordinary Text snapshots remain `{ idList, value }`. Only when joining would merge separate surrogate elements does saving add `surrogateBoundaries`, an array of UTF-16 offsets in `value`. For the two-half example it is `[1]`. This field is an encoding detail: Text operations and observer notifications still use element indices. Snapshot and checkpoint restore preserve the original IDs, element boundaries and tombstones.
 
@@ -139,7 +139,7 @@ The repository's browser recovery demo uses document-ID envelopes/headers and se
 
 ## Upgrading from 0.3 to 0.4
 
-This guidance covers the unreleased 0.4 changes: opt-in `Text.observe()` notifications and the optional Text snapshot boundary field. Neither changes batch/commit operations or checkpoint envelopes.
+Version 0.4 adds opt-in `Text.observe()` notifications and the optional Text snapshot boundary field. Neither changes batch/commit operations or checkpoint envelopes.
 
 Existing valid 0.3 snapshots and checkpoints can be restored without conversion for the same schema and document lineage. `Text.observe()` is a new local subscription API, not a wire feature. Initialize your element mirror from the restored Text and subscribe again; subscriptions are not saved in checkpoints. See the [incremental view example](transactions.md#update-a-text-view-incrementally).
 

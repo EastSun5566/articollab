@@ -67,7 +67,7 @@ Indices/counts use code points, not UTF-16 code units or grapheme clusters. A co
 
 Each insertion is split into elements independently. Inserting `"😀"` creates one element; separately inserting `"\ud83d"` and `"\ude00"` creates two, even though `toString()` joins them into the same displayed emoji. Joining a string does not preserve element boundaries; use iteration when maintaining an element-based mirror.
 
-The unreleased snapshot extension preserves these boundaries across restore. See [Text snapshot boundaries](recovery.md#text-snapshot-boundaries) before exchanging saved data with older runtimes.
+Text snapshots preserve these boundaries across restore. See [Text snapshot boundaries](recovery.md#text-snapshot-boundaries) before exchanging saved data with older runtimes.
 
 One string insertion uses a continuous ID range. One delete produces one operation containing compressed target ranges. `insert(index, "")` and `delete(index, 0)` validate bounds, then do nothing. Counts/indices must be safe integers; deletions must fit completely.
 
