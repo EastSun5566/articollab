@@ -56,8 +56,6 @@ Server changes are emitted only when visible state or the replay-conflict descri
 
 ## Update a text view incrementally
 
-This API is available in the checkout and has not been published yet.
-
 `Text.observe()` reports edits to the visible text, including changes caused by pending replay. It is separate from document `change` events and does not run until you subscribe. This complete example maintains an element-array mirror:
 
 ```ts

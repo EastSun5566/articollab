@@ -4,7 +4,7 @@ Look up the public API and exact collaboration contracts here. For a runnable in
 
 ## Compatibility
 
-These docs cover the stable public API and explicitly marked unreleased additions. Install `articollab` and upgrade all participating runtimes before exchanging new operations or snapshot formats. Do not mix incompatible runtimes or document lineages. See the [planned 0.4 upgrade](recovery.md#upgrading-from-03-to-04), [0.3 upgrade guidance](recovery.md#upgrading-from-02-to-03) and the [0.1 upgrade guide](recovery.md#upgrading-from-01).
+These docs cover the public API. Install `articollab` and upgrade all participating runtimes before exchanging new operations or snapshot formats. Do not mix incompatible runtimes or document lineages. See the [0.4 upgrade guidance](recovery.md#upgrading-from-03-to-04), [0.3 upgrade guidance](recovery.md#upgrading-from-02-to-03) and the [0.1 upgrade guide](recovery.md#upgrading-from-01).
 
 Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` promises its documented `name`, JSON Pointer `path` and readable message, not exact wording.
 
@@ -19,7 +19,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.state` | Readonly collection bindings; mutate through Value/List/Text methods. |
 | `doc.transact(callback)` | Groups synchronous mutations and returns the callback result. |
 | `doc.on("change", listener)` | Subscribes to document-level events; returns an unsubscribe function. |
-| `doc.state.body.observe(listener)` | Opt-in visible Text edits; returns an unsubscribe function. Unreleased addition. |
+| `doc.state.body.observe(listener)` | Opt-in visible Text edits; returns an unsubscribe function. |
 | `doc.receive(commit)` | Applies the next authoritative commit, acknowledges own pending work and replays the rest. |
 | `doc.replayConflict`, `doc.checkpoint()` | Read the first replay failure or save authoritative state and pending work. |
 | `createServer(schema, options?)` | Optional synchronous `resolve`, restore `checkpoint`, `historyLimit` (default 1000), `maxClients` (optional open-session bound), and `allowCustomClientNamespaces` (default false). |
@@ -139,7 +139,7 @@ To cancel a namespace-invalid original batch, trusted application code must veri
 
 `server.snapshot()` is `{ serverSeq, data }`, for a fresh client using the same schema. Value data is the JSON payload; List data is `{ idList, values }`; Text data is `{ idList, value }`, with the optional `surrogateBoundaries` extension described below. ID ranges preserve tombstones. Snapshot paths must match the schema, the watermark must be a non-negative safe integer, and List/Text visible counts must match their payloads. Snapshot acquisition and subsequent commit delivery must have a gap-free handoff supplied by the application.
 
-**Unreleased Text snapshot extension:** `surrogateBoundaries?: readonly number[]` preserves adjacent surrogate halves that belong to separate Text elements. Its offsets are UTF-16 code-unit positions in `value`, not the element indices used by Text operations and notifications. Each offset separates a high surrogate immediately before it from a low surrogate at it. The array must be non-empty, dense and strictly increasing, with safe-integer offsets in `1..value.length - 1`. Empty arrays, explicit `undefined`, duplicates and invalid boundaries are rejected. Without this field, normal code-point segmentation applies; with it, marked pairs remain separate. The resulting element count must equal the present-ID count. Saved arrays are owned/frozen, and the field is omitted when unnecessary. Older runtimes reject snapshots containing the field; see [recovery compatibility](recovery.md#text-snapshot-boundaries).
+**Text snapshot boundaries:** `surrogateBoundaries?: readonly number[]` preserves adjacent surrogate halves that belong to separate Text elements. Its offsets are UTF-16 code-unit positions in `value`, not the element indices used by Text operations and notifications. Each offset separates a high surrogate immediately before it from a low surrogate at it. The array must be non-empty, dense and strictly increasing, with safe-integer offsets in `1..value.length - 1`. Empty arrays, explicit `undefined`, duplicates and invalid boundaries are rejected. Without this field, normal code-point segmentation applies; with it, marked pairs remain separate. The resulting element count must equal the present-ID count. Saved arrays are owned/frozen, and the field is omitted when unnecessary. Older runtimes reject snapshots containing the field; see [recovery compatibility](recovery.md#text-snapshot-boundaries).
 
 `doc.checkpoint()` is `{ clientId, snapshot, lastLocalSeq, pendingBatches, lastBunchSeqs }`: authoritative state, original pending work and allocation progress, not a separate optimistic snapshot. `createClient(schema, { clientId, checkpoint, onBatch })` validates restore data and matching identity, reconstructs optimistic state/conflict, and emits neither changes nor outgoing batches. `snapshot` and `checkpoint` options are mutually exclusive.
 
