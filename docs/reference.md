@@ -4,7 +4,7 @@ Look up the public API and exact collaboration contracts here. For a runnable in
 
 ## Compatibility
 
-These docs cover the stable public API. Install `articollab` and upgrade all participating runtimes before exchanging new operations. Do not mix incompatible runtimes or document lineages. See [0.3 upgrade guidance](recovery.md#upgrading-from-02-to-03) and the [0.1 upgrade guide](recovery.md#upgrading-from-01).
+These docs cover the stable public API and explicitly marked unreleased additions. Install `articollab` and upgrade all participating runtimes before exchanging new operations or snapshot formats. Do not mix incompatible runtimes or document lineages. See the [planned 0.4 upgrade](recovery.md#upgrading-from-03-to-04), [0.3 upgrade guidance](recovery.md#upgrading-from-02-to-03) and the [0.1 upgrade guide](recovery.md#upgrading-from-01).
 
 Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` promises its documented `name`, JSON Pointer `path` and readable message, not exact wording.
 
