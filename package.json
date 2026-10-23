@@ -30,7 +30,7 @@
   },
   "license": "MIT",
   "type": "module",
-  "packageManager": "pnpm@10.34.5",
+  "packageManager": "pnpm@12.15.0",
   "engines": {
     "node": ">=24.0.0"
   },
@@ -48,7 +48,7 @@
   ],
   "scripts": {
     "release": "commit-and-tag-version --sign",
-    "lint": "oxlint --deny-warnings --report-unused-disable-directives",
+    "lint": "oxlint --disable-nested-config --deny-warnings --report-unused-disable-directives",
     "knip": "knip --no-progress --treat-config-hints-as-errors",
     "docs:build": "node scripts/docs.ts build",
     "docs:check": "node scripts/docs.ts check",

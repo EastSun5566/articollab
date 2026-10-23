@@ -28,10 +28,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Set up Node.js 24
+      - name: Set up Node.js from .nvmrc
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version-file: .nvmrc
           package-manager-cache: false
 
       - name: Validate release tag
@@ -77,6 +77,14 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # Browser JS imports the built entrypoint; type-aware lint needs its declarations.
+      # Run root checks before installing example dependencies, matching a fresh checkout.
+      - name: Lint
+        run: pnpm lint
+
+      - name: Check unused code and dependencies
+        run: pnpm knip
+
       - name: Install text editor example dependencies
         run: pnpm --dir examples/text-editor install --frozen-lockfile --ignore-scripts
 
@@ -91,13 +99,6 @@ jobs:
 
       - name: Test text editor example
         run: pnpm --dir examples/text-editor test
-
-      # Browser JS imports the built entrypoint; type-aware lint needs its declarations.
-      - name: Lint
-        run: pnpm lint
-
-      - name: Check unused code and dependencies
-        run: pnpm knip
 
       - name: Check browser smoke JSDoc
         run: pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js examples/http-sync-controller.js examples/browser-http-smoke/smoke.js examples/browser-reload-recovery/recovery.js
@@ -117,6 +118,43 @@ jobs:
         with:
           path: .docs-site/
           include-hidden-files: true # The validated allowlist includes only .nojekyll as a hidden file.
+
+  # The package supports Node.js 24 (engines >=24); development and release use .nvmrc.
+  compat-node24:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Set up pnpm from packageManager
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+          cache: false
+
+      - name: Report Node.js version
+        run: node --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm check
+
+      - name: Test
+        run: pnpm test
+
+      - name: Test installed package consumer
+        run: pnpm test:package
 
   deploy-docs:
     needs: checks
@@ -156,10 +194,10 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Set up Node.js 24
+      - name: Set up Node.js from .nvmrc
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version-file: .nvmrc
           package-manager-cache: false
 
       - name: Set up pnpm from packageManager
