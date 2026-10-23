@@ -2,7 +2,7 @@
   "name": "articollab-text-editor-example",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.34.5",
+  "packageManager": "pnpm@12.15.0",
   "engines": { "node": ">=24.0.0" },
   "scripts": {
     "start": "node server.ts",
