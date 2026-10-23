@@ -77,6 +77,21 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Install text editor example dependencies
+        run: pnpm --dir examples/text-editor install --frozen-lockfile --ignore-scripts
+
+      - name: Typecheck text editor example
+        run: pnpm --dir examples/text-editor check
+
+      - name: Lint text editor example
+        run: pnpm --dir examples/text-editor lint
+
+      - name: Check unused text editor code and dependencies
+        run: pnpm --dir examples/text-editor knip
+
+      - name: Test text editor example
+        run: pnpm --dir examples/text-editor test
+
       # Browser JS imports the built entrypoint; type-aware lint needs its declarations.
       - name: Lint
         run: pnpm lint

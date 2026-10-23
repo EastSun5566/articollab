@@ -43,6 +43,18 @@ Oxlint uses type-aware correctness/suspicious, explicit-any and unsafe-value che
 
 Knip covers source, tests, scripts and examples; findings and configuration hints fail. Public entrypoint exports are intentional APIs, not candidates for removal merely because the checkout does not call them. Review findings before deleting code.
 
+The [text editor prototype](examples/README.md#text-editor-prototype) is an independent private project. Root type/lint/unused checks exclude only `examples/text-editor/`; CI separately installs its frozen lockfile and runs every gate below after building the core:
+
+```sh
+pnpm --dir examples/text-editor install --frozen-lockfile --ignore-scripts
+pnpm --dir examples/text-editor check
+pnpm --dir examples/text-editor lint
+pnpm --dir examples/text-editor knip
+pnpm --dir examples/text-editor test
+```
+
+Its scripts borrow the root's installed tools. The three exact Knip binary exceptions (`tsc`, `oxlint`, `knip`) refer to those parent tools, not unchecked dependencies. Keep the independent gates when changing the root exclusions. Native browser JS uses JSDoc with its own strict typecheck; it is not covered by the older browser smoke command.
+
 ### Find the relevant tests
 
 Collection, transaction and callback contracts are covered by `runtime.test.ts`, `list.test.ts` and `text.test.ts`. Session/namespace tests cover writer boundaries; wire/checkpoint/history/retry suites cover decoding and recovery. Integration suites cover HTTP, persistence and browser orchestration. These are pointers, not proof of complete coverage.
