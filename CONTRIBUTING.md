@@ -4,7 +4,7 @@ Use this guide to modify the repository, verify changes and prepare releases. Co
 
 ## Set up a checkout
 
-Use Node.js 24+ and pnpm `10.34.5`, as declared in `packageManager`. The project uses TypeScript 7's standard `tsc`.
+Use Node.js 26, as declared in `.nvmrc`, and pnpm `12.15.0`, as declared in `packageManager`. The published package still supports Node.js 24+ (`engines`); CI runs the core type checks, tests and package-consumer test on Node.js 24 as well. The project uses TypeScript 7's standard `tsc`.
 
 ```sh
 pnpm install --frozen-lockfile

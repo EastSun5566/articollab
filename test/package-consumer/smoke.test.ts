@@ -28,7 +28,9 @@ async function run(command: string, args: string[], cwd: string, timeout = 15_00
 
 function pnpm(args: string[], cwd: string, timeout?: number) {
   const cli = process.env.npm_execpath;
-  return cli ? run(process.execPath, [cli, ...args], cwd, timeout) : run("pnpm", args, cwd, timeout);
+  if (cli === undefined || cli === "") return run("pnpm", args, cwd, timeout);
+  // pnpm 12 is a native executable; older releases expose a JavaScript entrypoint.
+  return /\.[cm]?js$/.test(cli) ? run(process.execPath, [cli, ...args], cwd, timeout) : run(cli, args, cwd, timeout);
 }
 
 function record(input: unknown): Record<string, unknown> {
@@ -355,9 +357,11 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     }) };
     const typescript = await json(require.resolve("typescript/package.json"));
     const nodeTypes = await json(require.resolve("@types/node/package.json"));
+    const { packageManager } = await json(join(root, "package.json"));
     assert.ok(typeof typescript.version === "string" && typeof nodeTypes.version === "string");
+    assert.ok(typeof packageManager === "string");
     await writeFile(join(consumer, "package.json"), JSON.stringify({
-      name: "articollab-package-consumer", private: true, type: "module", packageManager: "pnpm@10.34.5",
+      name: "articollab-package-consumer", private: true, type: "module", packageManager,
       dependencies: { articollab: `file:./${basename(packed.filename)}` },
       devDependencies: { typescript: typescript.version, "@types/node": nodeTypes.version },
     }));
