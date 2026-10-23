@@ -4,7 +4,7 @@ import { EditorSelection, type TransactionSpec } from "@codemirror/state";
 import { createClient, createServer, defineDocument, text, value, type ClientBatch,
   type DocumentOperation } from "../../../dist/index.js";
 import { createTextBinding } from "../binding.js";
-import { textEdits } from "../changes.js";
+import { createMirror, textEdits } from "../changes.js";
 
 const Note = defineDocument({ body: text(), count: value(0) });
 type Batch = ClientBatch<DocumentOperation<typeof Note.definition>>;
@@ -193,8 +193,11 @@ describe("Text editor state bridge", () => {
   });
 
   it("validates observer baselines instead of applying a partial malformed diff", () => {
-    assert.throws(() => textEdits(["A"], { beforeLength: 2, afterLength: 0, changes: [] }));
-    assert.throws(() => textEdits(["A"], { beforeLength: 1, afterLength: 0, changes: [] }));
+    assert.throws(() => textEdits(createMirror(["A"]), { beforeLength: 2, afterLength: 0, changes: [] }));
+    assert.throws(() => textEdits(createMirror(["A"]), { beforeLength: 1, afterLength: 0, changes: [] }));
+    assert.throws(() => textEdits(createMirror(["A"]), {
+      beforeLength: 1, afterLength: 1, changes: [{ index: 2, deleteCount: 0, insert: ["B"] }],
+    }));
   });
 
   it("matches editor content through deterministic UTF-16 edits at arbitrary offsets", (t) => {
@@ -211,5 +214,32 @@ describe("Text editor state bridge", () => {
       f.check();
       assert.equal(f.doc.state.body.toString(), expected, `step ${step}`);
     }
+  });
+
+  it("maps remote Text edits through wide elements without a full mirror", (t) => {
+    const f = fixture(); t.after(() => f.binding.destroy());
+    let seed = 7;
+    function random(bound: number) { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) % bound; }
+    const values = ["A", "😀", "中", "\ud83d", "\ude00", "𝄞x", "e\u0301", "😀😀"];
+    const body = f.doc.state.body;
+    for (let step = 0; step < 300; step++) {
+      // Programmatic edits arrive through Text.observe, sometimes several per notification.
+      f.doc.transact(() => {
+        for (let edit = random(3) + 1; edit > 0; edit--) {
+          const index = random(body.length + 1);
+          if (random(3) === 0 && index < body.length) body.delete(index, 1 + random(Math.min(3, body.length - index)));
+          else body.insert(index, values[random(values.length)]!);
+        }
+      });
+      f.check();
+      if (step % 5 === 0) {
+        // Interleave local edits at UTF-16 offsets, including inside surrogate pairs.
+        const length = f.binding.state.doc.length;
+        const from = random(length + 1), to = from + random(Math.min(4, length - from) + 1);
+        f.edit({ changes: { from, to, insert: values[random(values.length)]! } });
+        f.check();
+      }
+    }
+    assert.deepEqual(f.errors, []);
   });
 });

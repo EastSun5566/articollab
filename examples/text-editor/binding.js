@@ -1,6 +1,6 @@
 // @ts-check
 import { Annotation, EditorState } from "@codemirror/state";
-import { editorEdits, textEdits } from "./changes.js";
+import { createMirror, editorEdits, mirrorElements, textEdits } from "./changes.js";
 
 const fromText = Annotation.define();
 
@@ -12,8 +12,8 @@ const fromText = Annotation.define();
  *   onLocalEdit?: () => void, extensions?: import("@codemirror/state").Extension}} options
  */
 export function createTextBinding(doc, options) {
-  let elements = Array.from(doc.state.body);
-  let state = EditorState.create({ doc: elements.join(""), extensions: [
+  let mirror = createMirror(doc.state.body);
+  let state = EditorState.create({ doc: doc.state.body.toString(), extensions: [
     EditorState.lineSeparator.of("\n"), options.extensions ?? [],
   ] });
   let local = false, destroyed = false, failed = false;
@@ -42,7 +42,7 @@ export function createTextBinding(doc, options) {
       }
       try {
         if (transaction.docChanged && !external) {
-          const edits = editorEdits(elements, transaction);
+          const edits = editorEdits(mirror, transaction);
           local = true;
           try {
             if (edits.length !== 0) doc.transact(() => {
@@ -63,8 +63,8 @@ export function createTextBinding(doc, options) {
   const unsubscribe = doc.state.body.observe((event) => {
     try {
       if (failed) throw failure;
-      const next = textEdits(elements, event);
-      elements = next.elements;
+      const next = textEdits(mirror, event);
+      mirror = next.mirror;
       if (local) return; // The original editor transaction will be applied once.
       const changes = next.changes.filter(({ from, to, insert }) => state.doc.sliceString(from, to, "\n") !== insert);
       if (changes.length !== 0) dispatch([state.update({ changes, annotations: fromText.of(true) })]);
@@ -73,7 +73,8 @@ export function createTextBinding(doc, options) {
 
   return {
     get state() { return state; },
-    get elements() { return elements.slice(); },
+    /** Rebuilt from the editor text and mirror for inspection; linear in the document size. */
+    get elements() { return mirrorElements(mirror, state.doc.toString()); },
     dispatch,
     destroy() { if (!destroyed) { destroyed = true; unsubscribe(); } },
   };
