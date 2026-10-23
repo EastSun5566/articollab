@@ -77,6 +77,14 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # Browser JS imports the built entrypoint; type-aware lint needs its declarations.
+      # Run root checks before installing example dependencies, matching a fresh checkout.
+      - name: Lint
+        run: pnpm lint
+
+      - name: Check unused code and dependencies
+        run: pnpm knip
+
       - name: Install text editor example dependencies
         run: pnpm --dir examples/text-editor install --frozen-lockfile --ignore-scripts
 
@@ -91,13 +99,6 @@ jobs:
 
       - name: Test text editor example
         run: pnpm --dir examples/text-editor test
-
-      # Browser JS imports the built entrypoint; type-aware lint needs its declarations.
-      - name: Lint
-        run: pnpm lint
-
-      - name: Check unused code and dependencies
-        run: pnpm knip
 
       - name: Check browser smoke JSDoc
         run: pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js examples/http-sync-controller.js examples/browser-http-smoke/smoke.js examples/browser-reload-recovery/recovery.js
