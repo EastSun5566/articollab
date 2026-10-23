@@ -52,7 +52,7 @@ All notable changes to this project will be documented in this file. See [commit
 ### ⚠ BREAKING CHANGES
 
 * new receive batches require canonical insertion namespaces by default. Set allowCustomClientNamespaces to true for application-owned incoming ID policy. Retained retries and trusted rejection preserve their original results.
-* server submissions require an open issued ID; maxClients bounds open sessions; server checkpoints now use lastClientNumber and clients instead of replays. Old server checkpoints are rejected. Prepare the unpublished 0.2.0-beta.0 baseline.
+* server submissions require an open issued ID; maxClients bounds open sessions; server checkpoints now use lastClientNumber and clients instead of replays. Old server checkpoints are rejected.
 
 ### Features
 
@@ -96,7 +96,7 @@ All notable changes to this project will be documented in this file. See [commit
 ### ⚠ BREAKING CHANGES
 
 * new receive batches require canonical insertion namespaces by default. Set allowCustomClientNamespaces to true for application-owned incoming ID policy. Retained retries and trusted rejection preserve their original results.
-* server submissions require an open issued ID; maxClients bounds open sessions; server checkpoints now use lastClientNumber and clients instead of replays. Old server checkpoints are rejected. Prepare the unpublished 0.2.0-beta.0 baseline.
+* server submissions require an open issued ID; maxClients bounds open sessions; server checkpoints now use lastClientNumber and clients instead of replays. Old server checkpoints are rejected.
 
 ### Features
 
@@ -139,7 +139,7 @@ All notable changes to this project will be documented in this file. See [commit
 
 ### ⚠ BREAKING CHANGES
 
-* server submissions require an open issued ID; maxClients bounds open sessions; server checkpoints now use lastClientNumber and clients instead of replays. Old server checkpoints are rejected. Prepare the unpublished 0.2.0-beta.0 baseline.
+* server submissions require an open issued ID; maxClients bounds open sessions; server checkpoints now use lastClientNumber and clients instead of replays. Old server checkpoints are rejected.
 
 ### Features
 
