@@ -40,7 +40,7 @@ describe("collection benchmark", () => {
     assert.ok(typeof environment.cpuCount === "number" && environment.cpuCount > 0);
     assert.deepEqual(report.config, { sizes: [32], samples: 2, iterations: 2, pending: 20, warmups: 1 });
     assert.ok(Array.isArray(report.results));
-    assert.equal(report.results.length, 33);
+    assert.equal(report.results.length, 35);
     const cases = new Set<string>();
     for (const input of report.results) {
       const row = record(input);
@@ -73,7 +73,8 @@ describe("collection benchmark", () => {
     const scenarios = ["local-insert", "local-delete", "sync-insert", "pending-replay", "materialize",
       "snapshot", "unused-policy-snapshot", "unchanged-receive", "retained-heap"];
     const objectScenarios = ["object-json-ack", "object-own-replace-ack", "object-json-replace-ack", "object-remote-replace",
-      "object-local-set", "object-json-set-ack", "object-remote-set", "object-remote-set-pending-same", "object-remote-set-pending-disjoint",
+      "object-local-set", "object-json-set-ack", "object-remote-set", "object-remote-set-observed", "object-remote-replace-observed",
+      "object-remote-set-pending-same", "object-remote-set-pending-disjoint",
       "object-remote-replace-pending-same", "object-remote-replace-pending-disjoint", "object-json-mixed-ack"];
     assert.deepEqual([...cases].sort(), [...["list", "text"].flatMap((kind) => scenarios.map((scenario) => `${kind}/${scenario}`)),
       ...objectScenarios.map((scenario) => `list/${scenario}`),
@@ -87,7 +88,7 @@ describe("collection benchmark", () => {
     const output = await run(["--expose-gc", script, "--smoke"]);
     assert.equal(output.stderr, "");
     assert.match(output.stdout, /kind\tsize\tscenario\tmedian\tmin\tmax\tunit/);
-    assert.equal(output.stdout.split("\n").filter((line) => /^(list|text)\t32\t/.test(line)).length, 33);
+    assert.equal(output.stdout.split("\n").filter((line) => /^(list|text)\t32\t/.test(line)).length, 35);
     assert.match(output.stdout, /ms\/op/);
     assert.match(output.stdout, /retained-heap.*bytes/);
     assert.match(output.stdout, /signed GC estimate/);

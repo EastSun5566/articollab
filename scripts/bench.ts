@@ -21,7 +21,8 @@ const kinds = ["list", "text"] as const;
 const scenarios = ["local-insert", "local-delete", "sync-insert", "pending-replay",
   "materialize", "snapshot", "unused-policy-snapshot", "unchanged-receive", "retained-heap"] as const;
 const objectScenarios = ["object-json-ack", "object-own-replace-ack", "object-json-replace-ack",
-  "object-remote-replace", "object-local-set", "object-json-set-ack", "object-remote-set"] as const;
+  "object-remote-replace", "object-local-set", "object-json-set-ack", "object-remote-set",
+  "object-remote-set-observed", "object-remote-replace-observed"] as const;
 const pendingListScenarios = ["object-remote-set-pending-same", "object-remote-set-pending-disjoint",
   "object-remote-replace-pending-same", "object-remote-replace-pending-disjoint", "object-json-mixed-ack"] as const;
 const pendingTextScenarios = ["remote-replace-pending-same", "remote-replace-pending-disjoint", "value-json-mixed-ack"] as const;
@@ -245,10 +246,22 @@ function objectTrial(api: Api, size: number, scenario: typeof objectScenarios[nu
   const writer = api.createClient(schema, { clientId: server.openClient(), snapshot,
     onBatch: (batch) => batches.push(batch) });
   const peer = api.createClient(schema, { clientId: server.openClient(), snapshot, onBatch() {} });
-  const recipient = scenario === "object-remote-replace" || scenario === "object-remote-set" ? peer : writer;
-  const isSet = scenario === "object-local-set" || scenario === "object-json-set-ack" || scenario === "object-remote-set";
+  const observed = scenario === "object-remote-set-observed" || scenario === "object-remote-replace-observed";
+  const recipient = scenario === "object-remote-replace" || scenario === "object-remote-set" || observed ? peer : writer;
+  const isSet = scenario === "object-local-set" || scenario === "object-json-set-ack" || scenario === "object-remote-set" ||
+    scenario === "object-remote-set-observed";
   let changes = 0;
   recipient.on("change", (event) => { if (event.origin === "server") changes++; });
+  // Observed workloads keep a view mirror inside the timed receive, as a UI would.
+  let mirror = observed ? recipient.state.items.toArray() : [];
+  let notifications = 0;
+  if (observed) recipient.state.items.observe((event) => {
+    notifications++;
+    for (const change of event.changes) {
+      if (change.type === "set") mirror[change.index] = change.value;
+      else mirror.splice(change.index, change.deleteCount, ...change.insert);
+    }
+  });
   collect();
   let elapsed = 0;
   for (let index = 0; index < iterations; index++) {
@@ -271,6 +284,11 @@ function objectTrial(api: Api, size: number, scenario: typeof objectScenarios[nu
     if (scenario !== "object-local-set") elapsed += performance.now() - start;
     if (recipient === peer) writer.receive(commit);
     else peer.receive(commit);
+    if (observed) {
+      assert.equal(notifications, index + 1);
+      assert.equal(mirror.length, size);
+      assert.ok(Object.is(mirror[size - 1], recipient.state.items.get(size - 1)));
+    }
     const operation = commit.operations.at(-1)!;
     assert.equal(operation.type, isSet ? "list/set" : "list/insert");
     if (operation.type === "list/insert" || operation.type === "list/set") {

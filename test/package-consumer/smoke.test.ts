@@ -73,6 +73,19 @@ const stopObserving = peer.state.body.observe((event) => {
   assert.deepEqual(peerText, [...peer.state.body]);
   textNotifications++;
 });
+let peerItems = [...peer.state.items];
+let listSets = 0, listSplices = 0;
+const stopObservingItems = peer.state.items.observe((event) => {
+  assert.ok(Object.isFrozen(event) && Object.isFrozen(event.changes));
+  assert.equal(event.beforeLength, peerItems.length);
+  for (const change of event.changes) {
+    assert.ok(Object.isFrozen(change));
+    if (change.type === "set") { peerItems = peerItems.with(change.index, change.value); listSets++; }
+    else { peerItems = peerItems.toSpliced(change.index, change.deleteCount, ...change.insert); listSplices++; }
+  }
+  assert.equal(event.afterLength, peerItems.length);
+  assert.deepEqual(peerItems, peer.state.items.toArray());
+});
 const insertionIds = new Set();
 function submit(batch) {
   for (const operation of batch.operations) {
@@ -177,6 +190,8 @@ assert.deepEqual(restoredCustom.receive(custom), { commit: customResult.commit, 
 assert.deepEqual(peerText, [...peer.state.body]);
 assert.equal(textNotifications, 3);
 stopObserving(); stopObserving();
+assert.ok(listSets > 0 && listSplices > 0);
+stopObservingItems(); stopObservingItems();
 
 const Unicode = defineDocument({ body: text() });
 let unicodeServer = createServer(Unicode);
@@ -207,6 +222,7 @@ import {
   createClient, createServer, defineDocument, list, text, value,
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeSnapshot,
   type Value, type List, type Text, type TextChange, type TextChangeEvent, type DocumentOperation, type DocumentSnapshot,
+  type ListChange, type ListChangeEvent,
   type ListSnapshotData, type ListSetOperation, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
   type CreateServerOptions, type ClientBatch, type ServerCommit,
 } from "articollab";
@@ -244,6 +260,24 @@ doc.state.body.observe((event) => {
 });
 // @ts-expect-error Observers require a callback.
 doc.state.body.observe(123);
+type StopObservingItems = Expect<Equal<ReturnType<typeof doc.state.items.observe>, () => void>>;
+doc.state.items.observe((event) => {
+  type Event = Expect<Equal<typeof event, ListChangeEvent<string>>>;
+  type Changes = Expect<Equal<typeof event.changes, readonly ListChange<string>[]>>;
+  for (const change of event.changes) {
+    if (change.type === "set") {
+      type SetValue = Expect<Equal<typeof change.value, string>>;
+    } else {
+      type Inserted = Expect<Equal<typeof change.insert, readonly string[]>>;
+      // @ts-expect-error Inserted elements are readonly.
+      change.insert.push("x");
+    }
+  }
+  // @ts-expect-error Observed changes are readonly.
+  event.changes.push({ type: "set", index: 0, value: "x" });
+});
+// @ts-expect-error List observers require a callback.
+doc.state.items.observe("callback");
 type ValuePath = Expect<Equal<Extract<Operation, { type: "value/set" }>['path'], "count">>;
 type ValuePayload = Expect<Equal<Extract<Operation, { type: "value/set" }>['value'], number>>;
 type ListPath = Expect<Equal<Extract<Operation, { type: "list/insert" }>['path'], "items">>;

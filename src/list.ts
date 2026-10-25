@@ -10,6 +10,7 @@ import type { JsonValue } from "./schema.ts";
 import { CollectionConflictError } from "./conflict.ts";
 import { HamtMap } from "./vendor/hamt.ts";
 import { validateJsonValue } from "./json.ts";
+import { CollectionObservers } from "./observe.ts";
 
 export interface SavedIdRange {
   readonly bunchId: string;
@@ -55,6 +56,22 @@ export type ListOperation<
   T extends JsonValue = JsonValue,
 > = ListInsertOperation<Path, T> | ListDeleteOperation<Path> | ListSetOperation<Path, T>;
 
+/** A visible List edit in pre-event index coordinates. */
+export type ListChange<T extends JsonValue = JsonValue> =
+  | {
+    readonly type: "splice";
+    readonly index: number;
+    readonly deleteCount: number;
+    readonly insert: readonly T[];
+  }
+  | { readonly type: "set"; readonly index: number; readonly value: T };
+
+export interface ListChangeEvent<T extends JsonValue = JsonValue> {
+  readonly beforeLength: number;
+  readonly afterLength: number;
+  readonly changes: readonly ListChange<T>[];
+}
+
 /** An optimistic collaborative list of immutable values. */
 export interface List<T extends JsonValue> extends Iterable<T> {
   readonly length: number;
@@ -65,6 +82,25 @@ export interface List<T extends JsonValue> extends Iterable<T> {
   delete(index: number): void;
   values(): IterableIterator<T>;
   toArray(): T[];
+  /** Subscribes from the current view; changes use descending pre-event indices, sets first at a tie. */
+  observe(listener: (event: ListChangeEvent<T>) => void): () => void;
+}
+
+/** Descending pre-event indices; at one index a set applies before a splice that may insert there. */
+function listChangeEvent<T extends JsonValue>(
+  beforeLength: number, afterLength: number, changes: ListChange<T>[]
+): ListChangeEvent<T> {
+  changes.sort((left, right) => right.index - left.index ||
+    (left.type === right.type ? 0 : left.type === "set" ? -1 : 1));
+  return Object.freeze({ beforeLength, afterLength, changes: Object.freeze(changes) });
+}
+
+function spliceChange<T extends JsonValue>(index: number, deleteCount: number, insert: T[]): ListChange<T> {
+  return Object.freeze({ type: "splice", index, deleteCount, insert: Object.freeze(insert) });
+}
+
+function setChange<T extends JsonValue>(index: number, value: T): ListChange<T> {
+  return Object.freeze({ type: "set", index, value });
 }
 
 function idKey(id: Readonly<ElementId>): string {
@@ -259,6 +295,97 @@ export class ListState<T extends JsonValue> {
     }
   }
 
+  /**
+   * Visible changes to a later state. With targets, every other element must keep its ID, value
+   * and relative order on both sides; inconsistent targets fall back to the full comparison.
+   */
+  changesTo(other: ListState<T>, targets?: Iterable<Readonly<ElementId>>): ListChangeEvent<T> {
+    if (this === other) return listChangeEvent<T>(this.length, other.length, []);
+    if (targets === undefined) return this.fullChangesTo(other);
+
+    const seen = new Set<string>();
+    const removed: Array<{ index: number; value: T }> = [];
+    const inserted: Array<{ index: number; value: T }> = [];
+    const changes: ListChange<T>[] = [];
+    for (const id of targets) {
+      const key = idKey(id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const before = this.idList.has(id), after = other.idList.has(id);
+      if (before && after) {
+        const value = other.valueFor(id);
+        if (!Object.is(this.valueFor(id), value)) changes.push(setChange(this.idList.indexOf(id), value));
+      } else if (before) {
+        removed.push({ index: this.idList.indexOf(id), value: this.valueFor(id) });
+      } else if (after) {
+        inserted.push({ index: other.idList.indexOf(id), value: other.valueFor(id) });
+      }
+    }
+    removed.sort((a, b) => a.index - b.index);
+    inserted.sort((a, b) => a.index - b.index);
+    // Untouched and still-present elements align on both sides; replace removed/inserted runs between them.
+    let left = 0, right = 0, beforeIndex = 0, afterIndex = 0;
+    let lengthChanged = false;
+    while (left < removed.length || right < inserted.length) {
+      const gap = Math.min((removed[left]?.index ?? this.length) - beforeIndex,
+        (inserted[right]?.index ?? other.length) - afterIndex);
+      if (gap < 0) return this.fullChangesTo(other);
+      beforeIndex += gap; afterIndex += gap;
+      const index = beforeIndex, gone: T[] = [], insert: T[] = [];
+      while (removed[left]?.index === beforeIndex) { gone.push(removed[left++]!.value); beforeIndex++; }
+      while (inserted[right]?.index === afterIndex) { insert.push(inserted[right++]!.value); afterIndex++; }
+      if (gone.length === 0 && insert.length === 0) return this.fullChangesTo(other);
+      if (gone.length !== insert.length) lengthChanged = true;
+      if (gone.length !== insert.length || gone.some((value, offset) => !Object.is(value, insert[offset]))) {
+        changes.push(spliceChange(index, gone.length, insert));
+      }
+    }
+    if (this.length - beforeIndex !== other.length - afterIndex) return this.fullChangesTo(other);
+    if (lengthChanged && this.length === other.length && changes.every((change) => change.type === "splice")) {
+      // Equal totals with uneven runs (a delete plus an insert elsewhere) may only shift equal values.
+      // Elements outside the edited span are unchanged, so comparing that span decides silence.
+      let low = this.length, high = 0;
+      for (const change of changes) {
+        low = Math.min(low, change.index);
+        if (change.type === "splice") high = Math.max(high, change.index + change.deleteCount);
+      }
+      let same = true;
+      for (let index = low; same && index < high; index++) same = Object.is(this.get(index), other.get(index));
+      if (same) return listChangeEvent<T>(this.length, other.length, []);
+    }
+    return listChangeEvent(this.length, other.length, changes);
+  }
+
+  /** Same-ID prefix/suffix become sets; the middle becomes one value-trimmed splice. */
+  private fullChangesTo(other: ListState<T>): ListChangeEvent<T> {
+    const beforeIds = [...this.idList], afterIds = [...other.idList];
+    const changes: ListChange<T>[] = [];
+    let start = 0;
+    while (start < beforeIds.length && start < afterIds.length && equalsId(beforeIds[start]!, afterIds[start]!)) {
+      const value = other.valueFor(afterIds[start]!);
+      if (!Object.is(this.valueFor(beforeIds[start]!), value)) changes.push(setChange(start, value));
+      start++;
+    }
+    let endBefore = beforeIds.length, endAfter = afterIds.length;
+    while (endBefore > start && endAfter > start && equalsId(beforeIds[endBefore - 1]!, afterIds[endAfter - 1]!)) {
+      endBefore--; endAfter--;
+      const value = other.valueFor(afterIds[endAfter]!);
+      if (!Object.is(this.valueFor(beforeIds[endBefore]!), value)) changes.push(setChange(endBefore, value));
+    }
+    // Different IDs with identical values at the middle's edges are not visible content changes.
+    while (start < endBefore && start < endAfter &&
+      Object.is(this.valueFor(beforeIds[start]!), other.valueFor(afterIds[start]!))) start++;
+    while (endBefore > start && endAfter > start &&
+      Object.is(this.valueFor(beforeIds[endBefore - 1]!), other.valueFor(afterIds[endAfter - 1]!))) {
+      endBefore--; endAfter--;
+    }
+    if (endBefore > start || endAfter > start) {
+      changes.push(spliceChange(start, endBefore - start,
+        afterIds.slice(start, endAfter).map((id) => other.valueFor(id))));
+    }
+    return listChangeEvent(this.length, other.length, changes);
+  }
+
   save(): ListSnapshotData<T> {
     const idList = Object.freeze(
       this.idList.save().map((range) => Object.freeze({ ...range }))
@@ -323,6 +450,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
   private readonly idGenerator: ElementIdGenerator;
   private readonly beforeMutation: () => void;
   private bunchSeq: number;
+  private readonly observers: CollectionObservers<ListState<T>, ListChangeEvent<T>>;
 
   constructor(
     mutate: (operation: ListOperation<string, T>) => void,
@@ -330,13 +458,15 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
     path: string,
     initialState: ListState<T>,
     beforeMutation: () => void,
-    lastBunchSeq = 0
+    lastBunchSeq: number,
+    beforeObserve: () => () => void
   ) {
     this.mutate = mutate;
     this.path = path;
     this.current = initialState;
 
     this.beforeMutation = beforeMutation;
+    this.observers = new CollectionObservers(() => this.current, beforeObserve);
     this.bunchSeq = lastBunchSeq;
     this.idGenerator = new ElementIdGenerator(() => {
       if (this.bunchSeq === Number.MAX_SAFE_INTEGER) {
@@ -420,6 +550,27 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
 
   toArray(): T[] {
     return this.current.toArray();
+  }
+
+  observe(listener: (event: ListChangeEvent<T>) => void): () => void {
+    return this.observers.observe(listener);
+  }
+
+  /** Every List operation changes at most the visibility or value of its own target ID. */
+  track(operation: ListOperation): void {
+    this.observers.track([operation.id]);
+  }
+
+  requireFullComparison(): void {
+    this.observers.requireFullComparison();
+  }
+
+  get hasPendingObservers(): boolean {
+    return this.observers.hasPending;
+  }
+
+  flushObservers(): void {
+    this.observers.flush();
   }
 
   [Symbol.iterator](): IterableIterator<T> {

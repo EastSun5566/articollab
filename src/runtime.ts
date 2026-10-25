@@ -412,8 +412,8 @@ export class ClientDocument<S extends SchemaShape> {
   private operations: Operation[] = [];
   private transactionSnapshot: Map<string, CollectionState> | undefined;
   private notificationDepth = 0;
-  private drainingTextObservers = false;
-  private textObserverCount = 0;
+  private drainingObservers = false;
+  private observerCount = 0;
 
   constructor(schema: DocumentSchema<S>, options: CreateClientOptions<S>) {
     if (options.clientId.length === 0) {
@@ -486,7 +486,8 @@ export class ClientDocument<S extends SchemaShape> {
           path,
           collectionState,
           beforeMutation,
-          lastBunchSeqs?.[path] ?? 0
+          lastBunchSeqs?.[path] ?? 0,
+          () => this.registerObserver("List")
         );
       } else {
         if (!(collectionState instanceof TextState)) {
@@ -499,11 +500,7 @@ export class ClientDocument<S extends SchemaShape> {
           collectionState,
           beforeMutation,
           lastBunchSeqs?.[path] ?? 0,
-          () => {
-            if (this.transactionDepth !== 0) throw new Error("Cannot observe Text during a transaction");
-            this.textObserverCount++;
-            return () => { this.textObserverCount--; };
-          }
+          () => this.registerObserver("Text")
         );
       }
       this.collections.set(path, runtime);
@@ -616,7 +613,7 @@ export class ClientDocument<S extends SchemaShape> {
     } finally {
       this.notificationDepth--;
     }
-    this.flushTextObservers();
+    this.flushObservers();
   }
 
   private receiveCommit(commit: ServerCommit<DocumentOperation<S>>): void {
@@ -722,13 +719,13 @@ export class ClientDocument<S extends SchemaShape> {
 
     for (const [path, runtime] of this.collections) {
       restoreRuntime(runtime, nextOptimisticStates.get(path)!, path);
-      if (runtime instanceof RuntimeText &&
+      if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList) &&
         (previous !== null || conflict !== null || (isOwnCommit && !compareOwnPayloads))) {
         runtime.requireFullComparison();
       }
     }
-    this.trackTextOperations(commit.operations);
-    if (ownBatch !== undefined) this.trackTextOperations(ownBatch.operations);
+    this.trackObservedOperations(commit.operations);
+    if (ownBatch !== undefined) this.trackObservedOperations(ownBatch.operations);
 
     if (changed) {
       this.emitChange(Object.freeze({ origin: "server", commit }));
@@ -748,7 +745,7 @@ export class ClientDocument<S extends SchemaShape> {
     });
 
     this.pendingBatches.push(batch);
-    this.trackTextOperations(operations);
+    this.trackObservedOperations(operations);
     this.notificationDepth++;
     try {
       this.onBatch(batch);
@@ -756,34 +753,52 @@ export class ClientDocument<S extends SchemaShape> {
     } finally {
       this.notificationDepth--;
     }
-    this.flushTextObservers();
+    this.flushObservers();
   }
 
-  private trackTextOperations(operations: readonly Operation[]): void {
-    if (this.textObserverCount === 0) return;
+  private registerObserver(kind: "List" | "Text"): () => void {
+    if (this.transactionDepth !== 0) throw new Error(`Cannot observe ${kind} during a transaction`);
+    this.observerCount++;
+    return () => { this.observerCount--; };
+  }
+
+  private trackObservedOperations(operations: readonly Operation[]): void {
+    if (this.observerCount === 0) return;
     for (const operation of operations) {
-      if (operation.type !== "text/insert" && operation.type !== "text/delete") continue;
       const runtime = this.collections.get(operation.path);
-      if (runtime instanceof RuntimeText) runtime.track(operation);
+      switch (operation.type) {
+        case "text/insert": case "text/delete":
+          if (runtime instanceof RuntimeText) runtime.track(operation);
+          break;
+        case "list/insert": case "list/delete": case "list/set":
+          if (runtime instanceof RuntimeList) runtime.track(operation);
+          break;
+        default:
+          break;
+      }
     }
   }
 
-  private flushTextObservers(): void {
-    if (this.textObserverCount === 0 || this.notificationDepth !== 0 || this.drainingTextObservers) return;
-    this.drainingTextObservers = true;
+  private flushObservers(): void {
+    if (this.observerCount === 0 || this.notificationDepth !== 0 || this.drainingObservers) return;
+    this.drainingObservers = true;
     try {
       let pending: boolean;
       do {
         pending = false;
         for (const runtime of this.collections.values()) {
-          if (runtime instanceof RuntimeText && runtime.hasPendingObservers) runtime.flushObservers();
+          if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList) && runtime.hasPendingObservers) {
+            runtime.flushObservers();
+          }
         }
         for (const runtime of this.collections.values()) {
-          if (runtime instanceof RuntimeText && runtime.hasPendingObservers) pending = true;
+          if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList) && runtime.hasPendingObservers) {
+            pending = true;
+          }
         }
       } while (pending);
     } finally {
-      this.drainingTextObservers = false;
+      this.drainingObservers = false;
     }
   }
 
