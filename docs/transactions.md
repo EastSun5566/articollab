@@ -93,6 +93,43 @@ Normal edits compare affected IDs; conflicts, changed replay prefixes and equal-
 
 If `onBatch` or an existing change listener throws, observers do not run for that failed call. A later successful operation can deliver the accumulated difference. If an observer throws, its baseline has already advanced; remaining observers keep their baselines, the error propagates and completed mutations remain. If a callback partially updated your UI, unsubscribe and rebuild its mirror before subscribing again. Callback side effects are not rolled back.
 
+## Update a list view incrementally
+
+`List.observe()` works like `Text.observe()`, but a change is either a splice or an in-place set. Handle `set` separately so a row keeps its own key when only its value changes:
+
+```ts
+import { createClient, createServer, defineDocument, list } from "articollab";
+
+type Card = { title: string; done: boolean };
+const Board = defineDocument({ cards: list<Card>() });
+const server = createServer(Board);
+const doc = createClient(Board, {
+  clientId: server.openClient(),
+  onBatch() {}, // This example keeps edits local.
+});
+
+let nextKey = 0;
+let rows = [...doc.state.cards].map((card) => ({ key: nextKey++, card }));
+const stop = doc.state.cards.observe(({ changes }) => {
+  for (const change of changes) {
+    if (change.type === "set") {
+      rows = rows.with(change.index, { key: rows[change.index]!.key, card: change.value });
+    } else {
+      const inserted = change.insert.map((card) => ({ key: nextKey++, card }));
+      rows = rows.toSpliced(change.index, change.deleteCount, ...inserted);
+    }
+  }
+});
+
+doc.state.cards.push({ title: "Write docs", done: false });
+doc.state.cards.push({ title: "Ship", done: false });
+doc.state.cards.set(0, { title: "Write docs", done: true }); // Row 0 keeps key 0.
+console.log(rows.map(({ key, card }) => `${key}:${card.title}:${card.done}`)); // [ '0:Write docs:true', '1:Ship:false' ]
+stop();
+```
+
+All indices refer to the pre-event view and changes arrive by descending index, with a set before a splice at the same index, so apply them in the supplied order. A set means the same element changed value; there is no move event, so a delete-and-reinsert move arrives as two splices and the moved row gets a new key. Payloads keep `Object.is` identity: an acknowledgement that replaces an object with an equal decoded copy is reported as a set, which a view may skip after its own equality check.
+
 ## Callback failure is not rollback
 
 If `onBatch` throws, its batch is already pending; the local change is not emitted. If a listener throws, completed state/sequence advances remain and later listeners may not run. A server listener throws after receive has advanced state and watermark.

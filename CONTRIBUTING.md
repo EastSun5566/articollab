@@ -108,7 +108,7 @@ Workloads cover local edits, in-process sync, remote receive with 20 pending ins
 
 Seven List workloads use `{ label: "x" }` elements. JSON-decoded insertion ack, in-memory replacement ack, JSON-decoded replacement ack and remote replacement time only `receive()`; local edits, submission, serialization/decoding and assertions are outside the timer. Set workloads measure local `set()` (submission/ack excluded), JSON-decoded set ack and remote set receive. All replacements/sets target the last element. These are single-bunch fixtures, not fragmented-document measurements.
 
-Eight more receive-only scenarios cover remote List set/replacement and Text replacement with 20 pending batches, on either the same path or a disjoint Value path; two mixed own-ack scenarios combine Text with a List object or Value object. Same-path pending work inserts at the end; disjoint pending work makes 20 Value writes. All commits cross JSON decoding before timing. Mixed schemas put Text first so another collection's change cannot hide a Text scan. Trials check final values, server events, pending payloads, watermarks and allocation progress outside timing. The full matrix contains 99 workloads and smoke contains 33; the original 75 keep their measurement boundaries.
+Eight more receive-only scenarios cover remote List set/replacement and Text replacement with 20 pending batches, on either the same path or a disjoint Value path; two mixed own-ack scenarios combine Text with a List object or Value object. Same-path pending work inserts at the end; disjoint pending work makes 20 Value writes. All commits cross JSON decoding before timing. Mixed schemas put Text first so another collection's change cannot hide a Text scan. Trials check final values, server events, pending payloads, watermarks and allocation progress outside timing. Two observed List workloads repeat the remote object set and replacement receives while a `List.observe()` subscriber applies each event to an array mirror inside the timed `receive()`, as a view would; trials check the notification count and the mirrored element's identity outside timing. The full matrix contains 105 workloads and smoke contains 35; the original 99 keep their measurement boundaries.
 
 Each worker has a 30-second timeout, one warm-up and five fresh-fixture samples. Timing averages ten operations per sample, except pending replay's single receive. Setup, explicit GC and assertions are excluded; natural GC during operations is included. Heap uses explicit GC before/after hydration and retains signed deltas, including negative measurements. Smoke uses size 32, two samples and two operations, still with 20 pending batches.
 
@@ -116,7 +116,7 @@ JSON includes raw samples, settings, Node/V8, system information, versions and G
 
 ### Fragmented Text and bounded history
 
-The opt-in extended matrix is separate from the default 99 workloads:
+The opt-in extended matrix is separate from the default 105 workloads:
 
 ```sh
 pnpm bench --extended

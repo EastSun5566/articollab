@@ -9,6 +9,7 @@ import { loadIdList, type SavedIdRange } from "./list.ts";
 import { CollectionConflictError } from "./conflict.ts";
 import { HamtMap } from "./vendor/hamt.ts";
 import { jsonArray, jsonPointer, type JsonPathSegment } from "./json.ts";
+import { CollectionObservers } from "./observe.ts";
 
 export interface TextSnapshotData {
   readonly idList: readonly SavedIdRange[];
@@ -445,9 +446,14 @@ function compressIds(ids: readonly ElementId[]): TextIdRange[] {
   return ranges;
 }
 
-interface TextObserver {
-  state: TextState;
-  listener: (event: TextChangeEvent) => void;
+/** IDs whose visibility a Text operation can change. */
+function* textOperationIds(operation: TextOperation): IterableIterator<Readonly<ElementId>> {
+  if (operation.type === "text/insert") {
+    let counter = operation.id.counter;
+    for (const _ of operation.value) yield { bunchId: operation.id.bunchId, counter: counter++ };
+  } else {
+    for (const range of operation.ranges) yield* idsInRange(range.start, range.count);
+  }
 }
 
 /** Internal mutable API wrapper around a persistent TextState. */
@@ -458,10 +464,7 @@ export class RuntimeText implements Text {
   private readonly idGenerator: ElementIdGenerator;
   private readonly beforeMutation: () => void;
   private bunchSeq: number;
-  private readonly beforeObserve: () => () => void;
-  private readonly observers = new Set<TextObserver>();
-  private readonly targets = new Map<string, Readonly<ElementId>>();
-  private fullComparison = false;
+  private readonly observers: CollectionObservers<TextState, TextChangeEvent>;
 
   constructor(
     mutate: (operation: TextOperation) => void,
@@ -477,7 +480,7 @@ export class RuntimeText implements Text {
     this.current = initialState;
 
     this.beforeMutation = beforeMutation;
-    this.beforeObserve = beforeObserve;
+    this.observers = new CollectionObservers(() => this.current, beforeObserve);
     this.bunchSeq = lastBunchSeq;
     this.idGenerator = new ElementIdGenerator(() => {
       if (this.bunchSeq === Number.MAX_SAFE_INTEGER) {
@@ -552,61 +555,23 @@ export class RuntimeText implements Text {
   }
 
   observe(listener: (event: TextChangeEvent) => void): () => void {
-    const release = this.beforeObserve();
-    let observer: TextObserver | undefined = { state: this.current, listener };
-    this.observers.add(observer);
-    return () => {
-      if (observer === undefined) return;
-      this.observers.delete(observer);
-      observer = undefined;
-      this.clearObservedTargets();
-      release();
-    };
+    return this.observers.observe(listener);
   }
 
   track(operation: TextOperation): void {
-    if (this.observers.size === 0) return;
-    if (!this.hasPendingObservers) { this.clearObservedTargets(); return; }
-    if (this.fullComparison) return;
-    const add = (id: Readonly<ElementId>) => this.targets.set(idKey(id), ownId(id));
-    if (operation.type === "text/insert") {
-      let counter = operation.id.counter;
-      for (const _ of operation.value) add({ bunchId: operation.id.bunchId, counter: counter++ });
-    } else {
-      for (const range of operation.ranges) for (const id of idsInRange(range.start, range.count)) add(id);
-    }
+    this.observers.track(textOperationIds(operation));
   }
 
   requireFullComparison(): void {
-    if (this.observers.size === 0) return;
-    if (!this.hasPendingObservers) { this.clearObservedTargets(); return; }
-    this.fullComparison = true;
-    this.targets.clear();
+    this.observers.requireFullComparison();
   }
 
   get hasPendingObservers(): boolean {
-    for (const observer of this.observers) if (observer.state !== this.current) return true;
-    return false;
+    return this.observers.hasPending;
   }
 
   flushObservers(): void {
-    try {
-      for (const observer of [...this.observers]) {
-        if (!this.observers.has(observer)) continue;
-        const state = this.current;
-        const event = observer.state.changesTo(state, this.fullComparison ? undefined : this.targets.values());
-        observer.state = state;
-        if (event.changes.length > 0) observer.listener(event);
-      }
-    } finally {
-      this.clearObservedTargets();
-    }
-  }
-
-  private clearObservedTargets(): void {
-    if (this.hasPendingObservers) return;
-    this.targets.clear();
-    this.fullComparison = false;
+    this.observers.flush();
   }
 
   [Symbol.iterator](): IterableIterator<string> {

@@ -20,6 +20,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.transact(callback)` | Groups synchronous mutations and returns the callback result. |
 | `doc.on("change", listener)` | Subscribes to document-level events; returns an unsubscribe function. |
 | `doc.state.body.observe(listener)` | Opt-in visible Text edits; returns an unsubscribe function. |
+| `doc.state.items.observe(listener)` | Opt-in visible List splices and in-place sets; returns an unsubscribe function. |
 | `doc.receive(commit)` | Applies the next authoritative commit, acknowledges own pending work and replays the rest. |
 | `doc.replayConflict`, `doc.checkpoint()` | Read the first replay failure or save authoritative state and pending work. |
 | `createServer(schema, options?)` | Optional synchronous `resolve`, restore `checkpoint`, `historyLimit` (default 1000), `maxClients` (optional open-session bound), and `allowCustomClientNamespaces` (default false). |
@@ -42,6 +43,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `ClientBatchRef`, `ClientBatch`, `ServerCommit`, `ServerReceipt`, `ServerReplayEntry` | Batch identity, authoritative result, local routing metadata and retry entries. |
 | `LocalChangeEvent`, `ServerChangeEvent`, `ChangeEvent`, `PendingReplayConflict` | Local/server notifications and the first blocked pending operation. |
 | `TextChange`, `TextChangeEvent` | Visible Text element edits from an opt-in subscription. |
+| `ListChange`, `ListChangeEvent` | Visible List splices and in-place sets from an opt-in subscription. |
 | `DocumentSnapshotData`, `DocumentSnapshot`, `ListSnapshotData`, `TextSnapshotData`, `SavedIdRange` | Typed snapshot payloads, including List/Text tombstones. |
 | `ClientCheckpoint`, `ServerCheckpoint` | Complete client/server restore data. |
 
@@ -85,7 +87,9 @@ Server events are `{ origin: "server", commit }`, emitted only when visible stat
 
 Text observers run after existing callbacks at successful outermost local commit/receive boundaries, with synchronous reentrant work coalesced. Each subscriber has its own baseline; notifications are neither one-per-batch nor one-per-commit. Observer mutations drain in later passes rather than recursively. Only content changes notify, not ID/conflict/ack changes alone. Normal changes use affected IDs; conflict or unproven-target cases may scan the whole Text. No diff work or observer snapshots are retained without subscribers. See the [incremental example](transactions.md#update-a-text-view-incrementally).
 
-An `onBatch`/existing-listener throw defers Text notifications until a later successful operation. An observer baseline advances before invoking its callback; a throw stops remaining notifications and propagates without rollback or permanently disabling the document. Uncalled observers retain their baselines. After partially applying a failed observer callback, discard that mirror and resubscribe from the current elements. Subscription state is not part of checkpoints.
+`List.observe(listener): () => void` follows the same subscription, delivery, baseline and failure rules as Text. Each change is either `{ type: "splice", index, deleteCount, insert: readonly T[] }` or `{ type: "set", index, value }`. A set reports an element that stayed visible with the same ID but a different payload by `Object.is`, so an in-place `set()` is not reported as a removal and insertion, and an acknowledgement that adopts a decoded copy of an own payload is a set too. Changes are disjoint and sorted by descending pre-event index; at the same index a set comes before a splice, so applying them in the supplied order is always valid. Same-value writes, ID-only replacements and delete-and-reinsert edits that leave equal values in place are silent; a delete-and-reinsert move reports two splices. Normal changes compare the affected IDs, and a move compares only the span between its two edits. Conflicts and transformed own acknowledgements may compare the whole List. See the [incremental List example](transactions.md#update-a-list-view-incrementally).
+
+An `onBatch`/existing-listener throw defers Text and List notifications until a later successful operation. An observer baseline advances before invoking its callback; a throw stops remaining notifications and propagates without rollback or permanently disabling the document. Uncalled observers retain their baselines. After partially applying a failed observer callback, discard that mirror and resubscribe from the current elements. Subscription state is not part of checkpoints.
 
 ### Ordered reconciliation and blocked pending
 
