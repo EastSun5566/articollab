@@ -21,6 +21,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.on("change", listener)` | Subscribes to document-level events; returns an unsubscribe function. |
 | `doc.state.body.observe(listener)` | Opt-in visible Text edits; returns an unsubscribe function. |
 | `doc.state.items.observe(listener)` | Opt-in visible List splices and in-place sets; returns an unsubscribe function. |
+| `cursorAt(index, bind?)`, `cursorIndex(cursor)` on Text and List | Stable gap positions: create a frozen cursor, then resolve its current index or `undefined`. |
 | `doc.receive(commit)` | Applies the next authoritative commit, acknowledges own pending work and replays the rest. |
 | `doc.replayConflict`, `doc.checkpoint()` | Read the first replay failure or save authoritative state and pending work. |
 | `createServer(schema, options?)` | Optional synchronous `resolve`, restore `checkpoint`, `historyLimit` (default 1000), `maxClients` (optional open-session bound), and `allowCustomClientNamespaces` (default false). |
@@ -28,6 +29,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `server.receive(batch)`, `server.reject(batch)` | Process a batch or replay its original result; return `{ commit, replayed }`. |
 | `server.snapshot()`, `server.checkpoint()`, `server.commitsSince(watermark)` | Late join, server restore, and complete ordered catch-up or `null`. |
 | `decodeClientBatch`, `decodeServerCommit`, `decodeSnapshot`, `decodeClientCheckpoint`, `decodeServerCheckpoint` | Each takes `(schema, unknown)`, validates parsed wire data and returns an owned frozen object. |
+| `decodeCursor(unknown)` | Validates a parsed cursor, such as one from an application presence channel, and returns an owned frozen copy. |
 | `assertClientBatchNamespace(batch, expectedClientId)` | Explicit authenticated writer binding and canonical insertion namespace check; returns `void` or throws `TypeError`. |
 | `WireDecodeError` | Decoder error with `name`, JSON Pointer `path` (root `/`) and a readable message. |
 
@@ -44,6 +46,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `LocalChangeEvent`, `ServerChangeEvent`, `ChangeEvent`, `PendingReplayConflict` | Local/server notifications and the first blocked pending operation. |
 | `TextChange`, `TextChangeEvent` | Visible Text element edits from an opt-in subscription. |
 | `ListChange`, `ListChangeEvent` | Visible List splices and in-place sets from an opt-in subscription. |
+| `Cursor` | A stable Text or List gap position: `{ anchor, bind }`. |
 | `DocumentSnapshotData`, `DocumentSnapshot`, `ListSnapshotData`, `TextSnapshotData`, `SavedIdRange` | Typed snapshot payloads, including List/Text tombstones. |
 | `ClientCheckpoint`, `ServerCheckpoint` | Complete client/server restore data. |
 
@@ -88,6 +91,8 @@ Server events are `{ origin: "server", commit }`, emitted only when visible stat
 Text observers run after existing callbacks at successful outermost local commit/receive boundaries, with synchronous reentrant work coalesced. Each subscriber has its own baseline; notifications are neither one-per-batch nor one-per-commit. Observer mutations drain in later passes rather than recursively. Only content changes notify, not ID/conflict/ack changes alone. Normal changes use affected IDs; conflict or unproven-target cases may scan the whole Text. No diff work or observer snapshots are retained without subscribers. See the [incremental example](transactions.md#update-a-text-view-incrementally).
 
 `List.observe(listener): () => void` follows the same subscription, delivery, baseline and failure rules as Text. Each change is either `{ type: "splice", index, deleteCount, insert: readonly T[] }` or `{ type: "set", index, value }`. A set reports an element that stayed visible with the same ID but a different payload by `Object.is`, so an in-place `set()` is not reported as a removal and insertion, and an acknowledgement that adopts a decoded copy of an own payload is a set too. Changes are disjoint and sorted by descending pre-event index; at the same index a set comes before a splice, so applying them in the supplied order is always valid. Same-value writes, ID-only replacements and delete-and-reinsert edits that leave equal values in place are silent; a delete-and-reinsert move reports two splices. Normal changes compare the affected IDs, and a move compares only the span between its two edits. Conflicts and transformed own acknowledgements may compare the whole List. See the [incremental List example](transactions.md#update-a-list-view-incrementally).
+
+`cursorAt(index, bind = "left"): Cursor` requires a safe integer gap index in `0..length` and returns `{ anchor, bind }`, frozen with an owned anchor copy. With `"left"`, `anchor` is the element before the gap (`null` at index 0); with `"right"`, it is the element after the gap (`null` at `length`). `cursorIndex(cursor): number | undefined` resolves the current gap: an insertion into the gap lands after a left-bound cursor and before a right-bound one, and a deleted anchor moves the cursor to the nearest surviving gap on its side. It returns `undefined` when the anchor ID is unknown to that collection, for example a peer's uncommitted or unreceived insertion, a rejected or rolled-back insertion, or a cursor from another collection; `null` anchors always resolve. Tombstones keep anchors known across snapshots and restores. Both methods are reads that reflect optimistic state, including inside a transaction, never notify and cost O(log n). Text cursor indices count elements. Malformed indices, binds and cursor shapes throw. `decodeCursor` rejects missing or extra fields with a `WireDecodeError`. See [Stable positions with cursors](collections.md#stable-positions-with-cursors).
 
 An `onBatch`/existing-listener throw defers Text and List notifications until a later successful operation. An observer baseline advances before invoking its callback; a throw stops remaining notifications and propagates without rollback or permanently disabling the document. Uncalled observers retain their baselines. After partially applying a failed observer callback, discard that mirror and resubscribe from the current elements. Subscription state is not part of checkpoints.
 
@@ -171,6 +176,6 @@ Runtime errors have readable messages, not a stable error-code hierarchy. `WireD
 
 The server uses explicit writer sessions. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
 
-There is no production transport or storage adapter, background sync, automatic retry/reconnect, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing, move, public stable positions or cursor API. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
+There is no production transport or storage adapter, background sync, automatic retry/reconnect, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing or move. Cursors are positions only: there is no presence channel, selection type or remote-caret rendering. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
 
 [Previous: Recovery](recovery.md) · [Next: FAQ and limitations](faq.md)

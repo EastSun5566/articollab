@@ -11,6 +11,7 @@ import { CollectionConflictError } from "./conflict.ts";
 import { HamtMap } from "./vendor/hamt.ts";
 import { validateJsonValue } from "./json.ts";
 import { CollectionObservers } from "./observe.ts";
+import { cursorAt, cursorIndex, type Cursor } from "./cursor.ts";
 
 export interface SavedIdRange {
   readonly bunchId: string;
@@ -84,6 +85,10 @@ export interface List<T extends JsonValue> extends Iterable<T> {
   toArray(): T[];
   /** Subscribes from the current view; changes use descending pre-event indices, sets first at a tie. */
   observe(listener: (event: ListChangeEvent<T>) => void): () => void;
+  /** A stable position for the gap before `index`; "left" binds to the element before it. */
+  cursorAt(index: number, bind?: "left" | "right"): Cursor;
+  /** The cursor's current index, or undefined while its anchor element is not known here. */
+  cursorIndex(cursor: Cursor): number | undefined;
 }
 
 /** Descending pre-event indices; at one index a set applies before a splice that may insert there. */
@@ -218,6 +223,14 @@ export class ListState<T extends JsonValue> {
 
   idAt(index: number): ElementId {
     return this.idList.at(index);
+  }
+
+  cursorAt(index: number, bind?: Cursor["bind"]): Cursor {
+    return cursorAt(this.idList, index, bind);
+  }
+
+  cursorIndex(cursor: Cursor): number | undefined {
+    return cursorIndex(this.idList, cursor);
   }
 
   insert(operation: ListInsertOperation<string, T>): ListState<T> {
@@ -550,6 +563,14 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
 
   toArray(): T[] {
     return this.current.toArray();
+  }
+
+  cursorAt(index: number, bind?: Cursor["bind"]): Cursor {
+    return this.current.cursorAt(index, bind);
+  }
+
+  cursorIndex(cursor: Cursor): number | undefined {
+    return this.current.cursorIndex(cursor);
   }
 
   observe(listener: (event: ListChangeEvent<T>) => void): () => void {

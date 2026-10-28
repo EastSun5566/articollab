@@ -67,8 +67,11 @@ export {
   type ValueSetOperation,
 } from "./runtime.ts";
 
+export { type Cursor } from "./cursor.ts";
+
 export {
   decodeClientBatch,
+  decodeCursor,
   decodeClientCheckpoint,
   decodeServerCheckpoint,
   decodeServerCommit,

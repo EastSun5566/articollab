@@ -48,7 +48,7 @@ import assert from "node:assert/strict";
 import {
   assertClientBatchNamespace,
   createClient, createServer, defineDocument, list, text, value,
-  decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint,
+  decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeCursor,
 } from "articollab";
 
 const Board = defineDocument({ count: value(0), items: list(), body: text() });
@@ -214,14 +214,27 @@ unicode.state.body.delete(0);
 unicode.receive(unicodeServer.receive(unicodeBatches.at(-1)).commit);
 assert.deepEqual([...unicode.state.body], ["\\ude00"]);
 assert.equal(Object.hasOwn(unicodeServer.snapshot().data.body, "surrogateBoundaries"), false);
+
+const cursorServer = createServer(Board);
+const cursorBatches = [];
+const cursorWriter = createClient(Board, { clientId: cursorServer.openClient(), onBatch: (batch) => cursorBatches.push(batch) });
+const cursorReader = createClient(Board, { clientId: cursorServer.openClient(), onBatch() {} });
+cursorWriter.state.body.insert(0, "abc");
+const caret = decodeCursor(roundTrip(cursorWriter.state.body.cursorAt(2)));
+assert.ok(Object.isFrozen(caret) && Object.isFrozen(caret.anchor));
+assert.equal(cursorReader.state.body.cursorIndex(caret), undefined);
+cursorReader.receive(decodeServerCommit(Board, roundTrip(cursorServer.receive(cursorBatches.at(-1)).commit)));
+assert.equal(cursorReader.state.body.cursorIndex(caret), 2);
+cursorWriter.state.items.push("x");
+assert.equal(cursorWriter.state.items.cursorIndex(cursorWriter.state.items.cursorAt(1, "right")), 1);
 `;
 
 const typesFixture = `
 import {
   assertClientBatchNamespace,
   createClient, createServer, defineDocument, list, text, value,
-  decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeSnapshot,
-  type Value, type List, type Text, type TextChange, type TextChangeEvent, type DocumentOperation, type DocumentSnapshot,
+  decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeSnapshot, decodeCursor,
+  type Cursor, type Value, type List, type Text, type TextChange, type TextChangeEvent, type DocumentOperation, type DocumentSnapshot,
   type ListChange, type ListChangeEvent,
   type ListSnapshotData, type ListSetOperation, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
   type CreateServerOptions, type ClientBatch, type ServerCommit,
@@ -278,6 +291,22 @@ doc.state.items.observe((event) => {
 });
 // @ts-expect-error List observers require a callback.
 doc.state.items.observe("callback");
+type TextCursor = Expect<Equal<ReturnType<typeof doc.state.body.cursorAt>, Cursor>>;
+type ListCursorIndex = Expect<Equal<ReturnType<typeof doc.state.items.cursorIndex>, number | undefined>>;
+type DecodedCursor = Expect<Equal<ReturnType<typeof decodeCursor>, Cursor>>;
+type CursorBind = Expect<Equal<Cursor["bind"], "left" | "right">>;
+const cursor = doc.state.items.cursorAt(0, "right");
+const takeIndex = (index: number) => index;
+// @ts-expect-error A cursor may not resolve yet.
+takeIndex(doc.state.items.cursorIndex(cursor));
+const resolved = doc.state.body.cursorIndex(cursor);
+if (resolved !== undefined) takeIndex(resolved);
+// @ts-expect-error Cursors bind left or right.
+doc.state.body.cursorAt(0, "middle");
+// @ts-expect-error Cursors are readonly.
+cursor.bind = "left";
+// @ts-expect-error Cursor anchors are readonly.
+if (cursor.anchor !== null) cursor.anchor.counter = 1;
 type ValuePath = Expect<Equal<Extract<Operation, { type: "value/set" }>['path'], "count">>;
 type ValuePayload = Expect<Equal<Extract<Operation, { type: "value/set" }>['value'], number>>;
 type ListPath = Expect<Equal<Extract<Operation, { type: "list/insert" }>['path'], "items">>;

@@ -10,6 +10,7 @@ import { CollectionConflictError } from "./conflict.ts";
 import { HamtMap } from "./vendor/hamt.ts";
 import { jsonArray, jsonPointer, type JsonPathSegment } from "./json.ts";
 import { CollectionObservers } from "./observe.ts";
+import { cursorAt, cursorIndex, type Cursor } from "./cursor.ts";
 
 export interface TextSnapshotData {
   readonly idList: readonly SavedIdRange[];
@@ -92,6 +93,10 @@ export interface Text extends Iterable<string> {
   toString(): string;
   /** Subscribes from the current view; changes use descending pre-event element offsets. */
   observe(listener: (event: TextChangeEvent) => void): () => void;
+  /** A stable position for the gap before element `index`; "left" binds to the element before it. */
+  cursorAt(index: number, bind?: "left" | "right"): Cursor;
+  /** The cursor's current element index, or undefined while its anchor is not known here. */
+  cursorIndex(cursor: Cursor): number | undefined;
 }
 
 function idKey(id: Readonly<ElementId>): string {
@@ -188,6 +193,14 @@ export class TextState {
 
   idAt(index: number): ElementId {
     return this.idList.at(index);
+  }
+
+  cursorAt(index: number, bind?: Cursor["bind"]): Cursor {
+    return cursorAt(this.idList, index, bind);
+  }
+
+  cursorIndex(cursor: Cursor): number | undefined {
+    return cursorIndex(this.idList, cursor);
   }
 
   ids(from: number, count: number): ElementId[] {
@@ -552,6 +565,14 @@ export class RuntimeText implements Text {
 
   toString(): string {
     return this.current.toString();
+  }
+
+  cursorAt(index: number, bind?: Cursor["bind"]): Cursor {
+    return this.current.cursorAt(index, bind);
+  }
+
+  cursorIndex(cursor: Cursor): number | undefined {
+    return this.current.cursorIndex(cursor);
   }
 
   observe(listener: (event: TextChangeEvent) => void): () => void {
