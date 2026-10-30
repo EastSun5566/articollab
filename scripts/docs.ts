@@ -12,7 +12,7 @@ const source = join(root, "docs");
 const output = join(root, ".docs-site");
 const prefix = "/articollab/";
 const pages = ["README.md", "quick-start.md", "concepts.md", "collections.md",
-  "transactions.md", "server-wire.md", "recovery.md", "reference.md", "faq.md"];
+  "transactions.md", "server-wire.md", "recovery.md", "sync.md", "reference.md", "faq.md"];
 const files = ["index.html", "_sidebar.md", ".nojekyll", ...pages];
 const retiredPages = ["development.md", "examples.md"];
 const execute = promisify(execFile);
