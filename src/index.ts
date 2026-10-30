@@ -44,6 +44,7 @@ export {
   createServer,
   ServerDocument,
   type ChangeEvent,
+  type DiscardEvent,
   type ClientBatch,
   type ClientBatchRef,
   type ClientCheckpoint,

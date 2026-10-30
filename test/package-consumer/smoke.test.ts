@@ -215,6 +215,25 @@ unicode.receive(unicodeServer.receive(unicodeBatches.at(-1)).commit);
 assert.deepEqual([...unicode.state.body], ["\\ude00"]);
 assert.equal(Object.hasOwn(unicodeServer.snapshot().data.body, "surrogateBoundaries"), false);
 
+const discardServer = createServer(Board);
+const discardBatches = [];
+const writer = createClient(Board, { clientId: discardServer.openClient(), onBatch: (batch) => discardBatches.push(batch) });
+const deleter = createClient(Board, { clientId: discardServer.openClient(), onBatch: (batch) => discardBatches.push(batch) });
+const deliverAll = () => {
+  for (const batch of discardBatches.splice(0)) {
+    const commit = decodeServerCommit(Board, roundTrip(discardServer.receive(batch).commit));
+    writer.receive(commit); deleter.receive(commit);
+  }
+};
+writer.state.items.push("item");
+deliverAll();
+const discarded = [];
+writer.on("discard", (event) => discarded.push(...event.operations.map((operation) => operation.value)));
+deleter.state.items.delete(0);
+writer.state.items.set(0, "edited");
+deliverAll();
+assert.deepEqual(discarded, ["edited"]);
+
 const sessionServer = createServer(Board);
 const sessionId = sessionServer.openClient();
 assert.deepEqual(sessionServer.listClients(), [{ clientId: sessionId, lastSeq: 0, lastServerSeq: null }]);
@@ -243,7 +262,7 @@ import {
   type Cursor, type Value, type List, type Text, type TextChange, type TextChangeEvent, type DocumentOperation, type DocumentSnapshot,
   type ListChange, type ListChangeEvent,
   type ListSnapshotData, type ListSetOperation, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
-  type CreateServerOptions, type ClientBatch, type ServerCommit, type ServerClientSession,
+  type CreateServerOptions, type ClientBatch, type ServerCommit, type ServerClientSession, type DiscardEvent,
 } from "articollab";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
@@ -299,6 +318,14 @@ doc.state.items.observe((event) => {
 });
 // @ts-expect-error List observers require a callback.
 doc.state.items.observe("callback");
+doc.on("discard", (event) => {
+  type Discard = Expect<Equal<typeof event, DiscardEvent<Operation>>>;
+  type Discarded = Expect<Equal<(typeof event.operations)[number], ListSetOperation<"items", string>>>;
+  // @ts-expect-error Discarded operations are readonly.
+  event.operations.push(event.operations[0]!);
+});
+// @ts-expect-error Discard listeners receive discard events, not change events.
+doc.on("discard", (event: { origin: "local" }) => event);
 type TextCursor = Expect<Equal<ReturnType<typeof doc.state.body.cursorAt>, Cursor>>;
 type ListCursorIndex = Expect<Equal<ReturnType<typeof doc.state.items.cursorIndex>, number | undefined>>;
 type DecodedCursor = Expect<Equal<ReturnType<typeof decodeCursor>, Cursor>>;

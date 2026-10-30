@@ -19,6 +19,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.state` | Readonly collection bindings; mutate through Value/List/Text methods. |
 | `doc.transact(callback)` | Groups synchronous mutations and returns the callback result. |
 | `doc.on("change", listener)` | Subscribes to document-level events; returns an unsubscribe function. |
+| `doc.on("discard", listener)` | Subscribes to this writer's List `set()` operations that the server applied after their element was deleted. |
 | `doc.state.body.observe(listener)` | Opt-in visible Text edits; returns an unsubscribe function. |
 | `doc.state.items.observe(listener)` | Opt-in visible List splices and in-place sets; returns an unsubscribe function. |
 | `cursorAt(index, bind?)`, `cursorIndex(cursor)` on Text and List | Stable gap positions: create a frozen cursor, then resolve its current index or `undefined`. |
@@ -46,6 +47,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation`, `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextOperation`, `TextIdRange`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
 | `ClientBatchRef`, `ClientBatch`, `ServerCommit`, `ServerReceipt`, `ServerReplayEntry` | Batch identity, authoritative result, local routing metadata and retry entries. |
 | `LocalChangeEvent`, `ServerChangeEvent`, `ChangeEvent`, `PendingReplayConflict` | Local/server notifications and the first blocked pending operation. |
+| `DiscardEvent` | This writer's List sets that had no effect because their element was already deleted. |
 | `TextChange`, `TextChangeEvent` | Visible Text element edits from an opt-in subscription. |
 | `ListChange`, `ListChangeEvent` | Visible List splices and in-place sets from an opt-in subscription. |
 | `Cursor` | A stable Text or List gap position: `{ anchor, bind }`. |
@@ -87,6 +89,8 @@ The local completion order is **optimistic state → pending batch and local seq
 `onBatch` and listeners are application callbacks, not rollback boundaries. If `onBatch` throws, the batch and sequence are already pending and the following local notification is not emitted. A local listener throw also leaves the completed batch intact. A server listener throw happens after the commit, watermark and reconciliation have completed. Exceptions propagate and can stop remaining listener notifications; the core does not permanently disable the document or undo callback side effects. Transport examples impose their own stop-on-first-error policy.
 
 Server events are `{ origin: "server", commit }`, emitted only when visible state or the replay-conflict descriptor changes, not merely because an ack/watermark advances. Value and List payload equality uses `Object.is`; List/Text additionally compare visible stable IDs. An accepted own commit is silent when that comparison and the conflict are unchanged. Deep-equal JSON objects decoded into new references can still trigger a change. A change listener is not a reliable ack or checkpoint-save trigger.
+
+`doc.on("discard", listener)` reports this writer's List `set()` operations that reached the server after a peer deleted their element, so they changed nothing. When `receive()` applies an acknowledgement of this writer's batch whose authoritative commit contains such sets, it calls each discard listener once with `{ commit, operations }`: the commit and those `list/set` operations in commit order, frozen. Detection uses the commit as applied, so server transformations are included; a peer's commit is never reported, and a rejected batch has no operations to report. Discard listeners run after any server `change` event for that commit and before observers, even when the acknowledgement changes nothing visible. They are application callbacks like change listeners: a throw propagates from `receive()` after the commit has been applied, skips later listeners and does not roll back. The event is not part of checkpoints; a restored writer reports discards for acknowledgements it receives after restore.
 
 `Text.observe(listener): () => void` independently subscribes to visible element-content changes. It starts at the current view without an initial event; subscription inside a transaction throws. Unsubscribe is idempotent. The event is `{ beforeLength, afterLength, changes }`; each change is `{ index, deleteCount, insert: readonly string[] }`. All containers are owned/frozen. Indices use the original pre-event element coordinates; changes are disjoint and sorted descending for sequential application. Each inserted string retains one Text element, including separately inserted surrogate halves. There is no minimum-edit or stable-segmentation guarantee, and these offsets are not editor UTF-16 offsets.
 

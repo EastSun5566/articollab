@@ -225,6 +225,11 @@ export class ListState<T extends JsonValue> {
     return this.idList.at(index);
   }
 
+  /** Whether the element is visible, as opposed to unknown or deleted. */
+  has(id: Readonly<ElementId>): boolean {
+    return this.idList.has(id);
+  }
+
   cursorAt(index: number, bind?: Cursor["bind"]): Cursor {
     return cursorAt(this.idList, index, bind);
   }

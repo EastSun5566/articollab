@@ -125,6 +125,12 @@ export interface ServerChangeEvent<TOperation extends Operation = Operation> {
   readonly commit: ServerCommit<TOperation>;
 }
 
+/** List sets in an own acknowledged commit that had no effect because their target was already deleted. */
+export interface DiscardEvent<TOperation extends Operation = Operation> {
+  readonly commit: ServerCommit<TOperation>;
+  readonly operations: readonly Extract<TOperation, { readonly type: "list/set" }>[];
+}
+
 export type ChangeEvent<TOperation extends Operation = Operation> =
   | LocalChangeEvent<TOperation>
   | ServerChangeEvent<TOperation>;
@@ -403,6 +409,10 @@ type ChangeListener<S extends SchemaShape> = (
   event: ChangeEvent<DocumentOperation<S>>
 ) => void;
 
+type DiscardListener<S extends SchemaShape> = (
+  event: DiscardEvent<DocumentOperation<S>>
+) => void;
+
 /** A client-side optimistic document with server reconciliation. */
 export class ClientDocument<S extends SchemaShape> {
   readonly state: DocumentState<S>;
@@ -410,6 +420,7 @@ export class ClientDocument<S extends SchemaShape> {
   private readonly clientId: string;
   private readonly onBatch: CreateClientOptions<S>["onBatch"];
   private readonly listeners = new Set<ChangeListener<S>>();
+  private readonly discardListeners = new Set<DiscardListener<S>>();
   private readonly collections = new Map<string, RuntimeCollection>();
   private authoritativeStates: Map<string, CollectionState>;
   private readonly pendingBatches: ClientBatch<DocumentOperation<S>>[] = [];
@@ -603,14 +614,18 @@ export class ClientDocument<S extends SchemaShape> {
     return result;
   }
 
-  on(event: "change", listener: ChangeListener<S>): () => void {
-    if (event !== "change") {
+  on(event: "change", listener: ChangeListener<S>): () => void;
+  /** Own list sets that the server applied after their target was deleted, once per acknowledged commit. */
+  on(event: "discard", listener: DiscardListener<S>): () => void;
+  on(event: "change" | "discard", listener: ChangeListener<S> | DiscardListener<S>): () => void {
+    if (event !== "change" && event !== "discard") {
       throw new Error(`Unknown event: ${event as string}`);
     }
-
-    this.listeners.add(listener);
+    // The overloads pair each event name with its listener type.
+    const listeners = (event === "change" ? this.listeners : this.discardListeners) as Set<typeof listener>;
+    listeners.add(listener);
     return () => {
-      this.listeners.delete(listener);
+      listeners.delete(listener);
     };
   }
 
@@ -618,14 +633,21 @@ export class ClientDocument<S extends SchemaShape> {
   receive(commit: ServerCommit<DocumentOperation<S>>): void {
     this.notificationDepth++;
     try {
-      this.receiveCommit(commit);
+      const discarded = this.receiveCommit(commit);
+      if (discarded.length !== 0) {
+        const event = Object.freeze({ commit, operations: Object.freeze(discarded) });
+        for (const listener of [...this.discardListeners]) listener(event);
+      }
     } finally {
       this.notificationDepth--;
     }
     this.flushObservers();
   }
 
-  private receiveCommit(commit: ServerCommit<DocumentOperation<S>>): void {
+  /** Applies one commit and returns the own list sets it discarded. */
+  private receiveCommit(
+    commit: ServerCommit<DocumentOperation<S>>
+  ): Extract<DocumentOperation<S>, { readonly type: "list/set" }>[] {
     if (this.transactionDepth !== 0) {
       throw new Error("Cannot receive a server commit during a transaction");
     }
@@ -649,7 +671,11 @@ export class ClientDocument<S extends SchemaShape> {
     }
 
     const nextAuthoritativeStates = new Map(this.authoritativeStates);
-    applyOperations(nextAuthoritativeStates, commit.operations);
+    const discarded: Extract<DocumentOperation<S>, { readonly type: "list/set" }>[] = [];
+    applyOperations(nextAuthoritativeStates, commit.operations, isOwnCommit
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Commit operations are this schema's operations.
+      ? (operation) => { discarded.push(operation as Extract<DocumentOperation<S>, { readonly type: "list/set" }>); }
+      : undefined);
 
     // shortcut: exact, conflict-free own acks preserve the entire optimistic view.
     if (isOwnCommit && this.currentReplayConflict === null &&
@@ -663,7 +689,7 @@ export class ClientDocument<S extends SchemaShape> {
       this.authoritativeStates = nextAuthoritativeStates;
       this.pendingBatches.shift();
       this.lastServerSeq = commit.serverSeq;
-      return;
+      return discarded;
     }
 
     const remainingBatches = isOwnCommit
@@ -739,6 +765,7 @@ export class ClientDocument<S extends SchemaShape> {
     if (changed) {
       this.emitChange(Object.freeze({ origin: "server", commit }));
     }
+    return discarded;
   }
 
   private commit(): void {

@@ -1,4 +1,4 @@
-import { ListState, type ListSnapshotData } from "./list.ts";
+import { ListState, type ListSetOperation, type ListSnapshotData } from "./list.ts";
 import { TextState, type TextSnapshotData } from "./text.ts";
 import type { DocumentSchema, JsonValue, SchemaShape } from "./schema.ts";
 import type {
@@ -26,9 +26,11 @@ export function unknownOperationType(operation: unknown): Error {
   return new Error(`Unknown operation type: ${String(type)}`);
 }
 
+/** Applies operations in order; `onDiscardedSet` sees each list/set whose target was already deleted. */
 export function applyOperations(
   states: Map<string, CollectionState>,
-  operations: readonly Operation[]
+  operations: readonly Operation[],
+  onDiscardedSet?: (operation: ListSetOperation) => void
 ): void {
   for (const operation of operations) {
     if (!states.has(operation.path)) {
@@ -60,6 +62,8 @@ export function applyOperations(
           throw wrongCollectionKind(operation.path);
         }
         states.set(operation.path, current.set(operation));
+        // set() has thrown for unknown targets, so an absent target here is a tombstone.
+        if (onDiscardedSet !== undefined && !current.has(operation.id)) onDiscardedSet(operation);
         break;
       case "text/insert":
         if (!(current instanceof TextState)) {

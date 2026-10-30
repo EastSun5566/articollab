@@ -49,6 +49,14 @@ console.log(doc.state.items.toArray()); // ["Implement API"]
 
 The element keeps its stable ID and position. `set()` replaces its whole value, not individual object fields, and allocates no new IDs or tombstones. If two writers update that same element, the last update applied by the server wins. Their fields are not merged. An update to an element already deleted by a peer is a no-op, never a resurrection.
 
+To tell the writer that an edit was lost this way, listen for `discard`. It fires when this writer's own update is acknowledged after its element was deleted:
+
+```ts
+const stop = doc.on("discard", ({ operations }) => {
+  for (const { value } of operations) console.warn(`Not saved, the item was deleted by someone else: ${value}`);
+});
+```
+
 `set()` requires a visible index in `0..length-1`. Setting the same value still records a local write. Pending updates follow the original ID even if another insertion changes its index. See [upgrade guidance](recovery.md#upgrading-from-02-to-03) before exchanging these operations.
 
 To update a view without calling `toArray()` after every change, subscribe with `doc.state.items.observe()`; it reports `set()` as an in-place `set` change. See [Update a list view incrementally](transactions.md#update-a-list-view-incrementally).
