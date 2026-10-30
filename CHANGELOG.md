@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.5.0](https://github.com/EastSun5566/articollab/compare/v0.4.0...v0.5.0) (2026-10-30)
+
+### Features
+
+* add opt-in List visible change subscriptions ([2fa6949](https://github.com/EastSun5566/articollab/commit/2fa69491afe4b102e52d6fccb8236fe8c71fc6fb))
+* add stable Text and List cursors ([9d9ade1](https://github.com/EastSun5566/articollab/commit/9d9ade1aec15b462ea91b45fcf58dc7ce651c113))
+* **examples:** add CodeMirror text editor prototype ([a0f3915](https://github.com/EastSun5566/articollab/commit/a0f3915e88722b1b2eeeba2d20767dd0f47b8ac6))
+
+### Bug Fixes
+
+* keep root lint independent of example dependencies ([1c7e232](https://github.com/EastSun5566/articollab/commit/1c7e23254c1b0381a3cf37bbb12cba986c0b3911))
+
 ## [0.4.0](https://github.com/EastSun5566/articollab/compare/v0.3.1...v0.4.0) (2026-10-21)
 
 ### Features
