@@ -62,6 +62,18 @@ function elementAt(mirror, offset) {
   return { index, inside: false };
 }
 
+/** Element gap at or before a UTF-16 offset; an offset inside a surrogate pair maps to the gap before it.
+ * @param {TextMirror} mirror @param {number} offset
+ */
+export function elementIndexAt(mirror, offset) {
+  return elementAt(mirror, offset).index;
+}
+
+/** UTF-16 offset of an element gap. @param {TextMirror} mirror @param {number} index */
+export function editorOffset(mirror, index) {
+  return offsetOf(mirror, index);
+}
+
 /** Rebuild elements from editor text for inspection; this is linear and not used per edit.
  * @param {TextMirror} mirror @param {string} text
  */
