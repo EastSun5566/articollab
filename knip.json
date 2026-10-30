@@ -2,6 +2,7 @@
   "$schema": "./node_modules/knip/schema.json",
   "entry": [
     "src/index.ts",
+    "src/sync/index.ts",
     "test/**/*.test.ts",
     "examples/browser-smoke/smoke.js",
     "examples/browser-http-smoke/smoke.js",

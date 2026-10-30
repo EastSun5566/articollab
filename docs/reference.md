@@ -180,10 +180,30 @@ Current-state questions such as unknown anchors, duplicate insertion IDs or alre
 
 Runtime errors have readable messages, not a stable error-code hierarchy. `WireDecodeError` promises its `name`, JSON Pointer `path` and readable `message`, not exact message wording. A thrown callback does not prove a mutation/receive failed atomically. Transport must handle parsing, quotas, delivery order, ambiguous outcomes and recovery without assuming throw means nothing happened.
 
+## Sync adapter
+
+Import from `"articollab/sync"`. It depends only on the core entrypoint and on `fetch`, `Request` and `Response`. See the [guide](sync.md).
+
+| API | Purpose |
+| --- | --- |
+| `connectSync(schema, { transport, checkpoint?, save?, pollInterval?, retry? })` | Creates or restores a `ClientDocument` that owns its `onBatch` and returns a `SyncClient`. Without `checkpoint` it registers a session. |
+| `client.doc`, `client.status`, `client.error` | The document, the current `SyncStatus` and the failure while `status` is `"failed"`. |
+| `client.sync()`, `client.rejectPending()` | Run a pass now, or confirm cancellation of the pending batches that exist when called. Both resolve `true` on success. |
+| `client.restartFromSnapshot()`, `client.on("status", listener)`, `client.stop()` | Recover from a gap without pending work, observe status changes, stop polling and retries. |
+| `createHttpTransport({ url, fetch?, headers? })` | A `SyncTransport` for the handler's routes under `url`. |
+| `createSyncHandler(schema, server, { authorize?, saveCheckpoint?, allowRejections?, bodyLimit? })` | A Fetch API handler for `clients`, `batches`, `commits` and, when allowed, `rejections`. |
+| `SyncHttpError` | An unexpected HTTP status with `status` and `retryable`. |
+
+Types: `SyncClient`, `SyncStatus`, `SyncTransport`, `ConnectSyncOptions`, `SyncRetryOptions`, `HttpTransportOptions`, `SyncHandlerOptions`, `SyncAction`.
+
+A pass saves the checkpoint if it changed, catches up, then repeatedly saves, submits the earliest pending batch and catches up until that batch is acknowledged. Catch-up decodes every commit and requires consecutive server sequences before applying any. Passes never overlap; calls made during a pass share its promise, and work created after its final pending check starts another pass. A `null` catch-up result sets `"gap"` and keeps pending work; a replay conflict sets `"blocked"` once the batches before the conflicting one are acknowledged, and nothing more is submitted until it clears or `rejectPending()` confirms the cancellation, which covers the batches up to the local sequence at the time of the call. Transport errors are retried with delays from `initialDelay` doubling to `maxDelay`, each scaled by a random factor between 0.5 and 1, and reset after a successful pass. Errors with `retryable: false`, invalid or out-of-order commits, an unacknowledged submission, a failing `save` and a throwing status listener set `"failed"` permanently. Document listeners and observers run inside catch-up; a throw from them also fails the client after the commit is applied.
+
+The handler opens sessions, receives batches and, with `allowRejections`, rejects them one at a time and calls `saveCheckpoint` before answering when the server changed. A failed save makes it answer 503 to every later request; recreate the server from its last saved checkpoint. Catch-up waits for queued writes and their saves. `authorize` receives the request and `{ action, clientId? }`; `false` answers 403. Responses use `Cache-Control: no-store`, and errors are fixed messages.
+
 ## Boundaries
 
 The server uses explicit writer sessions. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
 
-There is no production transport or storage adapter, background sync, automatic retry/reconnect, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing or move. Cursors are positions only: there is no presence channel, selection type or remote-caret rendering. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
+The [sync adapter](sync.md) provides polling HTTP transport with retries; there is no push delivery, storage adapter, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing or move. Cursors are positions only: there is no presence channel, selection type or remote-caret rendering. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
 
-[Previous: Recovery](recovery.md) · [Next: FAQ and limitations](faq.md)
+[Previous: Sync adapter](sync.md) · [Next: FAQ and limitations](faq.md)

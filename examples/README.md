@@ -13,6 +13,7 @@ All commands and snippet imports below are relative to the **repository root**, 
 | [Manual pending rejection](#manual-pending-rejection) | Confirm cancellation without purge or undo |
 | [Asynchronous resume](#asynchronous-jsonresume-example) | JSON delivery with independent FIFO chains |
 | [File-backed recovery](#file-backed-checkpoint-recovery-example) | Save barriers and process-interruption recovery |
+| [Sync adapter](#sync-adapter-example) | The packaged `articollab/sync` client and handler over real HTTP, recovering a lost response |
 | [HTTP sync](#localhost-http-sync-example) | Real localhost snapshot, submission, catch-up and explicit cancellation |
 | [File-backed HTTP](#file-backed-http-recovery-example) | Rebuild hosts/connections after ambiguous responses |
 | [Browser core smoke](#browser-core-smoke-example) | Production ESM collection/recovery checks |
@@ -276,6 +277,14 @@ Local state changes optimistically before saving, and a save failure may throw f
 Files are `server.json` and `client-<hex>.json`, where `<hex>` is the lowercase hex encoding of the client ID's UTF-16LE bytes. For example, `a` uses `client-6100.json` and `A` uses `client-4100.json`. This lossless encoding avoids case and Unicode-normalization collisions on local filesystems. Each save serializes completely, writes a same-directory `<target>.tmp` file, then renames it over the final checkpoint file; newly created files use mode `0o600`. Orphan temporary files are ignored on load. Writes block the event loop and require one writer per file in a trusted local directory. This verifies process interruption and restart, not power-loss durability: there is no fsync/directory-sync protocol, cross-file transaction, lock, migration, production storage adapter, or recovery beyond retained history.
 
 Fresh HTTP registration is not idempotent. If its response or initial client save is lost, an unused open session may remain; the trusted application owns eventual closure. Disconnect/reload does not close sessions. There is no HTTP close endpoint; call `server.closeClient(id)` only after stopping the writer and handling its work, then save the server.
+
+## Sync adapter example
+
+```sh
+node examples/sync-adapter.ts
+```
+
+Serves `createSyncHandler` through a small `node:http` bridge and connects two writers with `connectSync` and `createHttpTransport`. Writer A's first submission is accepted by the server but its response is lost; the next pass catches up, finds the acknowledgement and sends nothing twice. It prints both items and server sequence 2. The bridge is example code: frameworks and other runtimes accept a Fetch API handler directly. See the [sync adapter guide](../docs/sync.md). The manual examples below show the same protocol step by step for custom transports.
 
 ## Localhost HTTP sync example
 

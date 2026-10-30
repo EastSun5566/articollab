@@ -1,6 +1,6 @@
 # Recovery
 
-Use a snapshot for a new writer and a checkpoint to resume an existing one. Before resubmitting work, catch up so already-accepted batches are acknowledged first.
+Use a snapshot for a new writer and a checkpoint to resume an existing one. Before resubmitting work, catch up so already-accepted batches are acknowledged first. The [sync adapter](sync.md) follows these rules over HTTP; this page explains them for custom transports.
 
 The snippets use `Board` from [Collections](collections.md) and import factories/decoders from `"articollab"`. `sendLater` is your application's outbound buffer, not a package helper. These are synchronous, in-memory steps; your transport must coordinate catch-up with live delivery.
 
@@ -194,4 +194,4 @@ Wire/checkpoint formats remain unchanged from beta.0. Existing state and saved r
 
 Do not clear checkpoints or open replacement sessions to bypass an error. See the [namespace contract](reference.md#incoming-insertion-namespaces).
 
-[Previous: Server policy and wire](server-wire.md) · [Next: Core reference](reference.md)
+[Previous: Server policy and wire](server-wire.md) · [Next: Sync adapter](sync.md)
