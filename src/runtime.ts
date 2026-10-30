@@ -827,7 +827,9 @@ export class ServerDocument<S extends SchemaShape> {
   private readonly historyLimit: number;
   private readonly maxClients: number | undefined;
   private readonly allowCustomClientNamespaces: boolean;
-  private history: readonly ServerCommit<DocumentOperation<S>>[];
+  /** Retained commits are `history[historyStart..]`; evicted entries are dropped in amortized batches. */
+  private history: ServerCommit<DocumentOperation<S>>[];
+  private historyStart = 0;
   private readonly resolve: ServerResolver<S> | undefined;
   private nextServerSeq = 1;
   private receiving = false;
@@ -907,7 +909,7 @@ export class ServerDocument<S extends SchemaShape> {
       clients: Object.freeze(
         [...this.clients].map(([clientId, replay]) => Object.freeze({ clientId, replay }))
       ),
-      history: Object.freeze([...this.history]),
+      history: Object.freeze(this.history.slice(this.historyStart)),
     });
   }
 
@@ -922,9 +924,21 @@ export class ServerDocument<S extends SchemaShape> {
       );
     }
     if (serverSeq === currentSeq) return Object.freeze([]);
-    const first = this.history[0];
+    const first = this.history[this.historyStart];
     if (first === undefined || serverSeq < first.serverSeq - 1) return null;
-    return Object.freeze(this.history.slice(serverSeq - first.serverSeq + 1));
+    return Object.freeze(this.history.slice(this.historyStart + serverSeq - first.serverSeq + 1));
+  }
+
+  /** Appends to retained history in amortized O(1); runs only after the commit is fully applied. */
+  private retain(commit: ServerCommit<DocumentOperation<S>>): void {
+    if (this.historyLimit === 0) return;
+    this.history.push(commit);
+    if (this.history.length - this.historyStart > this.historyLimit) this.historyStart++;
+    // Compact once the evicted prefix is at least as long as the retained window.
+    if (this.historyStart >= Math.max(this.historyLimit, 1024)) {
+      this.history = this.history.slice(this.historyStart);
+      this.historyStart = 0;
+    }
   }
 
   /** Resolves the next batch or replays this client's last identical batch. */
@@ -1010,17 +1024,12 @@ export class ServerDocument<S extends SchemaShape> {
         source: Object.freeze({ clientId: ownedBatch.clientId, seq: ownedBatch.seq }),
         operations,
       });
-      const nextHistory =
-        this.historyLimit === 0
-          ? []
-          : [...this.history, commit].slice(-this.historyLimit);
-
       this.authoritativeStates = nextAuthoritativeStates;
       this.clients.set(
         ownedBatch.clientId,
         Object.freeze({ batch: ownedBatch, commit })
       );
-      this.history = nextHistory;
+      this.retain(commit);
       this.nextServerSeq++;
       return Object.freeze({ commit, replayed: false });
     } finally {
