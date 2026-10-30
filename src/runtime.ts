@@ -106,6 +106,15 @@ export interface ServerReplayEntry<TOperation extends Operation = Operation> {
   readonly commit: ServerCommit<TOperation>;
 }
 
+/** An open writer session and the last batch the server processed from it. */
+export interface ServerClientSession {
+  readonly clientId: string;
+  /** Last processed batch sequence; 0 before the first batch. */
+  readonly lastSeq: number;
+  /** Server sequence of that batch's commit; null before the first batch. */
+  readonly lastServerSeq: number | null;
+}
+
 export interface LocalChangeEvent<TOperation extends Operation = Operation> {
   readonly origin: "local";
   readonly batch: ClientBatch<TOperation>;
@@ -899,6 +908,15 @@ export class ServerDocument<S extends SchemaShape> {
       throw new TypeError("Unknown client ID");
     }
     this.clients.delete(clientId);
+  }
+
+  /** Lists open writer sessions in opening order, without copying state or history. */
+  listClients(): readonly ServerClientSession[] {
+    return Object.freeze([...this.clients].map(([clientId, replay]) => Object.freeze({
+      clientId,
+      lastSeq: replay?.batch.seq ?? 0,
+      lastServerSeq: replay?.commit.serverSeq ?? null,
+    })));
   }
 
   /** Returns the state needed to restore this authoritative server. */

@@ -182,3 +182,41 @@ describe("server client capacity", () => {
     assert.equal(doc.state.body.toString(), peer.state.body.toString());
   });
 });
+
+describe("server client sessions", () => {
+  it("lists open sessions with their last processed batch, without changing state", () => {
+    let calls = 0;
+    const server: ServerDocument<Shape> = createServer(Board, { resolve: ({ batch: incoming }): Batch["operations"] => {
+      calls++;
+      // The resolver sees the sessions before this batch is recorded.
+      const own = server.listClients().find((session) => session.clientId === incoming.clientId);
+      assert.equal(own?.lastSeq, incoming.seq - 1);
+      return incoming.operations;
+    } });
+    assert.deepEqual(server.listClients(), []);
+    const a = server.openClient(), b = server.openClient(), c = server.openClient();
+    assert.deepEqual(server.listClients(), [
+      { clientId: a, lastSeq: 0, lastServerSeq: null },
+      { clientId: b, lastSeq: 0, lastServerSeq: null },
+      { clientId: c, lastSeq: 0, lastServerSeq: null },
+    ]);
+    server.receive(batch(b));
+    server.receive(batch(a));
+    server.reject(batch(b, 2));
+    const before = server.checkpoint();
+    assert.equal(server.receive(batch(b, 2)).replayed, true);
+    assert.deepEqual(server.checkpoint(), before, "listing and replays change nothing");
+    const sessions = server.listClients();
+    assert.ok(Object.isFrozen(sessions) && sessions.every((session) => Object.isFrozen(session)));
+    assert.deepEqual(sessions, [
+      { clientId: a, lastSeq: 1, lastServerSeq: 2 },
+      { clientId: b, lastSeq: 2, lastServerSeq: 3 },
+      { clientId: c, lastSeq: 0, lastServerSeq: null },
+    ]);
+    assert.equal(calls, 2, "rejections do not run the resolver");
+    server.closeClient(b);
+    assert.deepEqual(server.listClients().map((session) => session.clientId), [a, c]);
+    const restored = createServer(Board, { checkpoint: decodeServerCheckpoint(Board, JSON.parse(JSON.stringify(server.checkpoint()))) });
+    assert.deepEqual(restored.listClients(), server.listClients());
+  });
+});

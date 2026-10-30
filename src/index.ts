@@ -57,6 +57,7 @@ export {
   type Operation,
   type PendingReplayConflict,
   type ServerChangeEvent,
+  type ServerClientSession,
   type ServerCheckpoint,
   type ServerCommit,
   type ServerReceipt,

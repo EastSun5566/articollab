@@ -215,6 +215,12 @@ unicode.receive(unicodeServer.receive(unicodeBatches.at(-1)).commit);
 assert.deepEqual([...unicode.state.body], ["\\ude00"]);
 assert.equal(Object.hasOwn(unicodeServer.snapshot().data.body, "surrogateBoundaries"), false);
 
+const sessionServer = createServer(Board);
+const sessionId = sessionServer.openClient();
+assert.deepEqual(sessionServer.listClients(), [{ clientId: sessionId, lastSeq: 0, lastServerSeq: null }]);
+sessionServer.receive({ clientId: sessionId, seq: 1, operations: [{ type: "value/set", path: "count", value: 1 }] });
+assert.deepEqual(sessionServer.listClients(), [{ clientId: sessionId, lastSeq: 1, lastServerSeq: 1 }]);
+
 const cursorServer = createServer(Board);
 const cursorBatches = [];
 const cursorWriter = createClient(Board, { clientId: cursorServer.openClient(), onBatch: (batch) => cursorBatches.push(batch) });
@@ -237,7 +243,7 @@ import {
   type Cursor, type Value, type List, type Text, type TextChange, type TextChangeEvent, type DocumentOperation, type DocumentSnapshot,
   type ListChange, type ListChangeEvent,
   type ListSnapshotData, type ListSetOperation, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
-  type CreateServerOptions, type ClientBatch, type ServerCommit,
+  type CreateServerOptions, type ClientBatch, type ServerCommit, type ServerClientSession,
 } from "articollab";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
@@ -245,6 +251,8 @@ type Expect<T extends true> = T;
 const Board = defineDocument({ count: value(0), items: list<string>(), body: text() });
 type Shape = typeof Board.definition;
 type ClientCapacity = Expect<Equal<CreateServerOptions<Shape>["maxClients"], number | undefined>>;
+type Sessions = Expect<Equal<ReturnType<ReturnType<typeof createServer<Shape>>["listClients"]>, readonly ServerClientSession[]>>;
+type SessionServerSeq = Expect<Equal<ServerClientSession["lastServerSeq"], number | null>>;
 type Operation = DocumentOperation<Shape>;
 const doc = createClient(Board, { clientId: "types", onBatch(batch) {
   type BatchOperation = Expect<Equal<(typeof batch.operations)[number], Operation>>;

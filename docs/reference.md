@@ -26,6 +26,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.replayConflict`, `doc.checkpoint()` | Read the first replay failure or save authoritative state and pending work. |
 | `createServer(schema, options?)` | Optional synchronous `resolve`, restore `checkpoint`, `historyLimit` (default 1000), `maxClients` (optional open-session bound), and `allowCustomClientNamespaces` (default false). |
 | `server.openClient()`, `server.closeClient(clientId)` | Issue a writer ID or permanently retire it; neither creates a commit. |
+| `server.listClients()` | Open sessions with the last batch the server processed from each, for finding idle writers. |
 | `server.receive(batch)`, `server.reject(batch)` | Process a batch or replay its original result; return `{ commit, replayed }`. |
 | `server.snapshot()`, `server.checkpoint()`, `server.commitsSince(watermark)` | Late join, server restore, and complete ordered catch-up or `null`. |
 | `decodeClientBatch`, `decodeServerCommit`, `decodeSnapshot`, `decodeClientCheckpoint`, `decodeServerCheckpoint` | Each takes `(schema, unknown)`, validates parsed wire data and returns an owned frozen object. |
@@ -41,6 +42,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `SchemaShape`, `CollectionSchema`, `ValueSchema`, `ListSchema`, `TextSchema`, `ValueType`, `ListType` | Schema descriptors and inferred element types. |
 | `Value`, `List`, `Text`, `DocumentState` | Typed collection views. |
 | `CreateClientOptions`, `CreateServerOptions`, `ServerResolveContext`, `ServerResolver` | Construction and batch policy contracts. |
+| `ServerClientSession` | One open writer session from `server.listClients()`. |
 | `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation`, `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextOperation`, `TextIdRange`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
 | `ClientBatchRef`, `ClientBatch`, `ServerCommit`, `ServerReceipt`, `ServerReplayEntry` | Batch identity, authoritative result, local routing metadata and retry entries. |
 | `LocalChangeEvent`, `ServerChangeEvent`, `ChangeEvent`, `PendingReplayConflict` | Local/server notifications and the first blocked pending operation. |
@@ -123,6 +125,8 @@ Only the last processed batch per client is retained for retry. The same payload
 `server.openClient()` returns sequential canonical IDs (`client-1`, `client-2`, …), reserves a session even before its first batch, and throws without mutation at capacity or allocation exhaustion. Both `receive()` and `reject()` require an open issued ID; unknown/closed writers fail before operation copying, policy or sequence changes. Client construction alone does not register a writer.
 
 `server.closeClient(id)` permanently removes the session and latest retry result. Closing an already-issued closed ID is a no-op; malformed or never-issued IDs throw `TypeError`. IDs are never reused within normal same-lineage restore. Closure changes no authoritative state, sequence, history or tombstones and cannot run reentrantly from a resolver. Disconnect/offline/reload is not closure: keep the session for resume, and stop the writer and handle pending work before closing it.
+
+`server.listClients()` returns the open sessions in opening order as frozen `{ clientId, lastSeq, lastServerSeq }` entries: `lastSeq` is the sequence of the last batch the server processed from that writer, accepted or rejected (0 before its first), and `lastServerSeq` is that batch's commit sequence (`null` before the first). It reads the same retry entries a checkpoint saves, so results survive restore. It copies no state or history, changes nothing and may be called from a resolver, where it shows the sessions before the current batch. There are no timestamps; see [idle sessions](server-wire.md#close-idle-writer-sessions).
 
 `maxClients` is a non-negative safe integer; omitted means unlimited, zero permits no opens. It bounds open sessions, not connections, historical IDs or payload bytes. Close releases capacity; failed batches and history eviction do not. Removing the retry entry does not purge state/history/tombstones or payloads retained by callers. Registration is not authentication, a writer lock or deletion authorization.
 
