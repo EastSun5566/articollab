@@ -3,11 +3,12 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, it, type TestContext } from "node:test";
 import { promisify } from "node:util";
-import { type EditorState, type TransactionSpec } from "@codemirror/state";
+import { EditorSelection, type EditorState, type TransactionSpec } from "@codemirror/state";
 import { createServer } from "../../../src/index.ts";
 import { Board } from "../../resume.ts";
 import { connectBrowserHttpClient } from "../../browser-http-smoke/smoke.js";
-import { createTextBinding } from "../binding.js";
+import { createTextBinding, remoteRanges } from "../binding.js";
+import { createPresenceChannel } from "../presence.js";
 import { createEditorActions } from "../actions.js";
 import { startTextEditorServer } from "../server.ts";
 
@@ -153,6 +154,43 @@ describe("Text editor HTTP prototype", { timeout: 30_000 }, () => {
     assert.throws(() => a.edit({ changes: { from: 0, insert: "more" } }));
   });
 
+  it("relays cursor presence that outruns commits, then resolves it once the text is synced", async (t) => {
+    const f = await fixture(t), a = await f.connect(), b = await f.connect();
+    const channel = (writer: typeof a) => createPresenceChannel({ url: f.host.url, clientId: writer.connection.doc.checkpoint().clientId });
+    const presenceA = channel(a), presenceB = channel(b);
+    async function showB(): Promise<unknown> {
+      const entries = await presenceA.poll();
+      return a.binding.setRemote(entries.flatMap(({ selection }) => selection === null ? [] : [{ label: "B", selection }]));
+    }
+    const shown = () => a.binding.state.field(remoteRanges).map(({ from, to }) => a.binding.state.doc.sliceString(from, to) + "@" + to);
+    a.edit({ changes: { from: 0, insert: "Hello 😀 world" } });
+    assert.equal(await a.connection.sync(), true);
+    assert.equal(await b.connection.sync(), true);
+
+    b.edit({ selection: EditorSelection.range(9, 14) });
+    await presenceB.publish(b.binding.selectionCursors());
+    assert.deepEqual(await showB(), [{ label: "B", resolved: true, from: 8, to: 13 }]);
+    assert.deepEqual(shown(), ["world@14"]);
+
+    b.edit({ changes: { from: 14, insert: "!!" }, selection: EditorSelection.cursor(16) });
+    await presenceB.publish(b.binding.selectionCursors());
+    assert.deepEqual(await showB(), [{ label: "B", resolved: false }], "B's caret is in text A has not received");
+    assert.deepEqual(shown(), []);
+    assert.equal(await b.connection.sync(), true);
+    assert.equal(await a.connection.sync(), true);
+    assert.deepEqual(shown(), ["@16"], "receiving the commit re-resolves the caret without another poll");
+
+    b.edit({ changes: { from: 0, insert: "??" }, selection: EditorSelection.cursor(2) });
+    await presenceB.publish(b.binding.selectionCursors());
+    assert.deepEqual(await showB(), [{ label: "B", resolved: false }]);
+    assert.equal(await b.connection.rejectPending(), true);
+    assert.equal(b.binding.state.doc.toString(), "Hello 😀 world!!");
+    await presenceB.publish(b.binding.selectionCursors()); // The page republishes after every document change.
+    assert.deepEqual(await showB(), [{ label: "B", resolved: true, from: 0, to: 0 }]);
+    a.check(); b.check();
+    assert.deepEqual([a.errors, b.errors], [[], []]);
+  });
+
   it("serves fixed ESM assets, blocks source/tooling routes and closes idempotently", async (t) => {
     const f = await fixture(t);
     const response = await fetch(f.host.url);
@@ -164,7 +202,8 @@ describe("Text editor HTTP prototype", { timeout: 30_000 }, () => {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Parses this example's fixed import map, which is independently checked by fetching every target.
     const map = JSON.parse(match[1]!) as { imports: Record<string, string> };
     for (const route of [...Object.values(map.imports), "/text-editor/page.js", "/text-editor/editor.js",
-      "/text-editor/binding.js", "/text-editor/changes.js", "/text-editor/actions.js", "/browser-http-smoke/smoke.js", "/http-sync-controller.js"]) {
+      "/text-editor/binding.js", "/text-editor/changes.js", "/text-editor/actions.js", "/text-editor/presence.js",
+      "/browser-http-smoke/smoke.js", "/http-sync-controller.js"]) {
       const asset = await fetch(f.host.url + route);
       assert.equal(asset.status, 200, route);
       assert.equal(asset.headers.get("Content-Type"), "text/javascript; charset=utf-8");
@@ -172,7 +211,7 @@ describe("Text editor HTTP prototype", { timeout: 30_000 }, () => {
       assert.equal(asset.headers.get("Cache-Control"), "no-store");
       assert.ok((await asset.text()).length > 0);
     }
-    for (const route of ["/src/index.ts", "/server.ts", "/package.json", "/pnpm-lock.yaml", "/node_modules/@codemirror/view/dist/index.js", "/dist/index.js.map", "/dist/index.d.ts"]) {
+    for (const route of ["/src/index.ts", "/server.ts", "/presence-relay.ts", "/package.json", "/pnpm-lock.yaml", "/node_modules/@codemirror/view/dist/index.js", "/dist/index.js.map", "/dist/index.d.ts"]) {
       const asset = await fetch(f.host.url + route); assert.equal(asset.status, 404); await asset.text();
     }
     const wrong = await fetch(f.host.url + "/text-editor/binding.js", { method: "POST", body: "ignored" });
@@ -181,7 +220,7 @@ describe("Text editor HTTP prototype", { timeout: 30_000 }, () => {
   });
 
   it("imports without DOM, fetch, registration or listening side effects", async () => {
-    const modules = ["server.ts", "page.js", "editor.js", "binding.js", "changes.js", "actions.js"];
+    const modules = ["server.ts", "page.js", "editor.js", "binding.js", "changes.js", "actions.js", "presence.js"];
     const script = `
       const { Server } = await import("node:http");
       Server.prototype.listen = () => { throw new Error("Unexpected listen"); };

@@ -5,9 +5,10 @@ import { createServer } from "../../src/index.ts";
 import { Board } from "../resume.ts";
 import { startHttpExampleServer } from "../http-sync.ts";
 import { createBrowserAssetHandler } from "../browser-smoke/server.ts";
+import { createPresenceRelay } from "./presence-relay.ts";
 
 /** CodeMirror is local to this example. Only these exact ESM files are served. */
-export async function startTextEditorServer(server = createServer(Board)) {
+export async function startTextEditorServer(server = createServer(Board), presence = createPresenceRelay()) {
   const directory = import.meta.dirname;
   const state = fileURLToPath(import.meta.resolve("@codemirror/state"));
   const view = fileURLToPath(import.meta.resolve("@codemirror/view"));
@@ -24,11 +25,13 @@ export async function startTextEditorServer(server = createServer(Board)) {
     ["/browser-http-smoke/smoke.js", { file: join(directory, "../browser-http-smoke/smoke.js"), type: "text/javascript; charset=utf-8" }],
     ["/http-sync-controller.js", { file: join(directory, "../http-sync-controller.js"), type: "text/javascript; charset=utf-8" }],
   ]);
-  for (const name of ["page", "editor", "binding", "changes", "actions"]) {
+  for (const name of ["page", "editor", "binding", "changes", "actions", "presence"]) {
     entries.set(`/text-editor/${name}.js`, { file: join(directory, `${name}.js`), type: "text/javascript; charset=utf-8" });
   }
   for (const [name, file] of modules) entries.set(`/codemirror/${name}.js`, { file, type: "text/javascript; charset=utf-8" });
-  return startHttpExampleServer(server, { serveAsset: createBrowserAssetHandler(entries) });
+  const assets = createBrowserAssetHandler(entries);
+  // Routes the core host does not own: the in-memory presence relay first, then fixed assets.
+  return startHttpExampleServer(server, { serveAsset: (request, response) => presence.handle(request, response) || assets(request, response) });
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {

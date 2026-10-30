@@ -3,8 +3,8 @@ import { describe, it, mock } from "node:test";
 import { EditorSelection, type TransactionSpec } from "@codemirror/state";
 import { createClient, createServer, defineDocument, text, value, type ClientBatch,
   type DocumentOperation } from "../../../dist/index.js";
-import { createTextBinding } from "../binding.js";
-import { createMirror, textEdits } from "../changes.js";
+import { createTextBinding, remoteRanges } from "../binding.js";
+import { createMirror, editorOffset, elementIndexAt, textEdits } from "../changes.js";
 
 const Note = defineDocument({ body: text(), count: value(0) });
 type Batch = ClientBatch<DocumentOperation<typeof Note.definition>>;
@@ -240,6 +240,85 @@ describe("Text editor state bridge", () => {
         f.check();
       }
     }
+    assert.deepEqual(f.errors, []);
+  });
+});
+
+/** A second writer without an editor, plus delivery of every pending batch to both documents. */
+function withPeer(f: ReturnType<typeof fixture>) {
+  const peerBatches: Batch[] = [];
+  const peer = createClient(Note, { clientId: f.server.openClient(), onBatch(batch) { peerBatches.push(batch); } });
+  function deliver(): void {
+    for (const batch of [...f.batches.splice(0), ...peerBatches.splice(0)]) {
+      const { commit } = f.server.receive(batch);
+      f.doc.receive(commit); peer.receive(commit);
+    }
+  }
+  return { peer, deliver };
+}
+const slice = (f: ReturnType<typeof fixture>) => f.binding.state.field(remoteRanges).map(({ label, from, to }) =>
+  ({ label, text: f.binding.state.doc.sliceString(from, to), at: to }));
+
+describe("Remote selections", () => {
+  it("maps element indices and UTF-16 offsets both ways around wide and split elements", () => {
+    const mirror = createMirror(["a", "😀", "b", "\ud83d", "\ude00", "c"]);
+    for (let index = 0; index <= 6; index++) assert.equal(elementIndexAt(mirror, editorOffset(mirror, index)), index);
+    assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 7].map((offset) => elementIndexAt(mirror, offset)), [0, 1, 1, 2, 3, 4, 5, 6]);
+  });
+
+  it("turns the editor selection into cursors: a caret binds left, a range keeps its edges", (t) => {
+    const f = fixture(); t.after(() => f.binding.destroy());
+    f.edit({ changes: { from: 0, insert: "a😀b\ud83d" } });
+    f.edit({ changes: { from: 5, insert: "\ude00c" } });
+    f.edit({ selection: EditorSelection.cursor(3) });
+    const caret = f.binding.selectionCursors();
+    assert.equal(caret.from, caret.to);
+    assert.equal(caret.from.bind, "left");
+    assert.equal(f.doc.state.body.cursorIndex(caret.from), 2);
+    f.edit({ selection: EditorSelection.range(1, 6) });
+    const range = f.binding.selectionCursors();
+    assert.deepEqual([range.from.bind, range.to.bind], ["right", "left"]);
+    assert.deepEqual([f.doc.state.body.cursorIndex(range.from), f.doc.state.body.cursorIndex(range.to)], [1, 5]);
+    assert.deepEqual(f.errors, []);
+  });
+
+  it("draws resolved selections in UTF-16 and re-resolves after remote edits, local edits and deletions", (t) => {
+    const f = fixture(); t.after(() => f.binding.destroy());
+    const { peer, deliver } = withPeer(f);
+    f.edit({ changes: { from: 0, insert: "Hello 😀 world" } });
+    deliver();
+    const selection = { from: peer.state.body.cursorAt(8, "right"), to: peer.state.body.cursorAt(13) };
+    const statuses = f.binding.setRemote([{ label: "P", selection: structuredClone(selection) }]);
+    assert.deepEqual(statuses, [{ label: "P", resolved: true, from: 8, to: 13 }]);
+    assert.deepEqual(f.binding.state.field(remoteRanges), [{ label: "P", from: 9, to: 14 }]);
+    peer.state.body.insert(13, "!");
+    peer.state.body.insert(8, "new ");
+    deliver();
+    assert.equal(f.binding.state.doc.toString(), "Hello 😀 new world!");
+    assert.deepEqual(slice(f), [{ label: "P", text: "world", at: 18 }], "edge insertions stay outside");
+    f.edit({ changes: { from: 0, insert: "¡" } });
+    assert.deepEqual(slice(f), [{ label: "P", text: "world", at: 19 }]);
+    peer.state.body.delete(12, 5); // The peer has not received "¡" yet.
+    deliver();
+    assert.equal(f.binding.state.doc.toString(), "¡Hello 😀 new !");
+    assert.deepEqual(slice(f), [{ label: "P", text: "", at: 14 }], "a deleted selection collapses");
+    assert.deepEqual(f.errors, []);
+  });
+
+  it("hides positions anchored in unreceived text until the commit arrives", (t) => {
+    const f = fixture(); t.after(() => f.binding.destroy());
+    const { peer, deliver } = withPeer(f);
+    f.edit({ changes: { from: 0, insert: "ab" } });
+    deliver();
+    peer.state.body.insert(1, "XY");
+    const caret = peer.state.body.cursorAt(3);
+    assert.deepEqual(f.binding.setRemote([{ label: "P", selection: { from: caret, to: caret } }]), [{ label: "P", resolved: false }]);
+    assert.deepEqual(f.binding.state.field(remoteRanges), []);
+    deliver();
+    assert.equal(f.binding.state.doc.toString(), "aXYb");
+    assert.deepEqual(slice(f), [{ label: "P", text: "", at: 3 }]);
+    f.binding.setRemote([]);
+    assert.deepEqual(f.binding.state.field(remoteRanges), []);
     assert.deepEqual(f.errors, []);
   });
 });

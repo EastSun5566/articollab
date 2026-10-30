@@ -14,7 +14,13 @@
     header p { max-width: 75ch; }
     a { color: #205faa; }
     .editors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2rem; margin-top: 2rem; }
-    .identity, .message { color: #4e6477; font-size: .9rem; }
+    .identity, .message, .presence { color: #4e6477; font-size: .9rem; }
+    .cm-remote-selection { background: #f5d9bd; }
+    .cm-remote-caret { position: relative; border-left: 2px solid #b35400; margin: 0 -1px; }
+    .cm-remote-caret::after { content: attr(data-label); position: absolute; z-index: 1; left: -2px; bottom: 100%; padding: 0 .3rem;
+      font: .7rem/1.4 system-ui, sans-serif; white-space: nowrap; color: white; background: #b35400; border-radius: .2rem .2rem .2rem 0; pointer-events: none; }
+    /* Room for a caret tag above the first line, which the scroller would otherwise clip. */
+    .editor .cm-editor .cm-content { padding-top: 1.1rem; }
     .identity { margin-top: .25rem; }
     .editor { background: white; border: 1px solid #c9d4e0; }
     .editor:focus-within { outline: 2px solid #205faa; outline-offset: 2px; }
@@ -51,6 +57,9 @@
       <h1>Edit locally. Sync when ready.</h1>
       <p>Two CodeMirror editors, one authoritative document. Local edits stay optimistic until you choose Sync.
         Reject pending cancels unconfirmed work, not edits the server already accepted.</p>
+      <p>Each writer shares its selection about once a second, separately from Sync. A shared position follows the
+        text it was anchored to, so it stays put when the other writer edits around it. A position inside text
+        this writer has not synced yet is listed below the editor instead of being drawn in the wrong place.</p>
       <p>Sync pauses both editors and is unavailable during text composition. This localhost prototype has no
         authentication, autosave, undo or reload recovery. Inspect checkpoints before leaving the page.</p>
     </header>
