@@ -38,6 +38,6 @@ No. It prevents a batch from allocating insertion IDs under another writer/path 
 
 Transport, quotas, storage barriers, authentication/authorization, writer coordination, document lineage checks, and recovery after ambiguous outcomes or history gaps.
 
-The package has no rich text, presence, undo, cursor, bulk List editing, move, automatic migration or background reconnect. Same-ID server rollback/forks and power-loss durability are not promised. See the [complete boundaries](reference.md#boundaries).
+The package has no rich text, presence, undo, bulk List editing, move, automatic migration or background reconnect. Same-ID server rollback/forks and power-loss durability are not promised. See the [complete boundaries](reference.md#boundaries).
 
 [Previous: Core reference](reference.md) · [Back to Overview](README.md)

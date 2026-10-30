@@ -4,6 +4,7 @@ import { decodedCollectionStates, initialStates, replayPending } from "./state.t
 import { PendingReplayError } from "./conflict.ts";
 import { localBunchSeq } from "./namespace.ts";
 import { clientNumber } from "./client-id.ts";
+import type { Cursor } from "./cursor.ts";
 
 import {
   ListState,
@@ -508,6 +509,15 @@ function decodeSnapshotCollection(
   });
   validateSnapshotCollection(kind, snapshot, path);
   return snapshot;
+}
+
+/** Decodes a parsed Text or List cursor, such as one received over an application presence channel. */
+export function decodeCursor(input: unknown): Cursor {
+  const record = decodeRecord(input, [], "Cursor");
+  requireExactFields(record, [], ["anchor", "bind"]);
+  const bind = decodeString(record.bind, ["bind"], "Cursor bind");
+  if (bind !== "left" && bind !== "right") fail(["bind"], `Cursor bind must be "left" or "right"`);
+  return Object.freeze({ anchor: decodeOptionalElementId(record.anchor, ["anchor"]), bind });
 }
 
 /** Decodes a parsed client batch before passing it to server.receive(). */
