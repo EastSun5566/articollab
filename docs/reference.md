@@ -19,6 +19,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.state` | Readonly collection bindings; mutate through Value/List/Text methods. |
 | `doc.transact(callback)` | Groups synchronous mutations and returns the callback result. |
 | `doc.on("change", listener)` | Subscribes to document-level events; returns an unsubscribe function. |
+| `doc.on("discard", listener)` | Subscribes to this writer's List `set()` operations that the server applied after their element was deleted. |
 | `doc.state.body.observe(listener)` | Opt-in visible Text edits; returns an unsubscribe function. |
 | `doc.state.items.observe(listener)` | Opt-in visible List splices and in-place sets; returns an unsubscribe function. |
 | `cursorAt(index, bind?)`, `cursorIndex(cursor)` on Text and List | Stable gap positions: create a frozen cursor, then resolve its current index or `undefined`. |
@@ -26,6 +27,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.replayConflict`, `doc.checkpoint()` | Read the first replay failure or save authoritative state and pending work. |
 | `createServer(schema, options?)` | Optional synchronous `resolve`, restore `checkpoint`, `historyLimit` (default 1000), `maxClients` (optional open-session bound), and `allowCustomClientNamespaces` (default false). |
 | `server.openClient()`, `server.closeClient(clientId)` | Issue a writer ID or permanently retire it; neither creates a commit. |
+| `server.listClients()` | Open sessions with the last batch the server processed from each, for finding idle writers. |
 | `server.receive(batch)`, `server.reject(batch)` | Process a batch or replay its original result; return `{ commit, replayed }`. |
 | `server.snapshot()`, `server.checkpoint()`, `server.commitsSince(watermark)` | Late join, server restore, and complete ordered catch-up or `null`. |
 | `decodeClientBatch`, `decodeServerCommit`, `decodeSnapshot`, `decodeClientCheckpoint`, `decodeServerCheckpoint` | Each takes `(schema, unknown)`, validates parsed wire data and returns an owned frozen object. |
@@ -41,9 +43,11 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `SchemaShape`, `CollectionSchema`, `ValueSchema`, `ListSchema`, `TextSchema`, `ValueType`, `ListType` | Schema descriptors and inferred element types. |
 | `Value`, `List`, `Text`, `DocumentState` | Typed collection views. |
 | `CreateClientOptions`, `CreateServerOptions`, `ServerResolveContext`, `ServerResolver` | Construction and batch policy contracts. |
+| `ServerClientSession` | One open writer session from `server.listClients()`. |
 | `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation`, `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextOperation`, `TextIdRange`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
 | `ClientBatchRef`, `ClientBatch`, `ServerCommit`, `ServerReceipt`, `ServerReplayEntry` | Batch identity, authoritative result, local routing metadata and retry entries. |
 | `LocalChangeEvent`, `ServerChangeEvent`, `ChangeEvent`, `PendingReplayConflict` | Local/server notifications and the first blocked pending operation. |
+| `DiscardEvent` | This writer's List sets that had no effect because their element was already deleted. |
 | `TextChange`, `TextChangeEvent` | Visible Text element edits from an opt-in subscription. |
 | `ListChange`, `ListChangeEvent` | Visible List splices and in-place sets from an opt-in subscription. |
 | `Cursor` | A stable Text or List gap position: `{ anchor, bind }`. |
@@ -86,6 +90,8 @@ The local completion order is **optimistic state → pending batch and local seq
 
 Server events are `{ origin: "server", commit }`, emitted only when visible state or the replay-conflict descriptor changes, not merely because an ack/watermark advances. Value and List payload equality uses `Object.is`; List/Text additionally compare visible stable IDs. An accepted own commit is silent when that comparison and the conflict are unchanged. Deep-equal JSON objects decoded into new references can still trigger a change. A change listener is not a reliable ack or checkpoint-save trigger.
 
+`doc.on("discard", listener)` reports this writer's List `set()` operations that reached the server after a peer deleted their element, so they changed nothing. When `receive()` applies an acknowledgement of this writer's batch whose authoritative commit contains such sets, it calls each discard listener once with `{ commit, operations }`: the commit and those `list/set` operations in commit order, frozen. Detection uses the commit as applied, so server transformations are included; a peer's commit is never reported, and a rejected batch has no operations to report. Discard listeners run after any server `change` event for that commit and before observers, even when the acknowledgement changes nothing visible. They are application callbacks like change listeners: a throw propagates from `receive()` after the commit has been applied, skips later listeners and does not roll back. The event is not part of checkpoints; a restored writer reports discards for acknowledgements it receives after restore.
+
 `Text.observe(listener): () => void` independently subscribes to visible element-content changes. It starts at the current view without an initial event; subscription inside a transaction throws. Unsubscribe is idempotent. The event is `{ beforeLength, afterLength, changes }`; each change is `{ index, deleteCount, insert: readonly string[] }`. All containers are owned/frozen. Indices use the original pre-event element coordinates; changes are disjoint and sorted descending for sequential application. Each inserted string retains one Text element, including separately inserted surrogate halves. There is no minimum-edit or stable-segmentation guarantee, and these offsets are not editor UTF-16 offsets.
 
 Text observers run after existing callbacks at successful outermost local commit/receive boundaries, with synchronous reentrant work coalesced. Each subscriber has its own baseline; notifications are neither one-per-batch nor one-per-commit. Observer mutations drain in later passes rather than recursively. Only content changes notify, not ID/conflict/ack changes alone. Normal changes use affected IDs; conflict or unproven-target cases may scan the whole Text. No diff work or observer snapshots are retained without subscribers. See the [incremental example](transactions.md#update-a-text-view-incrementally).
@@ -123,6 +129,8 @@ Only the last processed batch per client is retained for retry. The same payload
 `server.openClient()` returns sequential canonical IDs (`client-1`, `client-2`, …), reserves a session even before its first batch, and throws without mutation at capacity or allocation exhaustion. Both `receive()` and `reject()` require an open issued ID; unknown/closed writers fail before operation copying, policy or sequence changes. Client construction alone does not register a writer.
 
 `server.closeClient(id)` permanently removes the session and latest retry result. Closing an already-issued closed ID is a no-op; malformed or never-issued IDs throw `TypeError`. IDs are never reused within normal same-lineage restore. Closure changes no authoritative state, sequence, history or tombstones and cannot run reentrantly from a resolver. Disconnect/offline/reload is not closure: keep the session for resume, and stop the writer and handle pending work before closing it.
+
+`server.listClients()` returns the open sessions in opening order as frozen `{ clientId, lastSeq, lastServerSeq }` entries: `lastSeq` is the sequence of the last batch the server processed from that writer, accepted or rejected (0 before its first), and `lastServerSeq` is that batch's commit sequence (`null` before the first). It reads the same retry entries a checkpoint saves, so results survive restore. It copies no state or history, changes nothing and may be called from a resolver, where it shows the sessions before the current batch. There are no timestamps; see [idle sessions](server-wire.md#close-idle-writer-sessions).
 
 `maxClients` is a non-negative safe integer; omitted means unlimited, zero permits no opens. It bounds open sessions, not connections, historical IDs or payload bytes. Close releases capacity; failed batches and history eviction do not. Removing the retry entry does not purge state/history/tombstones or payloads retained by callers. Registration is not authentication, a writer lock or deletion authorization.
 

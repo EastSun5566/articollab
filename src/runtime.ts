@@ -106,6 +106,15 @@ export interface ServerReplayEntry<TOperation extends Operation = Operation> {
   readonly commit: ServerCommit<TOperation>;
 }
 
+/** An open writer session and the last batch the server processed from it. */
+export interface ServerClientSession {
+  readonly clientId: string;
+  /** Last processed batch sequence; 0 before the first batch. */
+  readonly lastSeq: number;
+  /** Server sequence of that batch's commit; null before the first batch. */
+  readonly lastServerSeq: number | null;
+}
+
 export interface LocalChangeEvent<TOperation extends Operation = Operation> {
   readonly origin: "local";
   readonly batch: ClientBatch<TOperation>;
@@ -114,6 +123,12 @@ export interface LocalChangeEvent<TOperation extends Operation = Operation> {
 export interface ServerChangeEvent<TOperation extends Operation = Operation> {
   readonly origin: "server";
   readonly commit: ServerCommit<TOperation>;
+}
+
+/** List sets in an own acknowledged commit that had no effect because their target was already deleted. */
+export interface DiscardEvent<TOperation extends Operation = Operation> {
+  readonly commit: ServerCommit<TOperation>;
+  readonly operations: readonly Extract<TOperation, { readonly type: "list/set" }>[];
 }
 
 export type ChangeEvent<TOperation extends Operation = Operation> =
@@ -394,6 +409,10 @@ type ChangeListener<S extends SchemaShape> = (
   event: ChangeEvent<DocumentOperation<S>>
 ) => void;
 
+type DiscardListener<S extends SchemaShape> = (
+  event: DiscardEvent<DocumentOperation<S>>
+) => void;
+
 /** A client-side optimistic document with server reconciliation. */
 export class ClientDocument<S extends SchemaShape> {
   readonly state: DocumentState<S>;
@@ -401,6 +420,7 @@ export class ClientDocument<S extends SchemaShape> {
   private readonly clientId: string;
   private readonly onBatch: CreateClientOptions<S>["onBatch"];
   private readonly listeners = new Set<ChangeListener<S>>();
+  private readonly discardListeners = new Set<DiscardListener<S>>();
   private readonly collections = new Map<string, RuntimeCollection>();
   private authoritativeStates: Map<string, CollectionState>;
   private readonly pendingBatches: ClientBatch<DocumentOperation<S>>[] = [];
@@ -594,14 +614,18 @@ export class ClientDocument<S extends SchemaShape> {
     return result;
   }
 
-  on(event: "change", listener: ChangeListener<S>): () => void {
-    if (event !== "change") {
+  on(event: "change", listener: ChangeListener<S>): () => void;
+  /** Own list sets that the server applied after their target was deleted, once per acknowledged commit. */
+  on(event: "discard", listener: DiscardListener<S>): () => void;
+  on(event: "change" | "discard", listener: ChangeListener<S> | DiscardListener<S>): () => void {
+    if (event !== "change" && event !== "discard") {
       throw new Error(`Unknown event: ${event as string}`);
     }
-
-    this.listeners.add(listener);
+    // The overloads pair each event name with its listener type.
+    const listeners = (event === "change" ? this.listeners : this.discardListeners) as Set<typeof listener>;
+    listeners.add(listener);
     return () => {
-      this.listeners.delete(listener);
+      listeners.delete(listener);
     };
   }
 
@@ -609,14 +633,21 @@ export class ClientDocument<S extends SchemaShape> {
   receive(commit: ServerCommit<DocumentOperation<S>>): void {
     this.notificationDepth++;
     try {
-      this.receiveCommit(commit);
+      const discarded = this.receiveCommit(commit);
+      if (discarded.length !== 0) {
+        const event = Object.freeze({ commit, operations: Object.freeze(discarded) });
+        for (const listener of [...this.discardListeners]) listener(event);
+      }
     } finally {
       this.notificationDepth--;
     }
     this.flushObservers();
   }
 
-  private receiveCommit(commit: ServerCommit<DocumentOperation<S>>): void {
+  /** Applies one commit and returns the own list sets it discarded. */
+  private receiveCommit(
+    commit: ServerCommit<DocumentOperation<S>>
+  ): Extract<DocumentOperation<S>, { readonly type: "list/set" }>[] {
     if (this.transactionDepth !== 0) {
       throw new Error("Cannot receive a server commit during a transaction");
     }
@@ -640,7 +671,11 @@ export class ClientDocument<S extends SchemaShape> {
     }
 
     const nextAuthoritativeStates = new Map(this.authoritativeStates);
-    applyOperations(nextAuthoritativeStates, commit.operations);
+    const discarded: Extract<DocumentOperation<S>, { readonly type: "list/set" }>[] = [];
+    applyOperations(nextAuthoritativeStates, commit.operations, isOwnCommit
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Commit operations are this schema's operations.
+      ? (operation) => { discarded.push(operation as Extract<DocumentOperation<S>, { readonly type: "list/set" }>); }
+      : undefined);
 
     // shortcut: exact, conflict-free own acks preserve the entire optimistic view.
     if (isOwnCommit && this.currentReplayConflict === null &&
@@ -654,7 +689,7 @@ export class ClientDocument<S extends SchemaShape> {
       this.authoritativeStates = nextAuthoritativeStates;
       this.pendingBatches.shift();
       this.lastServerSeq = commit.serverSeq;
-      return;
+      return discarded;
     }
 
     const remainingBatches = isOwnCommit
@@ -730,6 +765,7 @@ export class ClientDocument<S extends SchemaShape> {
     if (changed) {
       this.emitChange(Object.freeze({ origin: "server", commit }));
     }
+    return discarded;
   }
 
   private commit(): void {
@@ -827,7 +863,9 @@ export class ServerDocument<S extends SchemaShape> {
   private readonly historyLimit: number;
   private readonly maxClients: number | undefined;
   private readonly allowCustomClientNamespaces: boolean;
-  private history: readonly ServerCommit<DocumentOperation<S>>[];
+  /** Retained commits are `history[historyStart..]`; evicted entries are dropped in amortized batches. */
+  private history: ServerCommit<DocumentOperation<S>>[];
+  private historyStart = 0;
   private readonly resolve: ServerResolver<S> | undefined;
   private nextServerSeq = 1;
   private receiving = false;
@@ -899,6 +937,15 @@ export class ServerDocument<S extends SchemaShape> {
     this.clients.delete(clientId);
   }
 
+  /** Lists open writer sessions in opening order, without copying state or history. */
+  listClients(): readonly ServerClientSession[] {
+    return Object.freeze([...this.clients].map(([clientId, replay]) => Object.freeze({
+      clientId,
+      lastSeq: replay?.batch.seq ?? 0,
+      lastServerSeq: replay?.commit.serverSeq ?? null,
+    })));
+  }
+
   /** Returns the state needed to restore this authoritative server. */
   checkpoint(): ServerCheckpoint<S> {
     return Object.freeze({
@@ -907,7 +954,7 @@ export class ServerDocument<S extends SchemaShape> {
       clients: Object.freeze(
         [...this.clients].map(([clientId, replay]) => Object.freeze({ clientId, replay }))
       ),
-      history: Object.freeze([...this.history]),
+      history: Object.freeze(this.history.slice(this.historyStart)),
     });
   }
 
@@ -922,9 +969,21 @@ export class ServerDocument<S extends SchemaShape> {
       );
     }
     if (serverSeq === currentSeq) return Object.freeze([]);
-    const first = this.history[0];
+    const first = this.history[this.historyStart];
     if (first === undefined || serverSeq < first.serverSeq - 1) return null;
-    return Object.freeze(this.history.slice(serverSeq - first.serverSeq + 1));
+    return Object.freeze(this.history.slice(this.historyStart + serverSeq - first.serverSeq + 1));
+  }
+
+  /** Appends to retained history in amortized O(1); runs only after the commit is fully applied. */
+  private retain(commit: ServerCommit<DocumentOperation<S>>): void {
+    if (this.historyLimit === 0) return;
+    this.history.push(commit);
+    if (this.history.length - this.historyStart > this.historyLimit) this.historyStart++;
+    // Compact once the evicted prefix is at least as long as the retained window.
+    if (this.historyStart >= Math.max(this.historyLimit, 1024)) {
+      this.history = this.history.slice(this.historyStart);
+      this.historyStart = 0;
+    }
   }
 
   /** Resolves the next batch or replays this client's last identical batch. */
@@ -1010,17 +1069,12 @@ export class ServerDocument<S extends SchemaShape> {
         source: Object.freeze({ clientId: ownedBatch.clientId, seq: ownedBatch.seq }),
         operations,
       });
-      const nextHistory =
-        this.historyLimit === 0
-          ? []
-          : [...this.history, commit].slice(-this.historyLimit);
-
       this.authoritativeStates = nextAuthoritativeStates;
       this.clients.set(
         ownedBatch.clientId,
         Object.freeze({ batch: ownedBatch, commit })
       );
-      this.history = nextHistory;
+      this.retain(commit);
       this.nextServerSeq++;
       return Object.freeze({ commit, replayed: false });
     } finally {

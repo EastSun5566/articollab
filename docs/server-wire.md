@@ -86,6 +86,32 @@ To cancel a namespace-invalid original, verify its writer binding, then call `se
 
 A guard failure or runtime throw is not an acknowledgement. See the [exact namespace contract](reference.md#incoming-insertion-namespaces) and [upgrade guidance](recovery.md#upgrading-from-020-beta0).
 
+## Close idle writer sessions
+
+Each `server.openClient()` holds a session, and a writer that disappears without being closed keeps holding it, which can exhaust `maxClients`. `server.listClients()` shows which sessions have written recently, measured in server sequence:
+
+```ts
+import { createServer, defineDocument, value } from "articollab";
+
+const Counter = defineDocument({ count: value(0) });
+const server = createServer(Counter, { maxClients: 100 });
+const active = server.openClient();
+const idle = server.openClient();
+for (let seq = 1; seq <= 3; seq++) {
+  server.receive({ clientId: active, seq, operations: [{ type: "value/set", path: "count", value: seq }] });
+}
+
+const current = server.snapshot().serverSeq;
+for (const { clientId, lastServerSeq } of server.listClients()) {
+  // Never wrote, or nothing in the last 1000 commits. Pick a policy that fits your app.
+  if (lastServerSeq === null || current - lastServerSeq > 1000) server.closeClient(clientId);
+}
+console.log(server.listClients().map((session) => session.clientId)); // [ 'client-1' ]
+console.log(idle); // client-2, now closed
+```
+
+A session that has not written is not necessarily abandoned: a writer may still be offline with pending work. For time-based policies, record when your transport last heard from each client and combine it with this list. Close a session only after its writer has stopped, as described in the [session rules](reference.md#server-policy-rejection-and-retries).
+
 ## Deliver in order
 
 Every client needs every authoritative commit, exactly once and in global sequence order. If its watermark is 10 and its own commit is 12, first deliver commit 11. Do not skip it because POST succeeded or because commit 12 belongs to that client.
