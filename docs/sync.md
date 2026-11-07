@@ -1,12 +1,12 @@
 # Sync adapter
 
-`articollab/sync` keeps a client document synchronized with a server over HTTP. It follows the [recovery rules](recovery.md) for you: catch up before resubmitting, send only the earliest pending batch, wait for its acknowledgement, retry network failures with backoff, and stop instead of guessing when it cannot continue safely. Updates arrive by polling; there is no push channel yet.
+`articollab/sync` keeps a client document synchronized with a server over HTTP. It follows the [recovery rules](recovery.md) for you: catch up before resubmitting, send only the earliest pending batch, wait for its acknowledgement, retry network failures with backoff, and stop instead of guessing when it cannot continue safely. New commits arrive over a push channel (server-sent events) when it is available, and by polling otherwise.
 
 It is part of the `articollab` package and adds no dependencies. Import it only where you need it.
 
 ## Serve the routes
 
-`createSyncHandler` turns a `ServerDocument` into a Fetch API handler, `(request: Request) => Promise<Response>`, so it runs wherever `Request` and `Response` exist: Node.js 24 with a framework or a small bridge, Deno, Bun or a worker runtime. It matches the last path segment, so mount it under any prefix:
+`createSyncHandler` turns a `ServerDocument` into a Fetch API handler, `(request: Request) => Promise<Response>` with a `notify()` method, so it runs wherever `Request` and `Response` exist: Node.js 24 with a framework or a small bridge, Deno, Bun or a worker runtime. It matches the last path segment, so mount it under any prefix:
 
 ```ts
 import { createServer, defineDocument, list } from "articollab";
@@ -28,6 +28,7 @@ export const handleSync = createSyncHandler(Board, server, {
 | `clients` | POST `{}` | Open a writer session; `201 { clientId, snapshot }` |
 | `batches` | POST batch | Submit the next batch; `204` means received, not acknowledged |
 | `commits?since=n` | GET | Every commit after watermark `n`, or `null` when history no longer covers it |
+| `events?since=n` | GET | A `text/event-stream` of the commits after `n`, then each new commit; see [Live updates](#live-updates) |
 | `rejections` | POST batch | Cancel pending work; disabled unless `allowRejections: true` |
 
 The handler validates JSON content types, a body size limit (`bodyLimit`, default 1 MiB) and every batch with `decodeClientBatch`, then applies the normal namespace check. Errors use fixed messages and never echo the request. Writes are processed one at a time, and catch-up waits for pending saves, so a commit is never served before its checkpoint is saved.
@@ -52,15 +53,29 @@ sync.doc.state.items.push("Sent automatically");
 sync.on("status", (status) => console.log(status));
 ```
 
-`connectSync` creates the `ClientDocument` and owns its `onBatch`, so local edits are scheduled for submission automatically; several edits in one synchronous block share one pass. It polls every `pollInterval` milliseconds (default 1000; `0` disables polling and you call `sync()` yourself). `sync()` resolves `true` when everything pending is acknowledged.
+`connectSync` creates the `ClientDocument` and owns its `onBatch`, so local edits are scheduled for submission automatically; several edits in one synchronous block share one pass. While no push channel is open it polls every `pollInterval` milliseconds (default 1000; `0` disables polling and you call `sync()` yourself). `sync()` resolves `true` when everything pending is acknowledged.
 
 Decode a stored checkpoint with `decodeClientCheckpoint` before passing it as `checkpoint`. Use one `SyncClient` per writer and client ID, as with any checkpoint.
+
+## Live updates
+
+With `createHttpTransport`, the client opens `GET events?since=n` after its first pass and keeps it open. The handler first sends the saved commits after `n`, then every new commit as soon as its checkpoint is saved, as `event: commits` with the commits as JSON and the last server sequence as the event `id`. A `: ping` comment every `heartbeatInterval` milliseconds (default 15000) keeps proxies from closing an idle stream.
+
+Pushed commits go through the same checks as catch-up. A delivery that continues the client's watermark is applied directly, with no extra request; duplicates are ignored, and anything that skips ahead triggers a normal catch-up. While the channel is open the client does not poll. If the stream ends, fails or carries no traffic for `pushTimeout` milliseconds (default 45000), the client catches up at once, polls, and reconnects with the same backoff as other retries.
+
+```ts
+sync.on("push", (state) => setLiveIndicator(state === "open")); // "off" | "connecting" | "open"
+```
+
+The stream uses `fetch`, so `headers()` such as an authorization header apply to it, and `authorize` sees it as `catchUp`. Pass `push: false` to `connectSync` to poll only. On the server, `maxEventStreams` (default 1000) bounds open streams; further requests get 503. Some hosting platforms limit how long a response may stream; the client recovers by reconnecting, or set `push: false` there.
+
+The handler pushes the commits it applies itself. If your server also commits outside the handler, for example with a direct `server.receive()`, save the checkpoint and then call `await handleSync.notify()` to push those commits.
 
 ## Status and failures
 
 | Status | Meaning | What happens next |
 | --- | --- | --- |
-| `idle` | Caught up and nothing pending | Polls |
+| `idle` | Caught up and nothing pending | Waits for pushed commits, or polls |
 | `syncing` | A pass is running | — |
 | `retrying` | A network request failed; the outcome is unknown | Retries with exponential backoff and jitter (`retry.initialDelay` 500 ms to `retry.maxDelay` 30 s), catching up first |
 | `blocked` | Pending work cannot replay (`doc.replayConflict`) | Keeps polling; call `rejectPending()` to cancel it |
@@ -78,6 +93,6 @@ The transport throws an error with `retryable: false` for failures that retrying
 
 ## Limits
 
-There is no push delivery, authentication, storage adapter, cross-tab coordination or offline detection: call `sync()` when your app comes back online. The handler serves one document; route requests for different documents to different handlers. See the [core reference](reference.md#sync-adapter) for the complete contract.
+There is no authentication, storage adapter, cross-tab coordination or offline detection: call `sync()` when your app comes back online. The handler serves one document; route requests for different documents to different handlers. See the [core reference](reference.md#sync-adapter) for the complete contract.
 
 [Previous: Recovery](recovery.md) · [Next: Core reference](reference.md)

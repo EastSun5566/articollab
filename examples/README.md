@@ -13,7 +13,7 @@ All commands and snippet imports below are relative to the **repository root**, 
 | [Manual pending rejection](#manual-pending-rejection) | Confirm cancellation without purge or undo |
 | [Asynchronous resume](#asynchronous-jsonresume-example) | JSON delivery with independent FIFO chains |
 | [File-backed recovery](#file-backed-checkpoint-recovery-example) | Save barriers and process-interruption recovery |
-| [Sync adapter](#sync-adapter-example) | The packaged `articollab/sync` client and handler over real HTTP, recovering a lost response |
+| [Sync adapter](#sync-adapter-example) | The packaged `articollab/sync` client and handler over real HTTP, recovering a lost response and receiving pushed commits |
 | [HTTP sync](#localhost-http-sync-example) | Real localhost snapshot, submission, catch-up and explicit cancellation |
 | [File-backed HTTP](#file-backed-http-recovery-example) | Rebuild hosts/connections after ambiguous responses |
 | [Browser core smoke](#browser-core-smoke-example) | Production ESM collection/recovery checks |
@@ -284,7 +284,7 @@ Fresh HTTP registration is not idempotent. If its response or initial client sav
 node examples/sync-adapter.ts
 ```
 
-Serves `createSyncHandler` through a small `node:http` bridge and connects two writers with `connectSync` and `createHttpTransport`. Writer A's first submission is accepted by the server but its response is lost; the next pass catches up, finds the acknowledgement and sends nothing twice. It prints both items and server sequence 2. The bridge is example code: frameworks and other runtimes accept a Fetch API handler directly. See the [sync adapter guide](../docs/sync.md). The manual examples below show the same protocol step by step for custom transports.
+Serves `createSyncHandler` through a small `node:http` bridge and connects two writers with `connectSync` and `createHttpTransport`. Writer A's first submission is accepted by the server but its response is lost; the next pass catches up, finds the acknowledgement and sends nothing twice. With polling turned off, A then receives B's next edit over its push channel. It prints the three items and server sequence 3. The bridge streams response bodies and aborts the request when the client disconnects, which event streams need. The bridge is example code: frameworks and other runtimes accept a Fetch API handler directly. See the [sync adapter guide](../docs/sync.md). The manual examples below show the same protocol step by step for custom transports.
 
 ## Localhost HTTP sync example
 

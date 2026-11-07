@@ -25,12 +25,26 @@ export interface SyncHandlerOptions<S extends SchemaShape> {
   readonly allowRejections?: boolean;
   /** Maximum request body size in bytes. Default 1 MiB. */
   readonly bodyLimit?: number;
+  /** Milliseconds between heartbeat comments on event streams. Default 15000. */
+  readonly heartbeatInterval?: number;
+  /** Maximum open event streams; more are answered with 503. Default 1000. */
+  readonly maxEventStreams?: number;
+}
+
+/** A Fetch API handler that can also push commits made outside it to open event streams. */
+export interface SyncHandler {
+  (request: Request): Promise<Response>;
+  /**
+   * Sends commits that were applied to the server without this handler, such as by a direct
+   * `server.receive()`, to open event streams. Call it after those commits are saved.
+   */
+  notify(): Promise<void>;
 }
 
 function routeMethod(route: string): "GET" | "POST" | undefined {
   switch (route) {
     case "clients": case "batches": case "rejections": return "POST";
-    case "commits": return "GET";
+    case "commits": case "events": return "GET";
     default: return undefined;
   }
 }
@@ -65,6 +79,20 @@ async function readBody(request: Request, limit: number): Promise<string | null>
   return new TextDecoder().decode(bytes);
 }
 
+const WATERMARK = /^(0|[1-9]\d*)$/;
+
+function nonNegativeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative safe integer`);
+  return value;
+}
+
+interface EventStream {
+  /** The last server sequence this stream has sent. */
+  sent: number;
+  send(text: string): void;
+  close(): void;
+}
+
 /**
  * A Fetch API handler for the routes `createHttpTransport` uses. It matches the last path segment,
  * so mount it under any prefix. It does not authenticate: use `authorize` to bind requests to writers.
@@ -73,25 +101,74 @@ export function createSyncHandler<S extends SchemaShape>(
   schema: DocumentSchema<S>,
   server: ServerDocument<S>,
   options: SyncHandlerOptions<S> = {}
-): (request: Request) => Promise<Response> {
-  const bodyLimit = options.bodyLimit ?? 1024 * 1024;
-  if (!Number.isSafeInteger(bodyLimit) || bodyLimit < 0) throw new TypeError("bodyLimit must be a non-negative safe integer");
+): SyncHandler {
+  const bodyLimit = nonNegativeInteger(options.bodyLimit ?? 1024 * 1024, "bodyLimit");
+  const heartbeatInterval = nonNegativeInteger(options.heartbeatInterval ?? 15_000, "heartbeatInterval");
+  const maxEventStreams = nonNegativeInteger(options.maxEventStreams ?? 1000, "maxEventStreams");
+  const encoder = new TextEncoder();
+  const streams = new Set<EventStream>();
   let failed = false;
-  // Writes and their saves run one at a time; catch-up waits for them so no unsaved commit is served.
-  let writes: Promise<unknown> = Promise.resolve();
+  // Writes, their saves and every read of commits run one at a time, so no unsaved commit is served.
+  let queue: Promise<unknown> = Promise.resolve();
 
-  function serialize<T>(work: () => Promise<T>): Promise<T> {
-    const result = writes.then(work);
-    writes = result.catch(() => {});
+  function serialize<T>(work: () => Promise<T> | T): Promise<T> {
+    const result = queue.then(work);
+    queue = result.catch(() => {});
     return result;
+  }
+  function closeStreams(): void {
+    for (const stream of [...streams]) stream.close();
   }
   async function saved(): Promise<boolean> {
     try { await options.saveCheckpoint?.(server.checkpoint()); return true; }
-    catch { failed = true; return false; }
+    catch { failed = true; closeStreams(); return false; }
+  }
+  /** Sends each stream the saved commits it has not sent; runs inside the queue. */
+  function broadcast(): void {
+    for (const stream of [...streams]) {
+      const commits = server.commitsSince(stream.sent);
+      if (commits === null) { stream.send("event: gap\ndata: null\n\n"); stream.close(); continue; }
+      const last = commits.at(-1);
+      if (last === undefined) continue;
+      stream.send(`event: commits\nid: ${last.serverSeq}\ndata: ${JSON.stringify(commits)}\n\n`);
+      stream.sent = last.serverSeq;
+    }
   }
   async function allowed(request: Request, action: SyncAction, clientId?: string): Promise<boolean> {
     if (options.authorize === undefined) return true;
     return await options.authorize(request, clientId === undefined ? { action } : { action, clientId });
+  }
+
+  function openStream(request: Request, watermark: number): Response {
+    let stream: EventStream | undefined;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        let open = true;
+        const close = (): void => {
+          if (!open) return;
+          open = false;
+          if (stream !== undefined) streams.delete(stream);
+          if (heartbeat !== undefined) clearInterval(heartbeat);
+          request.signal.removeEventListener("abort", close);
+          try { controller.close(); } catch { /* The reader already went away. */ }
+        };
+        const send = (text: string): void => {
+          if (!open) return;
+          try { controller.enqueue(encoder.encode(text)); } catch { close(); }
+        };
+        stream = { sent: watermark, send, close };
+        streams.add(stream);
+        request.signal.addEventListener("abort", close);
+        if (heartbeatInterval > 0) heartbeat = setInterval(() => { send(": ping\n\n"); }, heartbeatInterval);
+      },
+      cancel() { stream?.close(); },
+    });
+    // Commits already saved past the watermark go first; an uncovered watermark ends the stream.
+    broadcast();
+    return new Response(body, { status: 200, headers: {
+      "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", "X-Accel-Buffering": "no",
+    } });
   }
 
   async function handle(request: Request): Promise<Response> {
@@ -104,15 +181,23 @@ export function createSyncHandler<S extends SchemaShape>(
     }
     if (request.method !== method) return error(405, "Method not allowed", { Allow: method });
 
-    if (route === "commits") {
+    if (route === "commits" || route === "events") {
       const since = url.searchParams.getAll("since");
-      if (since.length !== 1 || !/^(0|[1-9]\d*)$/.test(since[0]!)) return error(400, "Expected one non-negative decimal watermark");
-      const watermark = Number(since[0]);
+      if (since.length !== 1 || !WATERMARK.test(since[0]!)) return error(400, "Expected one non-negative decimal watermark");
+      let watermark = Number(since[0]);
+      // A reconnecting EventSource resumes after the last event it received.
+      const resumed = request.headers.get("last-event-id");
+      if (route === "events" && resumed !== null && WATERMARK.test(resumed)) watermark = Math.max(watermark, Number(resumed));
+      if (!Number.isSafeInteger(watermark)) return error(400, "Invalid catch-up watermark");
       if (!(await allowed(request, "catchUp"))) return error(403, "Forbidden");
-      await writes; // Never serve a commit before its checkpoint is saved.
-      if (failed) return error(503, "Checkpoint storage failed; restart this host");
-      if (!Number.isSafeInteger(watermark) || watermark > server.snapshot().serverSeq) return error(400, "Invalid catch-up watermark");
-      return json(200, server.commitsSince(watermark));
+      if (route === "events" && streams.size >= maxEventStreams) return error(503, "Too many event streams");
+      return serialize(() => {
+        if (failed) return error(503, "Checkpoint storage failed; restart this host");
+        // Read inside the queue: a write that is still saving cannot have its commit served.
+        let commits: ReturnType<typeof server.commitsSince>;
+        try { commits = server.commitsSince(watermark); } catch { return error(400, "Invalid catch-up watermark"); }
+        return route === "commits" ? json(200, commits) : openStream(request, watermark);
+      });
     }
 
     if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
@@ -146,14 +231,20 @@ export function createSyncHandler<S extends SchemaShape>(
       let replayed: boolean;
       try { ({ replayed } = reject ? server.reject(batch) : server.receive(batch)); }
       catch { return error(409, "Batch could not be applied"); }
-      if (!replayed && !(await saved())) return error(500, "Checkpoint could not be saved");
+      if (!replayed) {
+        if (!(await saved())) return error(500, "Checkpoint could not be saved");
+        broadcast(); // Still inside the queue: only saved commits are pushed.
+      }
       // Acceptance is not an acknowledgement: the writer confirms it through catch-up.
       return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
     });
   }
 
-  return async (request) => {
+  const handler = async (request: Request): Promise<Response> => {
     try { return await handle(request); }
     catch { return error(500, "Internal server error"); }
   };
+  return Object.assign(handler, {
+    notify: () => serialize(() => { if (failed) closeStreams(); else broadcast(); }),
+  });
 }

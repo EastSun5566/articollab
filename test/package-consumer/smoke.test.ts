@@ -245,6 +245,18 @@ assert.equal(await syncA.sync(), true);
 assert.equal(await syncB.sync(), true);
 assert.deepEqual(syncB.doc.state.items.toArray(), ["synced"]);
 assert.equal(syncB.status, "idle");
+// syncA's push channel opened after its first pass; B's next commit arrives without polling.
+for (let tries = 0; syncA.push !== "open"; tries++) {
+  assert.ok(tries < 500, "push channel did not open");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+syncB.doc.state.items.push("pushed");
+assert.equal(await syncB.sync(), true);
+for (let tries = 0; syncA.doc.state.items.length < 2; tries++) {
+  assert.ok(tries < 500, "pushed commit did not arrive");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+assert.deepEqual(syncA.doc.state.items.toArray(), ["synced", "pushed"]);
 syncA.stop(); syncB.stop();
 
 const sessionServer = createServer(Board);
@@ -277,7 +289,10 @@ import {
   type ListSnapshotData, type ListSetOperation, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
   type CreateServerOptions, type ClientBatch, type ServerCommit, type ServerClientSession, type DiscardEvent,
 } from "articollab";
-import { connectSync, createSyncHandler, type SyncClient, type SyncStatus, type SyncTransport } from "articollab/sync";
+import {
+  connectSync, createSyncHandler, type SyncClient, type SyncHandler, type SyncPushState, type SyncStatus,
+  type SyncSubscription, type SyncTransport,
+} from "articollab/sync";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Expect<T extends true> = T;
@@ -342,7 +357,12 @@ doc.on("discard", (event) => {
 doc.on("discard", (event: { origin: "local" }) => event);
 type Connected = Expect<Equal<Awaited<ReturnType<typeof connectSync<Shape>>>, SyncClient<Shape>>>;
 type Status = Expect<Equal<SyncClient<Shape>["status"], SyncStatus>>;
-type Handler = Expect<Equal<ReturnType<typeof createSyncHandler<Shape>>, (request: Request) => Promise<Response>>>;
+type Handler = Expect<Equal<ReturnType<typeof createSyncHandler<Shape>>, SyncHandler>>;
+const asPlainHandler: (request: Request) => Promise<Response> = createSyncHandler(Board, server);
+type Notify = Expect<Equal<ReturnType<SyncHandler["notify"]>, Promise<void>>>;
+type PushState = Expect<Equal<SyncClient<Shape>["push"], SyncPushState>>;
+type Subscribe = Expect<Equal<Parameters<NonNullable<SyncTransport["subscribe"]>>, [watermark: number, handlers: SyncSubscription]>>;
+void asPlainHandler;
 declare const transport: SyncTransport;
 // @ts-expect-error pollInterval is a number of milliseconds.
 void connectSync(Board, { transport, pollInterval: "fast" });
