@@ -50,6 +50,7 @@ import {
   createClient, createServer, defineDocument, list, text, value,
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeCursor,
 } from "articollab";
+import { connectSync, createHttpTransport, createSyncHandler } from "articollab/sync";
 
 const Board = defineDocument({ count: value(0), items: list(), body: text() });
 const roundTrip = (input) => JSON.parse(JSON.stringify(input));
@@ -234,6 +235,18 @@ writer.state.items.set(0, "edited");
 deliverAll();
 assert.deepEqual(discarded, ["edited"]);
 
+const syncServer = createServer(Board);
+const handle = createSyncHandler(Board, syncServer);
+const viaHandler = async (input, init) => handle(new Request(input, init));
+const syncA = await connectSync(Board, { pollInterval: 0, transport: createHttpTransport({ url: "http://sync.local/api/", fetch: viaHandler }) });
+const syncB = await connectSync(Board, { pollInterval: 0, transport: createHttpTransport({ url: "http://sync.local/api/", fetch: viaHandler }) });
+syncA.doc.state.items.push("synced");
+assert.equal(await syncA.sync(), true);
+assert.equal(await syncB.sync(), true);
+assert.deepEqual(syncB.doc.state.items.toArray(), ["synced"]);
+assert.equal(syncB.status, "idle");
+syncA.stop(); syncB.stop();
+
 const sessionServer = createServer(Board);
 const sessionId = sessionServer.openClient();
 assert.deepEqual(sessionServer.listClients(), [{ clientId: sessionId, lastSeq: 0, lastServerSeq: null }]);
@@ -264,6 +277,7 @@ import {
   type ListSnapshotData, type ListSetOperation, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
   type CreateServerOptions, type ClientBatch, type ServerCommit, type ServerClientSession, type DiscardEvent,
 } from "articollab";
+import { connectSync, createSyncHandler, type SyncClient, type SyncStatus, type SyncTransport } from "articollab/sync";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Expect<T extends true> = T;
@@ -326,6 +340,14 @@ doc.on("discard", (event) => {
 });
 // @ts-expect-error Discard listeners receive discard events, not change events.
 doc.on("discard", (event: { origin: "local" }) => event);
+type Connected = Expect<Equal<Awaited<ReturnType<typeof connectSync<Shape>>>, SyncClient<Shape>>>;
+type Status = Expect<Equal<SyncClient<Shape>["status"], SyncStatus>>;
+type Handler = Expect<Equal<ReturnType<typeof createSyncHandler<Shape>>, (request: Request) => Promise<Response>>>;
+declare const transport: SyncTransport;
+// @ts-expect-error pollInterval is a number of milliseconds.
+void connectSync(Board, { transport, pollInterval: "fast" });
+// @ts-expect-error The handler cannot be given an unknown option.
+createSyncHandler(Board, server, { allowRejection: true });
 type TextCursor = Expect<Equal<ReturnType<typeof doc.state.body.cursorAt>, Cursor>>;
 type ListCursorIndex = Expect<Equal<ReturnType<typeof doc.state.items.cursorIndex>, number | undefined>>;
 type DecodedCursor = Expect<Equal<ReturnType<typeof decodeCursor>, Cursor>>;
@@ -509,11 +531,13 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     });
     assert.deepEqual(installed.dependencies, { articulated: "^1.3.1" });
     assert.deepEqual(installed.exports, original.exports);
-    const entry = record(record(installed.exports)["."]);
-    for (const path of [entry.import, entry.types]) {
-      assert.ok(typeof path === "string");
-      assert.ok(paths.includes(path.replace(/^\.\//, "")), path);
-      await readFile(join(installedRoot, path));
+    for (const subpath of [".", "./sync"]) {
+      const entry = record(record(installed.exports)[subpath]);
+      for (const path of [entry.import, entry.types]) {
+        assert.ok(typeof path === "string");
+        assert.ok(paths.includes(path.replace(/^\.\//, "")), path);
+        await readFile(join(installedRoot, path));
+      }
     }
     const result = await run(process.execPath, ["--input-type=module", "-e",
       'await import("articollab"); console.log(import.meta.resolve("articollab"));'], consumer);

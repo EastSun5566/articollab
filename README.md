@@ -2,7 +2,7 @@
 
 Typed, server-authoritative collaborative collections for TypeScript, powered by [articulated](https://github.com/mweidner037/articulated).
 
-Clients edit optimistically; the server orders commits and clients replay unacknowledged work. **Not a CRDT.** Includes Value, List and Unicode Text, transactions, server policy, wire decoding, checkpoints and catch-up. Your application supplies transport, storage and authentication.
+Clients edit optimistically; the server orders commits and clients replay unacknowledged work. **Not a CRDT.** Includes Value, List and Unicode Text, transactions, server policy, wire decoding, checkpoints and catch-up. An optional polling HTTP [sync adapter](docs/sync.md) handles submission, catch-up and retries; your application supplies storage and authentication.
 
 ## Install
 
@@ -39,6 +39,7 @@ The server opens a writer session before its first batch. Disconnecting preserve
 - [Counter walkthrough](docs/quick-start.md)
 - [API, core contracts and compatibility](docs/reference.md)
 - [Recovery](docs/recovery.md)
+- [Sync adapter](docs/sync.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## License

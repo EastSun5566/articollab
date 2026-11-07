@@ -5,5 +5,6 @@
 - [Transactions and events](transactions.md)
 - [Server policy and wire data](server-wire.md)
 - [Recovery](recovery.md)
+- [Sync adapter](sync.md)
 - [Core reference](reference.md)
 - [FAQ and limitations](faq.md)
