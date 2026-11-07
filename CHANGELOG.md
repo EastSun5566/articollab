@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.6.0](https://github.com/EastSun5566/articollab/compare/v0.5.0...v0.6.0) (2026-11-07)
+
+### Features
+
+* **client:** report own list sets discarded by deletes ([f4d2094](https://github.com/EastSun5566/articollab/commit/f4d209446bb23b07d32b7c053e43244fc9a16209))
+* **server:** list open client sessions ([f6164cf](https://github.com/EastSun5566/articollab/commit/f6164cf9b0b213d3dae46aa549dc645329032779))
+* **sync:** add a polling sync engine with HTTP transport and handler ([e91f5e4](https://github.com/EastSun5566/articollab/commit/e91f5e44750d8bdc4f220d069a15e948e5c77e97))
+
 ## [0.5.0](https://github.com/EastSun5566/articollab/compare/v0.4.0...v0.5.0) (2026-10-30)
 
 ### Features
