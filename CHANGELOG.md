@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.7.0](https://github.com/EastSun5566/articollab/compare/v0.6.0...v0.7.0) (2026-11-09)
+
+### Features
+
+* **sync:** push commits over server-sent events ([f95de6b](https://github.com/EastSun5566/articollab/commit/f95de6b1606a1ae9ab0287c7c723e234c6b202c2))
+
 ## [0.6.0](https://github.com/EastSun5566/articollab/compare/v0.5.0...v0.6.0) (2026-11-07)
 
 ### Features
