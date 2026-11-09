@@ -8,7 +8,7 @@ import { createServer } from "../../../src/index.ts";
 import { connectSync, createHttpTransport } from "../../../src/sync/index.ts";
 import { Board } from "../../resume.ts";
 import { createTextBinding, remoteRanges } from "../binding.js";
-import { createOfflineSwitch, describeSync } from "../page.js";
+import { createOfflineSwitch, describeSync } from "../../sync-ui.js";
 import { createPresenceChannel } from "../presence.js";
 import { startTextEditorServer } from "../server.ts";
 
@@ -215,7 +215,7 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
     const map = JSON.parse(match[1]!) as { imports: Record<string, string> };
     for (const route of [...Object.values(map.imports), "/dist/sync/index.js", "/text-editor/page.js", "/text-editor/editor.js",
       "/text-editor/binding.js", "/text-editor/changes.js", "/text-editor/presence.js",
-      "/browser-http-smoke/smoke.js", "/http-sync-controller.js"]) {
+      "/browser-http-smoke/smoke.js", "/http-sync-controller.js", "/sync-ui.js"]) {
       const asset = await fetch(f.host.url + route);
       assert.equal(asset.status, 200, route);
       assert.equal(asset.headers.get("Content-Type"), "text/javascript; charset=utf-8");

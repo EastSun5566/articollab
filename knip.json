@@ -9,5 +9,5 @@
     "examples/browser-reload-recovery/recovery.js"
   ],
   "project": ["**/*.{ts,js}"],
-  "ignore": ["examples/text-editor/**"]
+  "ignore": ["examples/text-editor/**", "examples/kanban/**"]
 }

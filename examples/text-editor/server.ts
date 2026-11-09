@@ -33,6 +33,7 @@ export async function startTextEditorServer(
     ["/browser-http-smoke/smoke.js", { file: join(directory, "../browser-http-smoke/smoke.js"), type: "text/javascript; charset=utf-8" }],
     // smoke.js, which defines the shared Board, imports the controller; the editor itself does not use it.
     ["/http-sync-controller.js", { file: join(directory, "../http-sync-controller.js"), type: "text/javascript; charset=utf-8" }],
+    ["/sync-ui.js", { file: join(directory, "../sync-ui.js"), type: "text/javascript; charset=utf-8" }],
   ]);
   for (const name of ["page", "editor", "binding", "changes", "presence"]) {
     entries.set(`/text-editor/${name}.js`, { file: join(directory, `${name}.js`), type: "text/javascript; charset=utf-8" });

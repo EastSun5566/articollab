@@ -100,6 +100,18 @@ jobs:
       - name: Test text editor example
         run: pnpm --dir examples/text-editor test
 
+      - name: Typecheck kanban example
+        run: pnpm --dir examples/kanban check
+
+      - name: Lint kanban example
+        run: pnpm --dir examples/kanban lint
+
+      - name: Check unused kanban code
+        run: pnpm --dir examples/kanban knip
+
+      - name: Test kanban example
+        run: pnpm --dir examples/kanban test
+
       - name: Check browser smoke JSDoc
         run: pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js examples/http-sync-controller.js examples/browser-http-smoke/smoke.js examples/browser-reload-recovery/recovery.js
 
