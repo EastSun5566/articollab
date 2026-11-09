@@ -61,8 +61,8 @@ describe("Presence relay", { timeout: 30_000 }, () => {
     const put = await fetch(f.host.url + "/presence", { method: "PUT", body: "{}" });
     assert.equal(put.status, 405); assert.equal(put.headers.get("Allow"), "GET, POST"); await put.text();
     assert.deepEqual(await f.entries(), []);
-    const snapshot = await fetch(f.host.url + "/snapshot");
-    assert.equal(snapshot.status, 200, "core routes are unaffected"); await snapshot.text();
+    const commits = await fetch(f.host.url + "/sync/commits?since=0");
+    assert.equal(commits.status, 200, "sync routes are unaffected"); await commits.text();
   });
 
   it("expires entries that were not republished within 15 seconds", async (t) => {

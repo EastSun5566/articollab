@@ -5,158 +5,177 @@ import { describe, it, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { EditorSelection, type EditorState, type TransactionSpec } from "@codemirror/state";
 import { createServer } from "../../../src/index.ts";
+import { connectSync, createHttpTransport } from "../../../src/sync/index.ts";
 import { Board } from "../../resume.ts";
-import { connectBrowserHttpClient } from "../../browser-http-smoke/smoke.js";
 import { createTextBinding, remoteRanges } from "../binding.js";
+import { createOfflineSwitch, describeSync } from "../page.js";
 import { createPresenceChannel } from "../presence.js";
-import { createEditorActions } from "../actions.js";
 import { startTextEditorServer } from "../server.ts";
 
-async function fixture(t: TestContext, server = createServer(Board), fetcher = fetch) {
+/** Waits for `condition` with real timers: writers synchronize on their own. */
+async function until(condition: () => boolean, what: string, timeout = 5000): Promise<void> {
+  const deadline = Date.now() + timeout;
+  while (!condition()) {
+    if (Date.now() > deadline) assert.fail(`Timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function fixture(t: TestContext, server = createServer(Board)) {
   const host = await startTextEditorServer(server);
-  const bindings: ReturnType<typeof createTextBinding>[] = [];
-  t.after(async () => { for (const binding of bindings) binding.destroy(); await host.close(); });
-  async function connect() {
-    const connection = await connectBrowserHttpClient(host.url, { fetch: fetcher });
+  const cleanups: (() => void)[] = [];
+  t.after(async () => { for (const cleanup of cleanups) cleanup(); await host.close(); });
+  async function connect(options: { fetch?: typeof fetch } = {}) {
+    const network = createOfflineSwitch(options.fetch);
+    const sync = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 },
+      transport: createHttpTransport({ url: host.url + "/sync/", fetch: network.fetch }) });
     let rendered: EditorState | undefined;
-    let readOnly = false;
     const errors: unknown[] = [];
-    const binding = createTextBinding(connection.doc, {
+    const binding = createTextBinding(sync.doc, {
       update(transactions) {
         for (const transaction of transactions) { assert.equal(transaction.startState, rendered); rendered = transaction.state; }
       },
-      canEdit: () => !readOnly,
+      canEdit: () => sync.status !== "failed" && sync.status !== "gap",
       onError(error) { errors.push(error); },
     });
     rendered = binding.state;
-    bindings.push(binding);
-    return { connection, binding, errors,
+    cleanups.push(() => { binding.destroy(); sync.stop(); });
+    await sync.sync().catch(() => {}); // The first pass opens the push channel.
+    return { sync, network, binding, errors,
+      text: () => binding.state.doc.toString(),
+      pending: () => sync.doc.checkpoint().pendingBatches.length,
       edit(spec: TransactionSpec) { binding.dispatch([binding.state.update(spec)]); },
       check() {
         assert.equal(rendered, binding.state);
-        assert.equal(rendered.doc.toString(), connection.doc.state.body.toString());
-        assert.deepEqual(binding.elements, Array.from(connection.doc.state.body));
+        assert.equal(rendered.doc.toString(), sync.doc.state.body.toString());
+        assert.deepEqual(binding.elements, Array.from(sync.doc.state.body));
       },
-      setReadOnly(next: boolean) { readOnly = next; },
     };
   }
   return { host, server, connect };
 }
 
-describe("Text editor HTTP prototype", { timeout: 30_000 }, () => {
+describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
   for (const samePath of [false, true]) {
-    it(`converges real HTTP edits with ${samePath ? "same" : "disjoint"}-path pending without observer echo`, async (t) => {
+    it(`converges ${samePath ? "same" : "disjoint"}-path edits automatically, without observer echo`, async (t) => {
       const f = await fixture(t), a = await f.connect(), b = await f.connect();
+      await until(() => a.sync.push === "open" && b.sync.push === "open", "both push channels");
       a.edit({ changes: { from: 0, insert: "Hello😀\r\n" } });
       if (samePath) b.edit({ changes: { from: 0, insert: "中文" } });
-      else b.connection.doc.state.count.value = 7;
-      assert.equal(f.server.snapshot().serverSeq, 0);
-      assert.equal(await a.connection.sync(), true); a.check(); b.check();
-      assert.equal(await b.connection.sync(), true); a.check(); b.check();
-      assert.equal(await a.connection.sync(), true); a.check(); b.check();
-      assert.equal(a.binding.state.doc.toString(), b.binding.state.doc.toString());
-      assert.equal(f.server.snapshot().serverSeq, 2);
-      assert.equal(a.connection.doc.checkpoint().lastLocalSeq, 1);
-      assert.equal(b.connection.doc.checkpoint().lastLocalSeq, 1);
-      assert.deepEqual(a.connection.doc.checkpoint().pendingBatches, []);
-      assert.deepEqual(b.connection.doc.checkpoint().pendingBatches, []);
+      else b.sync.doc.state.count.value = 7;
+      // Nobody calls sync(): local edits are sent and remote commits are pushed.
+      await until(() => f.server.snapshot().serverSeq === 2 && a.pending() === 0 && b.pending() === 0 &&
+        a.sync.doc.checkpoint().snapshot.serverSeq === 2 && b.sync.doc.checkpoint().snapshot.serverSeq === 2, "convergence");
+      a.check(); b.check();
+      assert.equal(a.text(), b.text());
+      assert.equal(a.sync.doc.checkpoint().lastLocalSeq, 1, "receiving did not send anything back");
+      assert.equal(b.sync.doc.checkpoint().lastLocalSeq, 1);
     });
   }
 
-  it("adopts authoritative transformations and confirms dependent pending with no extra batches", async (t) => {
+  it("adopts authoritative transformations with no extra batches", async (t) => {
     const server = createServer(Board, { resolve: ({ batch }) => batch.operations.map((operation) =>
       operation.type === "text/insert" ? { ...operation, value: operation.value.replaceAll("x", "X") } : operation) });
     const f = await fixture(t, server), a = await f.connect(), b = await f.connect();
     a.edit({ changes: { from: 0, insert: "xx😀" } });
     a.edit({ changes: { from: 4, insert: "tail" } });
-    assert.equal(await a.connection.sync(), true);
-    assert.equal(await b.connection.sync(), true);
+    await until(() => a.text() === "XX😀tail" && b.text() === "XX😀tail" && a.pending() === 0, "the transformed text");
     a.check(); b.check();
-    assert.equal(a.binding.state.doc.toString(), "XX😀tail");
     assert.equal(server.snapshot().serverSeq, 2);
-    assert.equal(a.connection.doc.checkpoint().lastLocalSeq, 2);
+    assert.equal(a.sync.doc.checkpoint().lastLocalSeq, 2);
   });
 
-  it("clears rejected insertion content, preserves blocked work and resumes after cancellation", async (t) => {
+  it("blocks dependent work after a rejection, then resumes once it is discarded", async (t) => {
     const server = createServer(Board, { resolve: ({ batch }) => batch.operations.some((operation) =>
       operation.type === "text/insert" && operation.value === "discard") ? [] : batch.operations });
     const f = await fixture(t, server), a = await f.connect(), b = await f.connect();
     a.edit({ changes: { from: 0, insert: "discard" } });
     a.edit({ changes: { from: 7, insert: "!" } });
-    assert.equal(await a.connection.sync(), false);
+    await until(() => a.sync.status === "blocked", "the blocked status");
     a.check();
-    assert.equal(a.binding.state.doc.toString(), "");
-    assert.equal(a.connection.doc.replayConflict?.batch.seq, 2);
-    assert.deepEqual(a.connection.doc.checkpoint().pendingBatches.map((batch) => batch.seq), [2]);
+    assert.equal(a.text(), "");
+    assert.equal(a.sync.doc.replayConflict?.batch.seq, 2);
+    assert.deepEqual(describeSync(a.sync.status, a.sync.push, false).state, "blocked");
     assert.throws(() => a.edit({ changes: { from: 0, insert: "not yet" } }));
-    assert.equal(await a.connection.rejectPending(), true);
+    assert.equal(await a.sync.rejectPending(), true);
     a.edit({ changes: { from: 0, insert: "ok😀" } });
-    assert.equal(await a.connection.sync() && await b.connection.sync(), true);
+    await until(() => b.text() === "ok😀" && a.pending() === 0, "the edit after discarding");
     a.check(); b.check();
-    assert.equal(b.binding.state.doc.toString(), "ok😀");
-    assert.equal(a.connection.doc.checkpoint().lastLocalSeq, 3);
+    assert.equal(a.sync.doc.checkpoint().lastLocalSeq, 3);
     assert.deepEqual(a.errors, []);
   });
 
-  it("preserves pending and the editor when retained history cannot fill a gap", async (t) => {
+  it("keeps pending work and the editor when history cannot fill a gap", async (t) => {
     const f = await fixture(t, createServer(Board, { historyLimit: 0 }));
     const a = await f.connect(), b = await f.connect();
+    a.network.set(true);
     a.edit({ changes: { from: 0, insert: "unsent" } });
     b.edit({ changes: { from: 0, insert: "remote" } });
-    assert.equal(await b.connection.sync(), false); // POST accepted, but its own catch-up is unavailable.
-    const saved = a.connection.doc.checkpoint();
-    assert.equal(await a.connection.sync(), false);
-    assert.equal(await a.connection.rejectPending(), false);
-    assert.deepEqual(a.connection.doc.checkpoint(), saved);
-    assert.equal(f.server.snapshot().serverSeq, 1);
+    await until(() => f.server.snapshot().serverSeq === 1, "the remote commit");
+    a.network.set(false);
+    await a.sync.sync();
+    assert.equal(a.sync.status, "gap");
+    assert.equal(describeSync(a.sync.status, a.sync.push, false).state, "failed");
+    assert.equal(a.pending(), 1, "pending work is kept, never replaced by a snapshot");
+    assert.equal(a.text(), "unsent");
     a.check();
   });
 
-  it("stops after a lost POST response and keeps the accepted result and local pending", async (t) => {
-    const failure = new Error("lost response");
-    let submissions = 0;
-    const f = await fixture(t, createServer(Board), async (input, init) => {
+  it("acknowledges a submission whose response was lost instead of sending it twice", async (t) => {
+    let submissions = 0, lose = true;
+    const lossy: typeof fetch = async (input, init) => {
       const response = await fetch(input, init);
-      if (new URL(input instanceof Request ? input.url : input.toString()).pathname === "/batches") {
-        submissions++; await response.text(); throw failure;
+      if ((input instanceof Request ? input.url : input.toString()).endsWith("/sync/batches")) {
+        submissions++;
+        if (lose) { lose = false; await response.text(); throw new Error("lost response"); }
       }
       return response;
-    });
-    const a = await f.connect();
+    };
+    const f = await fixture(t), a = await f.connect({ fetch: lossy });
     a.edit({ changes: { from: 0, insert: "kept" } });
-    await assert.rejects(a.connection.sync(), (error) => error === failure);
-    await assert.rejects(a.connection.rejectPending(), (error) => error === failure);
-    assert.equal(submissions, 1);
+    await until(() => a.pending() === 0, "the acknowledgement");
+    assert.equal(submissions, 1, "catch-up found the accepted batch; nothing was resent");
     assert.equal(f.server.snapshot().data.body.value, "kept");
-    assert.equal(a.connection.doc.checkpoint().pendingBatches.length, 1);
     a.check();
   });
 
-  it("keeps a listener failure, the completed checkpoint and the page-wide stop", async (t) => {
+  it("keeps editing offline and sends the work when the writer comes back", async (t) => {
+    const f = await fixture(t), a = await f.connect(), b = await f.connect();
+    await until(() => a.sync.push === "open", "A's push channel");
+    a.network.set(true);
+    await until(() => a.sync.push !== "open", "the channel to drop");
+    a.edit({ changes: { from: 0, insert: "written offline" } });
+    await until(() => a.sync.status === "retrying", "the retrying status");
+    assert.equal(describeSync(a.sync.status, a.sync.push, true).text, "Offline");
+    assert.equal(a.pending(), 1);
+    assert.equal(b.text(), "");
+    a.network.set(false);
+    assert.equal(await a.sync.sync(), true);
+    await until(() => b.text() === "written offline", "B to receive the offline edit");
+    await until(() => a.sync.push === "open", "A to reconnect its push channel");
+    assert.equal(describeSync(a.sync.status, a.sync.push, false).text, "Live");
+    a.check(); b.check();
+  });
+
+  it("fails the writer when a document listener throws, after applying the commit", async (t) => {
     const failure = new Error("listener stopped delivery");
     const server = createServer(Board, { resolve: ({ batch }) => batch.operations.map((operation) =>
       operation.type === "text/insert" ? { ...operation, value: operation.value.toUpperCase() } : operation) });
     const f = await fixture(t, server), a = await f.connect();
+    a.sync.doc.on("change", (event) => { if (event.origin === "server") throw failure; });
     a.edit({ changes: { from: 0, insert: "x" } });
-    const unsubscribe = a.connection.doc.on("change", (event) => { if (event.origin === "server") throw failure; });
-    t.after(unsubscribe);
-    const actions = createEditorActions([{ sync: a.connection.sync, rejectPending: a.connection.rejectPending,
-      isComposing: () => false, isBlocked: () => a.connection.doc.replayConflict !== null,
-      setReadOnly: (next) => a.setReadOnly(next),
-    }]);
-    await assert.rejects(actions.run(0, "sync"), (error) => error === failure);
-    assert.equal(actions.failed, true);
-    assert.equal(a.connection.doc.checkpoint().snapshot.serverSeq, 1);
-    assert.deepEqual(a.connection.doc.checkpoint().pendingBatches, []);
-    assert.equal(a.connection.doc.state.body.toString(), "X");
-    assert.equal(a.binding.state.doc.toString(), "x"); // Existing listener failed before observers ran.
-    await assert.rejects(actions.run(0, "sync"), (error) => error === failure);
+    await until(() => a.sync.status === "failed", "the failed status");
+    assert.ok(a.sync.error instanceof Error && a.sync.error.cause === failure);
+    assert.equal(a.sync.doc.checkpoint().snapshot.serverSeq, 1);
+    assert.deepEqual(a.sync.doc.checkpoint().pendingBatches, []);
+    assert.equal(a.sync.doc.state.body.toString(), "X");
+    assert.equal(a.text(), "x", "the listener failed before observers ran");
     assert.throws(() => a.edit({ changes: { from: 0, insert: "more" } }));
   });
 
-  it("relays cursor presence that outruns commits, then resolves it once the text is synced", async (t) => {
+  it("relays cursor presence that outruns commits, then resolves it once the text arrives", async (t) => {
     const f = await fixture(t), a = await f.connect(), b = await f.connect();
-    const channel = (writer: typeof a) => createPresenceChannel({ url: f.host.url, clientId: writer.connection.doc.checkpoint().clientId });
+    const channel = (writer: typeof a) => createPresenceChannel({ url: f.host.url, clientId: writer.sync.doc.checkpoint().clientId });
     const presenceA = channel(a), presenceB = channel(b);
     async function showB(): Promise<unknown> {
       const entries = await presenceA.poll();
@@ -164,34 +183,27 @@ describe("Text editor HTTP prototype", { timeout: 30_000 }, () => {
     }
     const shown = () => a.binding.state.field(remoteRanges).map(({ from, to }) => a.binding.state.doc.sliceString(from, to) + "@" + to);
     a.edit({ changes: { from: 0, insert: "Hello 😀 world" } });
-    assert.equal(await a.connection.sync(), true);
-    assert.equal(await b.connection.sync(), true);
+    await until(() => b.text() === "Hello 😀 world", "B to receive the text");
 
     b.edit({ selection: EditorSelection.range(9, 14) });
     await presenceB.publish(b.binding.selectionCursors());
     assert.deepEqual(await showB(), [{ label: "B", resolved: true, from: 8, to: 13 }]);
     assert.deepEqual(shown(), ["world@14"]);
 
+    b.network.set(true); // Keep B's next edit unsent while its presence, on its own channel, is shared.
     b.edit({ changes: { from: 14, insert: "!!" }, selection: EditorSelection.cursor(16) });
     await presenceB.publish(b.binding.selectionCursors());
     assert.deepEqual(await showB(), [{ label: "B", resolved: false }], "B's caret is in text A has not received");
     assert.deepEqual(shown(), []);
-    assert.equal(await b.connection.sync(), true);
-    assert.equal(await a.connection.sync(), true);
+    b.network.set(false);
+    await b.sync.sync();
+    await until(() => shown().length === 1, "the caret to resolve");
     assert.deepEqual(shown(), ["@16"], "receiving the commit re-resolves the caret without another poll");
-
-    b.edit({ changes: { from: 0, insert: "??" }, selection: EditorSelection.cursor(2) });
-    await presenceB.publish(b.binding.selectionCursors());
-    assert.deepEqual(await showB(), [{ label: "B", resolved: false }]);
-    assert.equal(await b.connection.rejectPending(), true);
-    assert.equal(b.binding.state.doc.toString(), "Hello 😀 world!!");
-    await presenceB.publish(b.binding.selectionCursors()); // The page republishes after every document change.
-    assert.deepEqual(await showB(), [{ label: "B", resolved: true, from: 0, to: 0 }]);
     a.check(); b.check();
     assert.deepEqual([a.errors, b.errors], [[], []]);
   });
 
-  it("serves fixed ESM assets, blocks source/tooling routes and closes idempotently", async (t) => {
+  it("serves fixed ESM assets and the sync routes, blocks source/tooling routes and closes idempotently", async (t) => {
     const f = await fixture(t);
     const response = await fetch(f.host.url);
     const html = await response.text();
@@ -201,8 +213,8 @@ describe("Text editor HTTP prototype", { timeout: 30_000 }, () => {
     assert.ok(match);
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Parses this example's fixed import map, which is independently checked by fetching every target.
     const map = JSON.parse(match[1]!) as { imports: Record<string, string> };
-    for (const route of [...Object.values(map.imports), "/text-editor/page.js", "/text-editor/editor.js",
-      "/text-editor/binding.js", "/text-editor/changes.js", "/text-editor/actions.js", "/text-editor/presence.js",
+    for (const route of [...Object.values(map.imports), "/dist/sync/index.js", "/text-editor/page.js", "/text-editor/editor.js",
+      "/text-editor/binding.js", "/text-editor/changes.js", "/text-editor/presence.js",
       "/browser-http-smoke/smoke.js", "/http-sync-controller.js"]) {
       const asset = await fetch(f.host.url + route);
       assert.equal(asset.status, 200, route);
@@ -211,16 +223,19 @@ describe("Text editor HTTP prototype", { timeout: 30_000 }, () => {
       assert.equal(asset.headers.get("Cache-Control"), "no-store");
       assert.ok((await asset.text()).length > 0);
     }
-    for (const route of ["/src/index.ts", "/server.ts", "/presence-relay.ts", "/package.json", "/pnpm-lock.yaml", "/node_modules/@codemirror/view/dist/index.js", "/dist/index.js.map", "/dist/index.d.ts"]) {
-      const asset = await fetch(f.host.url + route); assert.equal(asset.status, 404); await asset.text();
+    for (const route of ["/src/index.ts", "/server.ts", "/presence-relay.ts", "/text-editor/actions.js", "/package.json",
+      "/pnpm-lock.yaml", "/node_modules/@codemirror/view/dist/index.js", "/dist/index.js.map", "/dist/index.d.ts", "/sync/unknown"]) {
+      const asset = await fetch(f.host.url + route); assert.equal(asset.status, 404, route); await asset.text();
     }
+    const commits = await fetch(f.host.url + "/sync/commits?since=0");
+    assert.equal(commits.status, 200); assert.deepEqual(await commits.json(), []);
     const wrong = await fetch(f.host.url + "/text-editor/binding.js", { method: "POST", body: "ignored" });
     assert.equal(wrong.status, 405); await wrong.text();
     await f.host.close(); await f.host.close();
   });
 
   it("imports without DOM, fetch, registration or listening side effects", async () => {
-    const modules = ["server.ts", "page.js", "editor.js", "binding.js", "changes.js", "actions.js", "presence.js"];
+    const modules = ["server.ts", "page.js", "editor.js", "binding.js", "changes.js", "presence.js"];
     const script = `
       const { Server } = await import("node:http");
       Server.prototype.listen = () => { throw new Error("Unexpected listen"); };

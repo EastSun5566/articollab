@@ -32,7 +32,13 @@
     button { font: inherit; padding: .45rem .75rem; border: 1px solid #c9d4e0; border-radius: .25rem; background: white; color: inherit; cursor: pointer; }
     button:focus-visible { outline: 2px solid #205faa; outline-offset: 2px; }
     button:disabled { opacity: .55; cursor: default; }
-    .controls button:first-child { background: #205faa; border-color: #205faa; color: white; }
+    .controls label { display: inline-flex; align-items: center; gap: .35rem; padding: .45rem .25rem; cursor: pointer; }
+    .badge { font-size: .8rem; font-weight: 600; vertical-align: middle; padding: .15rem .55rem; border-radius: 999px;
+      border: 1px solid currentColor; }
+    .badge[data-state="live"] { color: #1d6b3a; }
+    .badge[data-state="syncing"], .badge[data-state="polling"] { color: #205faa; }
+    .badge[data-state="offline"] { color: #8a5a00; }
+    .badge[data-state="blocked"], .badge[data-state="failed"], .badge[data-state="stopped"] { color: #a5232b; }
     [data-state="error"] { color: #a5232b; }
     pre { font: .8rem/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
     @media (max-width: 48rem) { .editors { grid-template-columns: 1fr; } }
@@ -54,14 +60,14 @@
 <body>
   <main>
     <header>
-      <h1>Edit locally. Sync when ready.</h1>
-      <p>Two CodeMirror editors, one authoritative document. Local edits stay optimistic until you choose Sync.
-        Reject pending cancels unconfirmed work, not edits the server already accepted.</p>
-      <p>Each writer shares its selection about once a second, separately from Sync. A shared position follows the
-        text it was anchored to, so it stays put when the other writer edits around it. A position inside text
-        this writer has not synced yet is listed below the editor instead of being drawn in the wrong place.</p>
-      <p>Sync pauses both editors and is unavailable during text composition. This localhost prototype has no
-        authentication, autosave, undo or reload recovery. Inspect checkpoints before leaving the page.</p>
+      <h1>Two writers, one live document.</h1>
+      <p>Two CodeMirror editors share one authoritative document through <code>articollab/sync</code>. Edits are sent as
+        you type and the other writer receives them over a push channel; there is no Sync button.</p>
+      <p>Turn a writer <strong>Offline</strong> to keep editing without a network: its edits wait, and are sent when it
+        comes back. Shared cursors follow the text they point at; a cursor in text this writer has not received yet is
+        listed below the editor instead of drawn.</p>
+      <p>This localhost prototype has no authentication, persistence or reload recovery. Inspect checkpoints to see
+        pending work.</p>
     </header>
     <div id="app"></div>
   </main>
