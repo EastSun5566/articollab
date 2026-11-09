@@ -23,9 +23,31 @@ export interface SyncTransport {
   reject(batch: ClientBatch): Promise<void>;
   /** Parsed JSON: the commits after `watermark`, or null when history no longer covers them. */
   commitsSince(watermark: number): Promise<unknown>;
+  /**
+   * Optional push channel: delivers commits after `watermark` as the server saves them until the
+   * returned function closes it. Without it the client polls.
+   */
+  subscribe?(watermark: number, handlers: SyncSubscription): () => void;
+}
+
+/** Callbacks a transport's push channel reports to. */
+export interface SyncSubscription {
+  /** The channel is connected. */
+  onOpen(): void;
+  /** Parsed JSON commits, normally the ones after the last delivered. */
+  onCommits(commits: unknown): void;
+  /** History no longer covers the watermark; the channel ends after this. */
+  onGap(): void;
+  /** Any traffic, including heartbeats; proves the channel is alive. */
+  onActivity(): void;
+  /** The channel ended, with the reason when it failed. */
+  onEnd(error?: unknown): void;
 }
 
 export type SyncStatus = "idle" | "syncing" | "retrying" | "blocked" | "gap" | "stopped" | "failed";
+
+/** The push channel: closed, opening, or delivering commits (polling pauses while open). */
+export type SyncPushState = "off" | "connecting" | "open";
 
 export interface SyncRetryOptions {
   /** Delay before the first retry, in milliseconds. Default 500. */
@@ -43,6 +65,10 @@ export interface ConnectSyncOptions<S extends SchemaShape> {
   /** Milliseconds between catch-up polls while idle or blocked. Default 1000; 0 disables polling. */
   readonly pollInterval?: number;
   readonly retry?: SyncRetryOptions;
+  /** Receive commits over the transport's push channel when it has one. Default true. */
+  readonly push?: boolean;
+  /** Milliseconds without any push traffic, heartbeats included, before reconnecting. Default 45000; 0 disables. */
+  readonly pushTimeout?: number;
 }
 
 export interface SyncClient<S extends SchemaShape> {
@@ -50,6 +76,8 @@ export interface SyncClient<S extends SchemaShape> {
   readonly status: SyncStatus;
   /** Why the client failed, while `status` is "failed". */
   readonly error: unknown;
+  /** The push channel's state; always "off" without push. */
+  readonly push: SyncPushState;
   /** Catches up and submits pending work now; true when everything pending was acknowledged. */
   sync(): Promise<boolean>;
   /** Confirms cancellation of the pending batches that exist when it is called. */
@@ -57,7 +85,8 @@ export interface SyncClient<S extends SchemaShape> {
   /** After a history gap with no pending work, registers a new session and stops this client. */
   restartFromSnapshot(): Promise<SyncClient<S>>;
   on(event: "status", listener: (status: SyncStatus) => void): () => void;
-  /** Stops polling and retries. Responses that arrive later are ignored. */
+  on(event: "push", listener: (push: SyncPushState) => void): () => void;
+  /** Stops polling, retries and push. Responses that arrive later are ignored. */
   stop(): void;
 }
 
@@ -89,7 +118,9 @@ export async function connectSync<S extends SchemaShape>(
   const pollInterval = nonNegativeInteger(options.pollInterval ?? 1000, "pollInterval");
   const initialDelay = nonNegativeInteger(options.retry?.initialDelay ?? 500, "retry.initialDelay");
   const maxDelay = nonNegativeInteger(options.retry?.maxDelay ?? 30_000, "retry.maxDelay");
+  const pushTimeout = nonNegativeInteger(options.pushTimeout ?? 45_000, "pushTimeout");
   const { transport, save } = options;
+  const subscribe = options.push === false ? undefined : transport.subscribe?.bind(transport);
 
   let doc: ClientDocument<S> | undefined;
   let status: SyncStatus = "idle";
@@ -101,6 +132,13 @@ export async function connectSync<S extends SchemaShape>(
   let attempt = 0;
   let savedVersion = "";
   const listeners = new Set<(status: SyncStatus) => void>();
+  let push: SyncPushState = "off";
+  let closePush: (() => void) | undefined;
+  let pushToken = 0;
+  let pushAttempt = 0;
+  let pushRetry: ReturnType<typeof setTimeout> | undefined;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  const pushListeners = new Set<(push: SyncPushState) => void>();
 
   const onBatch = (): void => {
     if (scheduled) return;
@@ -123,6 +161,7 @@ export async function connectSync<S extends SchemaShape>(
   function setStatus(next: SyncStatus): void {
     if (status === next) return;
     status = next;
+    if (next === "gap" || next === "stopped" || next === "failed") shutdownPush();
     let thrown: { readonly cause: unknown } | undefined;
     for (const listener of [...listeners]) {
       try { listener(next); } catch (cause) { thrown ??= { cause }; }
@@ -169,17 +208,122 @@ export async function connectSync<S extends SchemaShape>(
     const input = await transport.commitsSince(watermark);
     usable();
     if (input === null) return false;
-    if (!Array.isArray(input)) throw new SyncFailure("Expected a commit array or null");
-    let commits: ServerCommit<DocumentOperation<S>>[];
-    try { commits = input.map((entry) => decodeServerCommit(schema, entry)); }
-    catch (cause) { throw new SyncFailure("Invalid commit in catch-up response", { cause }); }
+    const commits = decodeCommits(input);
     // Validate the whole response before applying any of it; never reorder or skip.
     for (const [index, commit] of commits.entries()) {
       if (commit.serverSeq !== watermark + index + 1) throw new SyncFailure("Catch-up commits must be consecutive");
     }
-    for (const commit of commits) document.receive(commit);
+    apply(commits);
     await persist();
     return true;
+  }
+
+  function decodeCommits(input: unknown): ServerCommit<DocumentOperation<S>>[] {
+    if (!Array.isArray(input)) throw new SyncFailure("Expected a commit array");
+    try { return input.map((entry) => decodeServerCommit(schema, entry)); }
+    catch (cause) { throw new SyncFailure("Invalid commit", { cause }); }
+  }
+
+  function apply(commits: readonly ServerCommit<DocumentOperation<S>>[]): void {
+    for (const commit of commits) {
+      // The commit is applied before listeners run, so a listener bug cannot be retried away.
+      try { document.receive(commit); }
+      catch (cause) { throw new SyncFailure("A document listener or observer threw", { cause }); }
+    }
+  }
+
+  /** Applies pushed commits that continue the watermark; anything else falls back to catch-up. */
+  async function applyPushed(input: unknown): Promise<boolean> {
+    try {
+      usable();
+      if (status === "gap") return false;
+      const watermark = document.checkpoint().snapshot.serverSeq;
+      // Duplicates and commits a pass already received are ignored.
+      const commits = decodeCommits(input).filter((commit) => commit.serverSeq > watermark);
+      if (commits.length === 0) return true;
+      if (!commits.every((commit, index) => commit.serverSeq === watermark + index + 1)) return await runSync();
+      apply(commits);
+      await persist();
+      // A scheduled retry keeps its backoff; otherwise acknowledged work may unblock the next batch.
+      if (status !== "retrying" && document.checkpoint().pendingBatches.length > 0) return await runSync();
+      return true;
+    } catch (cause) {
+      if (cause instanceof StoppedSignal) return false;
+      return fail(cause);
+    }
+  }
+
+  function setPush(next: SyncPushState): void {
+    if (push === next) return;
+    push = next;
+    let thrown: { readonly cause: unknown } | undefined;
+    for (const listener of [...pushListeners]) {
+      try { listener(next); } catch (cause) { thrown ??= { cause }; }
+    }
+    if (thrown !== undefined && status !== "failed") fail(new SyncFailure("A push listener threw", thrown));
+  }
+  function armWatchdog(): void {
+    if (watchdog !== undefined) clearTimeout(watchdog);
+    watchdog = pushTimeout === 0 ? undefined : setTimeout(() => { watchdog = undefined; lostPush(); }, pushTimeout);
+  }
+  /** Closes the channel and ignores anything its handlers report afterwards. */
+  function dropPush(): void {
+    pushToken++;
+    const close = closePush;
+    closePush = undefined;
+    if (watchdog !== undefined) clearTimeout(watchdog);
+    watchdog = undefined;
+    close?.();
+    setPush("off");
+  }
+  function shutdownPush(): void {
+    if (pushRetry !== undefined) clearTimeout(pushRetry);
+    pushRetry = undefined;
+    dropPush();
+  }
+  /** The channel ended or went silent: poll and catch up now, reconnect after a backoff. */
+  function lostPush(): void {
+    dropPush();
+    const delay = Math.min(maxDelay, initialDelay * 2 ** pushAttempt);
+    pushAttempt = Math.min(pushAttempt + 1, 52);
+    pushRetry = setTimeout(() => { pushRetry = undefined; ensurePush(); }, delay / 2 + Math.random() * (delay / 2));
+    if (status === "idle" || status === "blocked") void sync().catch(() => {});
+  }
+  function ensurePush(): void {
+    if (subscribe === undefined || closePush !== undefined || pushRetry !== undefined) return;
+    if (status !== "idle" && status !== "blocked") return;
+    const token = ++pushToken;
+    const current = () => token === pushToken;
+    setPush("connecting");
+    const close = subscribe(document.checkpoint().snapshot.serverSeq, {
+      onOpen() {
+        if (!current()) return;
+        pushAttempt = 0;
+        setPush("open");
+        armWatchdog();
+        if (status === "idle" || status === "blocked") clearTimer(); // Push replaces polling.
+      },
+      onActivity() { if (current()) armWatchdog(); },
+      onCommits(input) {
+        if (!current()) return;
+        armWatchdog();
+        void exclusive(() => applyPushed(input)).catch(() => {});
+      },
+      onGap() {
+        if (!current()) return;
+        dropPush();
+        void sync().catch(() => {}); // Catch-up confirms the gap before reporting it.
+      },
+      onEnd() { if (current()) lostPush(); },
+    });
+    // A transport may report synchronously; keep the channel only while it is current.
+    if (current()) closePush = close; else close();
+  }
+  /** Polls only while no push channel is open. */
+  function afterPass(): void {
+    if (status !== "idle" && status !== "blocked") return;
+    ensurePush();
+    if (pollInterval > 0 && push !== "open") schedule(pollInterval);
   }
 
   async function pass(): Promise<boolean> {
@@ -227,7 +371,7 @@ export async function connectSync<S extends SchemaShape>(
       let done: boolean;
       do { rerun = false; done = await pass(); } while (done && rerun);
       attempt = 0;
-      if (pollInterval > 0 && (status === "idle" || status === "blocked")) schedule(pollInterval);
+      afterPass();
       return done;
     } catch (cause) {
       if (cause instanceof StoppedSignal) return false;
@@ -272,14 +416,14 @@ export async function connectSync<S extends SchemaShape>(
         setStatus(document.replayConflict === null ? "idle" : "blocked");
         // Batches created after the cutoff are ordinary pending work.
         if (document.checkpoint().pendingBatches.length > 0) rerun = true;
-        else if (pollInterval > 0) schedule(pollInterval);
+        else afterPass();
         return true;
       } catch (cause) {
         if (cause instanceof StoppedSignal) return false;
         if (status === "failed" || !isRetryable(cause)) fail(cause);
         // A transport error leaves the outcome unknown; the caller may retry rejectPending().
         setStatus("idle");
-        if (pollInterval > 0) schedule(pollInterval);
+        afterPass();
         throw cause;
       }
     });
@@ -289,6 +433,7 @@ export async function connectSync<S extends SchemaShape>(
     doc: document,
     get status() { return status; },
     get error() { return error; },
+    get push() { return push; },
     sync,
     rejectPending,
     async restartFromSnapshot() {
@@ -296,20 +441,17 @@ export async function connectSync<S extends SchemaShape>(
       if (document.checkpoint().pendingBatches.length > 0) {
         throw new Error("restartFromSnapshot() would discard pending work; preserve the checkpoint instead");
       }
-      const { transport: nextTransport, save: nextSave, pollInterval: nextPoll, retry } = options;
-      const next = await connectSync(schema, {
-        transport: nextTransport,
-        ...(nextSave === undefined ? {} : { save: nextSave }),
-        ...(nextPoll === undefined ? {} : { pollInterval: nextPoll }),
-        ...(retry === undefined ? {} : { retry }),
-      });
+      const { checkpoint: _previous, ...rest } = options;
+      const next = await connectSync(schema, rest);
       client.stop();
       return next;
     },
-    on(event, listener) {
-      if (event !== "status") throw new Error(`Unknown event: ${event as string}`);
-      listeners.add(listener);
-      return () => { listeners.delete(listener); };
+    on(event: "status" | "push", listener: ((status: SyncStatus) => void) | ((push: SyncPushState) => void)) {
+      if (event !== "status" && event !== "push") throw new Error(`Unknown event: ${event as string}`);
+      // The overloads pair each event name with its listener type.
+      const set = (event === "status" ? listeners : pushListeners) as Set<typeof listener>;
+      set.add(listener);
+      return () => { set.delete(listener); };
     },
     stop() {
       if (status === "stopped") return;
@@ -320,6 +462,6 @@ export async function connectSync<S extends SchemaShape>(
 
   await persist();
   if (document.checkpoint().pendingBatches.length > 0) onBatch();
-  else if (pollInterval > 0) schedule(0);
+  else if (pollInterval > 0 || subscribe !== undefined) schedule(0);
   return client;
 }

@@ -9,6 +9,7 @@ import {
   type SyncAction, type SyncHandlerOptions,
 } from "../src/sync/index.ts";
 import { runSyncAdapterDemo, serveFetch } from "../examples/sync-adapter.ts";
+import { readServerSentEvents, type ServerSentEvent } from "../src/sync/sse.ts";
 
 const Board = defineDocument({ items: list<string>(), count: value(0) });
 type Shape = typeof Board.definition;
@@ -23,7 +24,7 @@ function setup(options: SyncHandlerOptions<Shape> = {}) {
   return { server, handle, post, get };
 }
 const batch = (clientId: string, seq: number, count = seq) =>
-  ({ clientId, seq, operations: [{ type: "value/set", path: "count", value: count }] });
+  ({ clientId, seq, operations: [{ type: "value/set" as const, path: "count" as const, value: count }] });
 
 /** Serves a Fetch handler through the example's node:http bridge for real-socket tests. */
 async function serve(t: TestContext, handle: (request: Request) => Promise<Response>): Promise<string> {
@@ -159,9 +160,147 @@ describe("createSyncHandler", () => {
     for (const client of [a, b]) client.stop();
   });
 
-  it("runs the documented example: a lost response is acknowledged, not duplicated", async () => {
+  it("runs the documented example: a lost response is acknowledged, not duplicated, then pushed", async () => {
     const result = await runSyncAdapterDemo();
-    assert.deepEqual([...result.items].sort(), ["Written by A", "Written by B"]);
-    assert.equal(result.serverSeq, 2);
+    assert.deepEqual([...result.items].sort(), ["Pushed to A", "Written by A", "Written by B"]);
+    assert.equal(result.serverSeq, 3);
+  });
+});
+
+/** Collects a stream's events in the background. */
+function listen(response: Response) {
+  const events: ServerSentEvent[] = [];
+  let pings = 0;
+  assert.ok(response.body !== null);
+  const done = readServerSentEvents(response.body, (event) => events.push(event), () => { pings++; });
+  return { events, done, get activity() { return pings; },
+    sequences: () => events.filter((event) => event.type === "commits").flatMap((event) => {
+      const commits: unknown = JSON.parse(event.data);
+      assert.ok(Array.isArray(commits));
+      return commits.map((commit) => decodeServerCommit(Board, commit).serverSeq);
+    }) };
+}
+const settle = async () => { for (let index = 0; index < 5; index++) await new Promise((resolve) => setImmediate(resolve)); };
+
+describe("createSyncHandler event streams", () => {
+  it("sends saved commits after the watermark, then each new commit only once it is saved", async () => {
+    let release: (() => void) | undefined;
+    const h = setup({ async saveCheckpoint(checkpoint) {
+      if (checkpoint.snapshot.serverSeq === 3) await new Promise<void>((resolve) => { release = resolve; });
+    } });
+    const clientId = h.server.openClient();
+    for (const seq of [1, 2]) assert.equal((await h.post("batches", batch(clientId, seq))).status, 204);
+    const abort = new AbortController();
+    const response = await h.handle(new Request(base + "events?since=1", { signal: abort.signal }));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Content-Type"), "text/event-stream; charset=utf-8");
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    const stream = listen(response);
+    await settle();
+    assert.deepEqual(stream.sequences(), [2]);
+    assert.equal(stream.events[0]?.id, "2");
+    const third = h.post("batches", batch(clientId, 3));
+    await settle();
+    assert.deepEqual(stream.sequences(), [2], "nothing is pushed while its checkpoint is still saving");
+    release!();
+    assert.equal((await third).status, 204);
+    await settle();
+    assert.deepEqual(stream.sequences(), [2, 3]);
+    abort.abort();
+    await stream.done;
+  });
+
+  it("resumes after Last-Event-ID, reports gaps, validates and limits streams", async () => {
+    const h = setup({ maxEventStreams: 1, authorize: (request) => request.headers.get("x-deny") === null });
+    const server = createServer(Board, { historyLimit: 1 });
+    const narrow = createSyncHandler(Board, server);
+    const clientId = h.server.openClient();
+    for (const seq of [1, 2, 3]) await h.post("batches", batch(clientId, seq));
+    const abort = new AbortController();
+    const resumed = listen(await h.handle(new Request(base + "events?since=0", { signal: abort.signal, headers: { "Last-Event-ID": "2" } })));
+    await settle();
+    assert.deepEqual(resumed.sequences(), [3]);
+    assert.equal((await h.get("events?since=0")).status, 503, "one stream at a time here");
+    abort.abort();
+    await resumed.done;
+    await settle();
+    const statuses = await Promise.all([
+      h.get("events"), h.get("events?since=-1"), h.get("events?since=9"),
+      h.handle(new Request(base + "events?since=0", { headers: { "x-deny": "1" } })),
+      h.handle(new Request(base + "events?since=0", { method: "POST" })),
+    ]);
+    assert.deepEqual(statuses.map((response) => response.status), [400, 400, 400, 403, 405]);
+
+    const other = server.openClient();
+    for (const seq of [1, 2]) server.receive(batch(other, seq));
+    const gap = listen(await narrow(new Request(base + "events?since=0")));
+    await gap.done;
+    assert.deepEqual(gap.events.map((event) => event.type), ["gap"], "the stream ends after a gap");
+  });
+
+  it("sends heartbeats, pushes commits made outside the handler on notify() and closes streams when saving fails", async (t: TestContext) => {
+    t.mock.timers.enable({ apis: ["setInterval"] });
+    let failSave = false;
+    const h = setup({ heartbeatInterval: 1000, saveCheckpoint() { if (failSave) throw new Error("disk full"); } });
+    const stream = listen(await h.get("events?since=0"));
+    await settle();
+    const before = stream.activity;
+    t.mock.timers.tick(1000); await settle();
+    t.mock.timers.tick(1000); await settle();
+    assert.equal(stream.activity, before + 4, "two comment lines and their blank lines");
+    const clientId = h.server.openClient();
+    h.server.receive(batch(clientId, 1)); // Outside the handler.
+    await settle();
+    assert.deepEqual(stream.sequences(), []);
+    await h.handle.notify();
+    await settle();
+    assert.deepEqual(stream.sequences(), [1]);
+    failSave = true;
+    assert.equal((await h.post("batches", batch(clientId, 2))).status, 500);
+    await stream.done;
+    assert.equal((await h.get("events?since=0")).status, 503);
+  });
+});
+
+/** Waits for `condition` using real timers. */
+async function until(condition: () => boolean, what: string, timeout = 5000): Promise<void> {
+  const deadline = Date.now() + timeout;
+  while (!condition()) {
+    if (Date.now() > deadline) assert.fail(`Timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+describe("push over real HTTP", () => {
+  it("delivers commits without polling and reconnects after the server restarts", async (t: TestContext) => {
+    const server = createServer(Board);
+    let host = await serveFetch(createSyncHandler(Board, server, { heartbeatInterval: 200 }));
+    const port = Number(new URL(host.url).port);
+    t.after(() => host.close());
+    let catchUps = 0;
+    const counting: typeof fetch = async (input, init) => {
+      if ((input instanceof Request ? input.url : input.toString()).includes("/commits?")) catchUps++;
+      return fetch(input, init);
+    };
+    const a = await connectSync(Board, { pollInterval: 0, pushTimeout: 2000, retry: { initialDelay: 20, maxDelay: 100 },
+      transport: createHttpTransport({ url: host.url, fetch: counting }) });
+    const b = await connectSync(Board, { pollInterval: 0, push: false, transport: createHttpTransport({ url: host.url }) });
+    t.after(() => { a.stop(); b.stop(); });
+    await a.sync();
+    await until(() => a.push === "open", "the push channel");
+    const before = catchUps;
+    b.doc.state.items.push("live");
+    await b.sync();
+    await until(() => a.doc.state.items.length === 1, "the pushed commit");
+    assert.equal(catchUps, before, "delivered by push alone");
+
+    await host.close();
+    await until(() => a.push !== "open", "the channel to drop");
+    host = await serveFetch(createSyncHandler(Board, server, { heartbeatInterval: 200 }), port);
+    await until(() => a.push === "open", "reconnection");
+    b.doc.state.items.push("after restart");
+    await b.sync();
+    await until(() => a.doc.state.items.length === 2, "the commit after restart");
+    assert.deepEqual(a.doc.state.items.toArray(), b.doc.state.items.toArray());
   });
 });

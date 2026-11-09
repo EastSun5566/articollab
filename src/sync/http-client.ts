@@ -1,5 +1,6 @@
 import type { ClientBatch } from "../index.ts";
-import type { SyncTransport } from "./client.ts";
+import type { SyncSubscription, SyncTransport } from "./client.ts";
+import { readServerSentEvents } from "./sse.ts";
 
 /** An unexpected HTTP status from a sync endpoint. */
 export class SyncHttpError extends Error {
@@ -64,6 +65,25 @@ export function createHttpTransport(options: HttpTransportOptions): SyncTranspor
     async reject(batch: ClientBatch) { await post("rejections", 204, batch); },
     async commitsSince(watermark: number) {
       return parse(await request(`commits?since=${watermark}`, 200), "catch-up");
+    },
+    subscribe(watermark: number, handlers: SyncSubscription) {
+      const abort = new AbortController();
+      void (async () => {
+        const headers = new Headers(await options.headers?.());
+        headers.set("Accept", "text/event-stream");
+        const response = await fetch(new URL(`events?since=${watermark}`, base), { headers, signal: abort.signal });
+        if (response.status !== 200 || response.body === null) {
+          await response.text();
+          throw new SyncHttpError(response.status);
+        }
+        handlers.onOpen();
+        await readServerSentEvents(response.body, (event) => {
+          if (event.type === "commits") handlers.onCommits(parse(event.data, "pushed commit"));
+          else if (event.type === "gap") handlers.onGap();
+        }, () => { if (!abort.signal.aborted) handlers.onActivity(); });
+        if (!abort.signal.aborted) handlers.onEnd();
+      })().catch((cause: unknown) => { if (!abort.signal.aborted) handlers.onEnd(cause); });
+      return () => { abort.abort(); };
     },
   };
 }
