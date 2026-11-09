@@ -1,7 +1,7 @@
 // @ts-check
-import { connectBrowserHttpClient } from "../browser-http-smoke/smoke.js";
+import { connectSync, createHttpTransport } from "../../dist/sync/index.js";
+import { Board } from "../browser-http-smoke/smoke.js";
 import { createTextEditor } from "./editor.js";
-import { createEditorActions } from "./actions.js";
 import { createPresenceChannel } from "./presence.js";
 
 const PRESENCE_INTERVAL = 1000;
@@ -25,6 +25,61 @@ function describePresence(statuses, labels) {
   }).join(" ");
 }
 
+/** @param {{details: HTMLPreElement, sync: {doc: {checkpoint(): unknown}}}} pane */
+function inspect(pane) {
+  try { pane.details.textContent = JSON.stringify(pane.sync.doc.checkpoint(), null, 2); }
+  catch (error) { pane.details.textContent = "Checkpoint unavailable: " + String(error); }
+  pane.details.hidden = false;
+}
+
+/** What a writer's status badge says, from its sync status and push channel.
+ * @param {import("../../dist/sync/index.js").SyncStatus} status
+ * @param {import("../../dist/sync/index.js").SyncPushState} push
+ * @param {boolean} offline
+ */
+export function describeSync(status, push, offline) {
+  if (status === "failed") return { state: "failed", text: "Failed" };
+  if (status === "stopped") return { state: "stopped", text: "Stopped" };
+  if (status === "gap") return { state: "failed", text: "History gap: preserve the checkpoint" };
+  if (status === "blocked") return { state: "blocked", text: "Blocked by a rejected edit" };
+  if (offline || status === "retrying") return { state: "offline", text: offline ? "Offline" : "Reconnecting" };
+  if (status === "syncing") return { state: "syncing", text: "Syncing" };
+  return push === "open" ? { state: "live", text: "Live" } : { state: "polling", text: "Polling" };
+}
+
+/**
+ * A fetch whose writer can be taken offline: new requests fail like a dropped network, and open
+ * event streams are aborted. Only stream requests are tracked; others finish on their own.
+ * @param {typeof globalThis.fetch} [base]
+ */
+export function createOfflineSwitch(base = globalThis.fetch) {
+  let offline = false;
+  /** @type {Set<AbortController>} */
+  const streams = new Set();
+  /** @type {typeof globalThis.fetch} */
+  const fetch = async (input, init) => {
+    if (offline) throw new TypeError("Network unavailable (simulated offline)");
+    const url = input instanceof Request ? input.url : input.toString();
+    if (!url.includes("/events?")) return base(input, init);
+    const controller = new AbortController();
+    streams.add(controller);
+    const signal = init?.signal;
+    signal?.addEventListener("abort", () => { streams.delete(controller); controller.abort(); }, { once: true });
+    return base(input, { ...init, signal: controller.signal });
+  };
+  return {
+    fetch,
+    get offline() { return offline; },
+    /** @param {boolean} next */
+    set(next) {
+      offline = next;
+      if (!next) return;
+      for (const controller of streams) controller.abort();
+      streams.clear();
+    },
+  };
+}
+
 /** Explicit mount keeps imports free of DOM, requests and writer registration.
  * @param {HTMLElement} root @param {string} url
  */
@@ -35,14 +90,11 @@ export async function mountTextEditors(root, url) {
   const columns = document.createElement("div");
   columns.className = "editors";
   root.append(status, columns);
-  /** @type {{connection: Awaited<ReturnType<typeof connectBrowserHttpClient>>,
-   * editor: Awaited<ReturnType<typeof createTextEditor>>, message: HTMLParagraphElement,
-   * details: HTMLPreElement, sync: HTMLButtonElement, reject: HTMLButtonElement,
+  /** @type {{sync: import("../../dist/sync/index.js").SyncClient<typeof Board.definition>,
+   * editor: Awaited<ReturnType<typeof createTextEditor>>, details: HTMLPreElement,
    * presence: ReturnType<typeof createPresenceChannel>, presenceStatus: HTMLParagraphElement,
    * polling: boolean, published: number, cleanup: () => void}[]} */
   const panes = [];
-  /** @type {ReturnType<typeof createEditorActions> | undefined} */
-  let actions;
   let destroyed = false, failed = false;
   /** @type {unknown} */
   let failure;
@@ -51,46 +103,15 @@ export async function mountTextEditors(root, url) {
   /** @type {ReturnType<typeof setInterval> | undefined} */
   let timer;
 
-  function buttons() {
-    const disabled = destroyed || failed || actions === undefined || actions.busy || panes.some((pane) => pane.editor.isComposing());
-    for (const pane of panes) { pane.sync.disabled = disabled; pane.reject.disabled = disabled; }
-  }
-  /** @param {unknown} error */
+  /** A binding failure stops the page; the sync clients keep their checkpoints. @param {unknown} error */
   function stop(error) {
     if (!failed) { failed = true; failure = error; }
-    actions?.stop(failure);
+    // stop() can run inside a failing editor transaction; reconfigure only after it unwinds.
+    for (const pane of panes) { pane.sync.stop(); queueMicrotask(() => { pane.editor.setReadOnly(true); }); }
     status.textContent = "Stopped: " + (failure instanceof Error ? failure.message : String(failure)) +
       ". Inspect and preserve the current checkpoints. Completed edits were not rolled back.";
     status.dataset.state = "error";
-    buttons();
   }
-  /** @param {number} index */
-  function inspect(index) {
-    const pane = panes[index];
-    if (pane === undefined) return;
-    try { pane.details.textContent = JSON.stringify(pane.connection.doc.checkpoint(), null, 2); }
-    catch (error) { pane.details.textContent = "Checkpoint unavailable: " + String(error); }
-    pane.details.hidden = false;
-  }
-  /** @param {number} index @param {"sync" | "rejectPending"} method */
-  async function run(index, method) {
-    const pane = panes[index];
-    if (actions === undefined || pane === undefined || destroyed) return;
-    if (actions.busy || panes.some((entry) => entry.editor.isComposing())) return;
-    try {
-      const result = actions.run(index, method);
-      buttons();
-      status.textContent = "Synchronizing writer " + (index === 0 ? "A" : "B") + "… Editing is paused.";
-      const complete = await result;
-      const checkpoint = pane.connection.doc.checkpoint();
-      pane.message.textContent = `Watermark ${checkpoint.snapshot.serverSeq}; pending [${checkpoint.pendingBatches.map((batch) => batch.seq).join(", ")}]. ` +
-        (pane.connection.doc.replayConflict === null ? "No replay conflict." : "Replay is blocked. Reject pending can confirm cancellation.");
-      status.textContent = complete ? "Action completed. Sync the other writer to catch up." : "Action incomplete; pending is preserved. Inspect the checkpoint.";
-      if (!pane.details.hidden) inspect(index);
-    } catch (error) { stop(error); }
-    finally { buttons(); }
-  }
-
   /** @param {(typeof panes)[number]} pane */
   function publish(pane) {
     if (destroyed || failed) return;
@@ -118,70 +139,114 @@ export async function mountTextEditors(root, url) {
     clearInterval(timer);
     // Best-effort: hide this page's carets now instead of after the relay expiry.
     for (const pane of panes) pane.presence.publish(null).catch(() => {});
-    for (const pane of panes) { pane.cleanup(); pane.editor.destroy(); }
-    buttons();
+    for (const pane of panes) { pane.sync.stop(); pane.cleanup(); pane.editor.destroy(); }
   }
   try {
     for (const label of ["A", "B"]) {
-      const connection = await connectBrowserHttpClient(url);
-      if (destroyed) break;
-      const checkpoint = connection.doc.checkpoint();
+      const network = createOfflineSwitch();
+      const sync = await connectSync(Board, { pollInterval: 1000,
+        transport: createHttpTransport({ url: new URL("/sync/", url), fetch: network.fetch }) });
+      if (destroyed) { sync.stop(); break; }
+      const clientId = sync.doc.checkpoint().clientId;
       const section = document.createElement("section");
       const heading = document.createElement("h2");
       heading.textContent = "Writer " + label;
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      heading.append(" ", badge);
       const identity = document.createElement("p");
       identity.className = "identity";
-      identity.textContent = checkpoint.clientId;
+      identity.textContent = clientId;
       const parent = document.createElement("div");
       parent.className = "editor";
       const message = document.createElement("p");
       message.className = "message";
-      message.textContent = `Watermark ${checkpoint.snapshot.serverSeq}; no local edits yet.`;
+      message.setAttribute("aria-live", "polite");
       const controls = document.createElement("div");
       controls.className = "controls";
-      const sync = document.createElement("button"), reject = document.createElement("button"), show = document.createElement("button");
-      sync.type = reject.type = show.type = "button";
-      sync.textContent = "Sync"; reject.textContent = "Reject pending"; show.textContent = "Inspect checkpoint";
+      const offlineLabel = document.createElement("label");
+      const offline = document.createElement("input");
+      offline.type = "checkbox";
+      offlineLabel.append(offline, " Offline");
+      const discard = document.createElement("button"), show = document.createElement("button");
+      discard.type = show.type = "button";
+      discard.textContent = "Discard blocked edits"; show.textContent = "Inspect checkpoint";
+      discard.hidden = true;
       const details = document.createElement("pre");
       details.hidden = true;
       const presenceStatus = document.createElement("p");
       presenceStatus.className = "presence";
       presenceStatus.setAttribute("aria-live", "polite");
       presenceStatus.textContent = "Waiting for other writers' positions…";
-      controls.append(sync, reject, show);
+      controls.append(offlineLabel, discard, show);
       section.append(heading, identity, parent, presenceStatus, controls, message, details);
       columns.append(section);
       const index = panes.length;
-      labels.set(checkpoint.clientId, "Writer " + label);
+      labels.set(clientId, "Writer " + label);
       const others = ["A", "B"].filter((other) => other !== label).map((other) => "Writer " + other);
-      const editor = await createTextEditor(parent, connection.doc, {
+
+      /** @type {ReturnType<typeof setTimeout> | undefined} */
+      let refreshing;
+      let readOnly = true; // createTextEditor starts read-only until the writer is ready.
+      // Status and push events never arrive inside an editor transaction, but local edits do:
+      // only these events change the editor, and only after the current dispatch has finished.
+      function syncChanged() {
+        refresh();
+        const next = failed || ["blocked", "gap", "failed", "stopped"].includes(sync.status);
+        if (next === readOnly) return;
+        readOnly = next;
+        queueMicrotask(() => { if (!destroyed) editor?.setReadOnly(readOnly); });
+      }
+      // checkpoint() copies the document, so the pending count is refreshed at most every 250 ms.
+      function refresh() {
+        const shown = describeSync(sync.status, sync.push, network.offline);
+        badge.textContent = shown.text;
+        badge.dataset.state = shown.state;
+        discard.hidden = sync.status !== "blocked";
+        if (sync.status === "failed") {
+          message.textContent = "Sync failed: " + (sync.error instanceof Error ? sync.error.message : String(sync.error)) +
+            ". Inspect and preserve the checkpoint.";
+          return;
+        }
+        refreshing ??= setTimeout(() => {
+          refreshing = undefined;
+          const pending = sync.doc.checkpoint().pendingBatches.length;
+          message.textContent = pending === 0 ? "All edits are saved on the server."
+            : `${pending} ${pending === 1 ? "edit is" : "edits are"} waiting to be sent.`;
+        }, 250);
+      }
+      /** @type {Awaited<ReturnType<typeof createTextEditor>> | undefined} */
+      let editor;
+      editor = await createTextEditor(parent, sync.doc, {
         label: "Writer " + label + " text",
-        canEdit: () => !destroyed && !failed && actions !== undefined && !actions.busy,
-        onError: stop, onComposition: buttons,
-        onLocalEdit() { message.textContent = "Local edits are pending. Nothing is sent until Sync."; details.hidden = true; },
+        canEdit: () => !destroyed && !failed && sync.status !== "failed" && sync.status !== "gap",
+        onError: stop, onComposition() {},
+        onLocalEdit() { details.hidden = true; refresh(); },
         onSelection() { const pane = panes[index]; if (pane !== undefined) publish(pane); },
         onRemote(statuses) {
           const text = describePresence(statuses, others);
           if (presenceStatus.textContent !== text) presenceStatus.textContent = text; // Avoid live-region repeats.
         },
       });
-      const onSync = () => { void run(index, "sync"); };
-      const onReject = () => { void run(index, "rejectPending"); };
-      const onShow = () => inspect(index);
-      sync.addEventListener("click", onSync); reject.addEventListener("click", onReject); show.addEventListener("click", onShow);
-      panes.push({ connection, editor, message, details, sync, reject,
-        presence: createPresenceChannel({ url, clientId: checkpoint.clientId }), presenceStatus, polling: false, published: 0,
+      const stopStatus = sync.on("status", syncChanged), stopPush = sync.on("push", syncChanged);
+      const onOffline = () => {
+        network.set(offline.checked);
+        refresh();
+        if (!offline.checked) sync.sync().catch(() => {}); // Like the browser's online event.
+      };
+      const onDiscard = () => { sync.rejectPending().catch(() => {}).finally(syncChanged); };
+      const onShow = () => { const pane = panes[index]; if (pane !== undefined) inspect(pane); };
+      offline.addEventListener("change", onOffline); discard.addEventListener("click", onDiscard); show.addEventListener("click", onShow);
+      panes.push({ sync, editor, details,
+        presence: createPresenceChannel({ url, clientId }), presenceStatus, polling: false, published: 0,
         cleanup() {
-          sync.removeEventListener("click", onSync); reject.removeEventListener("click", onReject); show.removeEventListener("click", onShow);
+          stopStatus(); stopPush();
+          clearTimeout(refreshing);
+          offline.removeEventListener("change", onOffline); discard.removeEventListener("click", onDiscard); show.removeEventListener("click", onShow);
         },
       });
+      syncChanged();
     }
-    actions = createEditorActions(panes.map((pane) => ({
-      sync: pane.connection.sync, rejectPending: pane.connection.rejectPending,
-      isComposing: pane.editor.isComposing, setReadOnly: (value) => pane.editor.setReadOnly(value),
-      isBlocked: () => pane.connection.doc.replayConflict !== null,
-    })));
-    for (const pane of panes) pane.editor.setReadOnly(pane.connection.doc.replayConflict !== null);
     if (!destroyed) {
       for (const pane of panes) publish(pane);
       timer = setInterval(() => {
@@ -190,9 +255,8 @@ export async function mountTextEditors(root, url) {
           void poll(pane);
         }
       }, PRESENCE_INTERVAL);
+      status.textContent = "Ready. Type in either writer; edits are sent and received automatically.";
     }
-    if (!destroyed) status.textContent = "Ready. Edit either writer, then sync A, B, A to converge.";
-    buttons();
   } catch (error) { stop(error); }
   return { destroy };
 }

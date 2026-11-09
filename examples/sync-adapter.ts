@@ -1,41 +1,17 @@
 import assert from "node:assert/strict";
-import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { Readable } from "node:stream";
+import { createServer as createHttpServer } from "node:http";
 import { pathToFileURL } from "node:url";
 
 import { createServer, type ServerDocument } from "../src/index.ts";
 import { connectSync, createHttpTransport, createSyncHandler } from "../src/sync/index.ts";
+import { toNodeListener } from "./fetch-bridge.ts";
 import { Board } from "./resume.ts";
 
 type Shape = typeof Board.definition;
 
-/** Example-only bridge from node:http to a Fetch API handler. Frameworks such as Hono do this for you. */
+/** Serves a Fetch API handler on localhost through the example bridge. */
 export async function serveFetch(handle: (request: Request) => Promise<Response>, port = 0) {
-  const http = createHttpServer((incoming: IncomingMessage, outgoing: ServerResponse) => {
-    const hasBody = incoming.method !== "GET" && incoming.method !== "HEAD";
-    // A client that disconnects aborts the request, which closes an event stream.
-    const disconnected = new AbortController();
-    outgoing.once("close", () => { disconnected.abort(); });
-    const request = new Request(new URL(incoming.url ?? "/", "http://127.0.0.1"), {
-      method: incoming.method ?? "GET",
-      signal: disconnected.signal,
-      headers: Object.entries(incoming.headers).flatMap(([name, header]) =>
-        header === undefined ? [] : (Array.isArray(header) ? header : [header]).map((entry): [string, string] => [name, entry])),
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- node:stream/web and the global ReadableStream are the same class with separate typings.
-      ...(hasBody ? { body: Readable.toWeb(incoming) as ReadableStream, duplex: "half" } : {}),
-    });
-    void handle(request).then(async (response) => {
-      outgoing.writeHead(response.status, Object.fromEntries(response.headers));
-      outgoing.flushHeaders();
-      if (response.body === null) { outgoing.end(); return; }
-      // Stream chunk by chunk: event streams never finish on their own.
-      for await (const chunk of response.body) {
-        if (outgoing.destroyed) break;
-        outgoing.write(chunk);
-      }
-      outgoing.end();
-    }).catch(() => { outgoing.destroy(); });
-  });
+  const http = createHttpServer(toNodeListener(handle));
   await new Promise<void>((resolve, reject) => {
     http.once("error", reject);
     http.listen(port, "127.0.0.1", () => { http.off("error", reject); resolve(); });
