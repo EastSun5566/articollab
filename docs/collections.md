@@ -61,7 +61,7 @@ const stop = doc.on("discard", ({ operations }) => {
 
 To update a view without calling `toArray()` after every change, subscribe with `doc.state.items.observe()`; it reports `set()` as an in-place `set` change. See [Update a list view incrementally](transactions.md#update-a-list-view-incrementally).
 
-Delete + insert inside a transaction remains available when you mean to create a new element identity. If two writers concurrently do this for the same old element, both new insertions can remain: the second deletion targets an already-deleted ID. It is not equivalent to `set()`. There is no move method.
+Delete + insert inside a transaction remains available when you mean to create a new element identity. If two writers concurrently do this for the same old element, both new insertions can remain: the second deletion targets an already-deleted ID. It is not equivalent to `set()`. There is no move method. The [Kanban board example](https://github.com/EastSun5566/articollab/blob/main/examples/README.md#kanban-board) moves cards this way and uses a server `resolve` policy, keyed by an application card ID, so that concurrent moves keep one copy and a rename follows a moved card.
 
 ## Text: Unicode code points
 

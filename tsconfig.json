@@ -16,5 +16,5 @@
     "skipLibCheck": true
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts"],
-  "exclude": ["examples/text-editor"]
+  "exclude": ["examples/text-editor", "examples/kanban"]
 }

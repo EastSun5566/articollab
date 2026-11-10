@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kanban board | Articollab</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { font: 16px/1.55 system-ui, sans-serif; color: #1b2938; background: #f7f9fc; }
+    body { margin: 0; }
+    main { max-width: 90rem; padding: 2rem clamp(1rem, 4vw, 3rem); margin: auto; }
+    h1 { font-size: clamp(1.7rem, 3vw, 2.4rem); line-height: 1.2; margin: 0 0 1rem; }
+    h2 { margin: 0; font-size: 1.3rem; }
+    h3 { margin: 0 0 .5rem; font-size: 1rem; }
+    header p { max-width: 75ch; }
+    .writers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2rem; margin-top: 2rem; }
+    .identity, .message { color: #4e6477; font-size: .9rem; }
+    .identity { margin-top: .25rem; }
+    .board { border: 0; padding: 0; margin: 0; min-width: 0; }
+    .board:disabled { opacity: .6; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
+    .column { background: #e8eef5; border-radius: .4rem; padding: .6rem; min-width: 0; }
+    .add { display: flex; gap: .3rem; margin-bottom: .5rem; }
+    .add input { min-width: 0; flex: 1; }
+    .cards { list-style: none; margin: 0; padding: 0 0 1.5rem; min-height: 6rem; }
+    .card { background: white; border: 1px solid #c9d4e0; border-radius: .3rem; padding: .45rem .5rem; margin-bottom: .4rem;
+      cursor: grab; overflow-wrap: anywhere; }
+    .card[aria-current="true"] { outline: 2px solid #205faa; outline-offset: 1px; }
+    .card.dragging { opacity: .4; }
+    .card.drop-before { box-shadow: 0 -3px 0 #205faa; }
+    .cards.drop-end { box-shadow: inset 0 -3px 0 #205faa; }
+    .title { display: block; }
+    .actions { display: flex; flex-wrap: wrap; gap: .2rem; margin-top: .3rem; }
+    .actions button { padding: .05rem .4rem; font-size: .8rem; }
+    .rename { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin-top: .75rem; }
+    .rename label { display: flex; gap: .4rem; align-items: center; flex: 1; min-width: 12rem; }
+    .rename input { flex: 1; min-width: 0; }
+    input { font: inherit; padding: .3rem .45rem; border: 1px solid #c9d4e0; border-radius: .25rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+    .controls label { display: inline-flex; align-items: center; gap: .35rem; padding: .45rem .25rem; cursor: pointer; }
+    button { font: inherit; padding: .3rem .6rem; border: 1px solid #c9d4e0; border-radius: .25rem; background: white; color: inherit; cursor: pointer; }
+    button:focus-visible, input:focus-visible { outline: 2px solid #205faa; outline-offset: 2px; }
+    button:disabled { opacity: .55; cursor: default; }
+    .notices { list-style: none; padding: 0; margin: 0; }
+    .notices li { background: #fdf0e1; border: 1px solid #e3b98a; border-radius: .3rem; padding: .45rem .6rem; margin-top: .4rem; }
+    .badge { font-size: .8rem; font-weight: 600; vertical-align: middle; padding: .15rem .55rem; border-radius: 999px;
+      border: 1px solid currentColor; }
+    .badge[data-state="live"] { color: #1d6b3a; }
+    .badge[data-state="syncing"], .badge[data-state="polling"] { color: #205faa; }
+    .badge[data-state="offline"] { color: #8a5a00; }
+    .badge[data-state="blocked"], .badge[data-state="failed"], .badge[data-state="stopped"] { color: #a5232b; }
+    [data-state="error"] { color: #a5232b; }
+    @media (max-width: 64rem) { .writers { grid-template-columns: 1fr; } }
+    @media (max-width: 36rem) { .columns { grid-template-columns: 1fr; } }
+  </style>
+  <script type="importmap">
+    { "imports": {
+      "articulated": "/vendor/articulated/index.js",
+      "sparse-array-rled": "/vendor/sparse-array-rled/index.js"
+    } }
+  </script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Two writers, one board.</h1>
+      <p>Each card is a List element. Drag cards between columns or use their buttons; edits are sent as you make
+        them and the other writer receives them over a push channel. Select a card to rename it.</p>
+      <p>A move deletes the card and inserts it again, so the server applies a small policy: when two writers move the
+        same card, the first move wins, and a rename aimed at a card someone else moved follows it. A rename of a card
+        someone else deleted is not saved, and the writer is told. Turn a writer <strong>Offline</strong> to try these
+        races.</p>
+      <p>This localhost prototype has no authentication, persistence or reload recovery.</p>
+    </header>
+    <div id="app"></div>
+  </main>
+  <script type="module">
+    import { mountKanban } from "/kanban/page.js";
+    const page = await mountKanban(document.getElementById("app"), location.origin);
+    window.addEventListener("pagehide", () => page.destroy(), { once: true });
+  </script>
+</body>
+</html>

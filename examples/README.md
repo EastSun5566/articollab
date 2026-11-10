@@ -20,6 +20,7 @@ All commands and snippet imports below are relative to the **repository root**, 
 | [Browser HTTP smoke](#browser-http-smoke-example) | Browser clients through the shared HTTP sync controller |
 | [Browser reload recovery](#browser-reload-recovery-example) | Session storage, server restart and document lineage protection |
 | [Text editor prototype](#text-editor-prototype) | Two CodeMirror editors kept live by `articollab/sync`, with offline editing and shared cursors |
+| [Kanban board](#kanban-board) | List cards rendered with `observe`, moved by delete + insert under a server policy, with `discard` for lost renames |
 
 Use one writer per client ID/document lineage and one writer per checkpoint file. None of these helpers adds authentication, automatic history-gap recovery, rebase or power-loss durability. If a helper returns `false` or throws, preserve the checkpoint; replacing pending work with a fresh snapshot can lose edits.
 
@@ -52,7 +53,37 @@ The editor uses LF as its line separator while preserving CR characters. Instead
 
 Synchronization never pauses the editors. Remote edits that arrive during an input-method composition are applied right away and CodeMirror maps the composition around them; presence redraws wait until the composition ends. A writer is read-only only while it is blocked, after a history gap or after a failure. A binding failure stops the page and keeps the first error; a sync failure stops that writer and keeps its checkpoint. Completed document changes and callback side effects are not rolled back. Destroying the page stops both sync clients and removes subscriptions/views, but does not permanently close writer sessions.
 
-Node tests exercise actual CodeMirror state/change sets, the sync adapter over real HTTP and the page's offline switch, not a simulated DOM or OS input method. Interactive verification should cover emoji edits, selections, offline editing and blocked recovery; test real Chinese composition separately, since remote edits may arrive mid-composition. This is not a production editor binding, editor history or presence service.
+Node tests exercise actual CodeMirror state/change sets, the sync adapter over real HTTP and the offline switch shared with the [Kanban board](#kanban-board) (`examples/sync-ui.js`), not a simulated DOM or OS input method. Interactive verification should cover emoji edits, selections, offline editing and blocked recovery; test real Chinese composition separately, since remote edits may arrive mid-composition. This is not a production editor binding, editor history or presence service.
+
+## Kanban board
+
+Two writers share a three-column board through `articollab/sync`, like the [text editor prototype](#text-editor-prototype). This independent example has no dependencies of its own; it uses the checkout's built ESM entrypoints, TypeScript, Oxlint and Knip.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm build
+pnpm --dir examples/kanban start
+```
+
+Each column is a `List<Card>`, where a card is `{ id, title }`. The `id` is application data from `crypto.randomUUID()`; unlike the List element ID, it survives moves. Add a card at the top of a column, drag cards with the mouse, or use each card's ← ↑ ↓ → ✕ buttons. Select a card to rename it: the rename is a List `set()`, which keeps the element. Edits are sent as you make them and the other writer receives them over its push channel. The status badge, the pending count, **Offline** and **Discard blocked edits** work as in the text editor, from the shared `examples/sync-ui.js`.
+
+Columns render once and then follow `List.observe()`. A `set` updates the card in place, so a focused button survives, and a card equal to the one shown is skipped: the acknowledgement of this writer's own edit adopts a decoded copy, which `observe` reports as a set. A move arrives as a removal and an insertion and re-creates that card's row.
+
+There is no List move, so `moveCard` deletes the element and inserts the same card in one transaction, and the moved card gets a new element ID. Two races follow from that, and the host's server `resolve` policy (`examples/kanban/policy.ts`) settles both by card ID:
+
+| Race | Without a policy | With this policy |
+| --- | --- | --- |
+| Two writers move the same card | Both insertions remain: the card is duplicated | The later move's source is already gone, so its insertion is dropped. The first move wins |
+| A writer renames a card another writer moved | The `set()` targets the deleted element: nothing changes and the writer gets a `discard` | The `set()` is retargeted to the element that now holds that card ID |
+| A writer renames a card another writer deleted | `discard` | `discard`: the card stays deleted |
+
+A move whose source was deleted also loses its insertion, so a move never brings back a deleted card. The policy relies on the page's convention that a move batch is exactly that delete followed by that insert. It builds a card index from the pre-batch snapshot, which costs O(cards) per batch; it is not authorization or payload validation.
+
+The writer whose move was dropped replays it over the winning move until its own commit arrives, so for that moment it shows the card twice. If it edited the card again after its dropped move, that edit targets an element the server never inserted: the writer is **Blocked** until **Discard blocked edits** rejects it. A `discard` is shown as a notice on the writer that lost the rename.
+
+The selected card is remembered by card ID and, as a fallback, by a [cursor](../docs/collections.md#stable-positions-with-cursors) bound right to its element. A move keeps the selection on the card; when the card is deleted, the cursor moves to the gap where it was and the card now at that gap is selected. Use **Offline** on one writer to try each race: rename or move there, change the same card in the other writer, then go back online.
+
+Node tests cover the policy against the core server and client with explicit delivery, the board helpers and observed columns, and both writers over real HTTP, including offline renames that are retargeted or discarded. Drag and drop, focus and layout need a browser check. Reload opens new sessions and does not restore pending work, and the host has no authentication or persistence.
 
 ## In-memory broadcast walkthrough
 
