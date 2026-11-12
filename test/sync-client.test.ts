@@ -267,10 +267,162 @@ describe("connectSync", () => {
     release!();
     assert.equal(await pending, false);
     assert.equal(a.status, "stopped");
+    assert.equal(h.server.snapshot().serverSeq, 1, "an already-started submission is not rolled back");
+    assert.equal(a.doc.checkpoint().snapshot.serverSeq, 0, "the late acknowledgement is ignored");
+    assert.equal(a.doc.checkpoint().pendingBatches.length, 1);
     const calls = h.calls.length;
     t.mock.timers.tick(10_000); await tick();
     assert.equal(h.calls.length, calls, "no catch-up after the stopped submission and no polling");
     await assert.rejects(a.sync(), /stopped/);
+  });
+
+  for (const terminal of ["stopped", "failed"] as const) it(`does not revive queued cancellation after the preceding pass is ${terminal}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const h = harness(), transport = h.transport();
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const failure = Object.assign(new Error("forbidden"), { retryable: false });
+    let first = true, saves = 0;
+    const a = await connectSync(Board, { pollInterval: 1000, save() { saves++; }, transport: {
+      ...transport,
+      async commitsSince(watermark) {
+        const commits = await transport.commitsSince(watermark);
+        if (first) {
+          first = false; entered.resolve(); await gate.promise;
+          if (terminal === "failed") throw failure;
+        }
+        return commits;
+      },
+    } });
+    t.after(() => { a.stop(); gate.resolve(); });
+    a.doc.state.items.push("kept");
+    const syncing = a.sync();
+    await entered.promise;
+    const cancelling = a.rejectPending();
+    const saved = a.doc.checkpoint(), calls = h.calls.slice(), savedCount = saves;
+    if (terminal === "stopped") {
+      a.stop(); gate.resolve();
+      assert.equal(await syncing, false);
+      assert.equal(await cancelling, false);
+    } else {
+      const results = [syncing, cancelling].map((result) => assert.rejects(result, (error) => error === failure));
+      gate.resolve(); await Promise.all(results);
+      assert.equal(a.error, failure);
+    }
+    assert.equal(a.status, terminal);
+    assert.deepEqual(a.doc.checkpoint(), saved);
+    t.mock.timers.tick(60_000); await tick();
+    assert.deepEqual(h.calls, calls);
+    assert.equal(saves, savedCount);
+    assert.equal(h.server.snapshot().serverSeq, 0);
+    await assert.rejects(a.rejectPending());
+  });
+
+  for (const cancellations of [1, 2]) it(`captures each cutoff before ${cancellations} cancellation calls wait in the queue`, async (t) => {
+    const h = harness({ resolve: () => [] }), transport = h.transport();
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    let first = true;
+    const a = await connectSync(Board, { pollInterval: 0, transport: {
+      ...transport,
+      async commitsSince(watermark) {
+        const commits = await transport.commitsSince(watermark);
+        if (first) { first = false; entered.resolve(); await gate.promise; }
+        return commits;
+      },
+    } });
+    t.after(() => { a.stop(); gate.resolve(); });
+    a.doc.state.items.push("first");
+    const syncing = a.sync();
+    await entered.promise;
+    const queued: Promise<boolean>[] = [];
+    for (let index = 0; index < cancellations; index++) {
+      queued.push(a.rejectPending());
+      a.doc.state.items.push(`later-${index}`); // Depends on an insertion the server will reject.
+    }
+    const allocation = a.doc.checkpoint().lastBunchSeqs;
+    gate.resolve();
+    assert.equal(await syncing, false);
+    assert.deepEqual(await Promise.all(queued), Array.from({ length: cancellations }, () => true));
+    await tick();
+    assert.deepEqual(a.doc.checkpoint().pendingBatches.map((batch) => batch.seq), [cancellations + 1]);
+    assert.equal(a.doc.replayConflict?.batch.seq, cancellations + 1);
+    assert.deepEqual(a.doc.checkpoint().lastBunchSeqs, allocation);
+    assert.deepEqual(h.calls.filter((call) => call.startsWith("reject")),
+      cancellations === 1 ? [] : [`reject:${a.doc.checkpoint().clientId}:2`]);
+    assert.equal(h.server.snapshot().serverSeq, cancellations);
+  });
+
+  it("does not start saving or transport work when a status listener stops the pass", async (t) => {
+    const h = harness();
+    let saves = 0;
+    const a = await connectSync(Board, { pollInterval: 0, transport: h.transport(), save() { saves++; } });
+    t.after(() => a.stop());
+    a.on("status", (status) => { if (status === "syncing") a.stop(); });
+    a.doc.state.count.value = 1;
+    assert.equal(await a.sync(), false);
+    assert.equal(a.status, "stopped");
+    assert.equal(saves, 1, "only the initial checkpoint was saved");
+    assert.deepEqual(h.calls, ["register"]);
+    assert.equal(a.doc.checkpoint().pendingBatches.length, 1);
+  });
+
+  for (const rejectSave of [false, true]) it(`ignores a save that ${rejectSave ? "rejects" : "resolves"} after stop`, async (t) => {
+    const h = harness();
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const late = new Error("late storage failure");
+    let saves = 0;
+    const a = await connectSync(Board, { pollInterval: 0, transport: h.transport(), async save() {
+      if (++saves > 1) { entered.resolve(); await gate.promise; if (rejectSave) throw late; }
+    } });
+    t.after(() => { a.stop(); gate.resolve(); });
+    a.doc.state.count.value = 1;
+    const syncing = a.sync();
+    await entered.promise;
+    const saved = a.doc.checkpoint();
+    a.stop(); gate.resolve();
+    assert.equal(await syncing, false);
+    assert.equal(a.status, "stopped");
+    assert.equal(a.error, undefined);
+    assert.deepEqual(a.doc.checkpoint(), saved);
+    assert.deepEqual(h.calls, ["register"]);
+    assert.equal(saves, 2);
+  });
+
+  it("ignores a network rejection after stop instead of scheduling a retry", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const h = harness(), transport = h.transport();
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const a = await connectSync(Board, { pollInterval: 1000, transport: {
+      ...transport,
+      async commitsSince(watermark) {
+        await transport.commitsSince(watermark);
+        entered.resolve(); await gate.promise;
+        throw new Error("late network failure");
+      },
+    } });
+    t.after(() => { a.stop(); gate.resolve(); });
+    const syncing = a.sync();
+    await entered.promise;
+    a.stop(); gate.resolve();
+    assert.equal(await syncing, false);
+    assert.equal(a.status, "stopped");
+    const calls = h.calls.slice();
+    t.mock.timers.tick(60_000); await tick();
+    assert.deepEqual(h.calls, calls);
+  });
+
+  it("stops between commits when a document callback stops the client", async (t) => {
+    const h = harness();
+    let saves = 0;
+    const a = await connectSync(Board, { pollInterval: 0, transport: h.transport(), save() { saves++; } });
+    t.after(() => a.stop());
+    const peer = h.server.openClient();
+    for (const seq of [1, 2]) h.server.receive({ clientId: peer, seq, operations: [{ type: "value/set", path: "count", value: seq }] });
+    a.doc.on("change", () => a.stop());
+    assert.equal(await a.sync(), false);
+    assert.equal(a.status, "stopped");
+    assert.equal(a.doc.state.count.value, 1, "the first commit completed, the next was not delivered");
+    assert.equal(a.doc.checkpoint().snapshot.serverSeq, 1);
+    assert.equal(saves, 1, "no new save starts after the callback stops the client");
   });
 
   it("polls for remote commits and fails when a status listener throws", async (t: TestContext) => {

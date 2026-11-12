@@ -159,7 +159,7 @@ export async function connectSync<S extends SchemaShape>(
   const document = doc;
 
   function setStatus(next: SyncStatus): void {
-    if (status === next) return;
+    if (status === next || status === "stopped" || status === "failed") return;
     status = next;
     if (next === "gap" || next === "stopped" || next === "failed") shutdownPush();
     let thrown: { readonly cause: unknown } | undefined;
@@ -174,11 +174,10 @@ export async function connectSync<S extends SchemaShape>(
     timer = undefined;
   }
   function fail(cause: unknown): never {
-    if (status !== "failed") {
-      error = cause;
-      clearTimer();
-      setStatus("failed");
-    }
+    usable(); // Late failures cannot replace a terminal state or its first error.
+    error = cause;
+    clearTimer();
+    setStatus("failed");
     throw error;
   }
   function usable(): void {
@@ -186,12 +185,14 @@ export async function connectSync<S extends SchemaShape>(
     if (status === "failed") throw error;
   }
   function schedule(delay: number): void {
+    usable();
     clearTimer();
     timer = setTimeout(() => { timer = undefined; void sync().catch(() => {}); }, delay);
   }
 
   /** Saves when pending work or the watermark changed since the last save. */
   async function persist(): Promise<void> {
+    usable();
     if (save === undefined) return;
     const checkpoint = document.checkpoint();
     const version = `${checkpoint.lastLocalSeq}:${checkpoint.snapshot.serverSeq}`;
@@ -204,6 +205,7 @@ export async function connectSync<S extends SchemaShape>(
 
   /** Applies every missing commit in order; false when history no longer covers the watermark. */
   async function catchUp(): Promise<boolean> {
+    usable();
     const watermark = document.checkpoint().snapshot.serverSeq;
     const input = await transport.commitsSince(watermark);
     usable();
@@ -226,6 +228,7 @@ export async function connectSync<S extends SchemaShape>(
 
   function apply(commits: readonly ServerCommit<DocumentOperation<S>>[]): void {
     for (const commit of commits) {
+      usable();
       // The commit is applied before listeners run, so a listener bug cannot be retried away.
       try { document.receive(commit); }
       catch (cause) { throw new SyncFailure("A document listener or observer threw", { cause }); }
@@ -281,13 +284,25 @@ export async function connectSync<S extends SchemaShape>(
     pushRetry = undefined;
     dropPush();
   }
-  /** The channel ended or went silent: poll and catch up now, reconnect after a backoff. */
-  function lostPush(): void {
-    dropPush();
-    const delay = Math.min(maxDelay, initialDelay * 2 ** pushAttempt);
-    pushAttempt = Math.min(pushAttempt + 1, 52);
-    pushRetry = setTimeout(() => { pushRetry = undefined; ensurePush(); }, delay / 2 + Math.random() * (delay / 2));
-    if (status === "idle" || status === "blocked") void sync().catch(() => {});
+  /** Terminal push errors fail the client; a lost channel catches up and reconnects after backoff. */
+  function lostPush(cause?: unknown): void {
+    try {
+      usable();
+      if (cause !== undefined && !isRetryable(cause)) fail(cause);
+      dropPush();
+      usable();
+      const delay = Math.min(maxDelay, initialDelay * 2 ** pushAttempt);
+      pushAttempt = Math.min(pushAttempt + 1, 52);
+      pushRetry = setTimeout(() => {
+        pushRetry = undefined;
+        try { ensurePush(); } catch (failure) { lostPush(failure); }
+      }, delay / 2 + Math.random() * (delay / 2));
+      if (status === "idle" || status === "blocked") void sync().catch(() => {});
+    } catch (failure) {
+      if (failure instanceof StoppedSignal) return;
+      // Push/timer callbacks have no promise to reject; expose the stored failure instead.
+      try { fail(failure); } catch { /* The first failure remains available as client.error. */ }
+    }
   }
   function ensurePush(): void {
     if (subscribe === undefined || closePush !== undefined || pushRetry !== undefined) return;
@@ -295,11 +310,13 @@ export async function connectSync<S extends SchemaShape>(
     const token = ++pushToken;
     const current = () => token === pushToken;
     setPush("connecting");
+    usable();
     const close = subscribe(document.checkpoint().snapshot.serverSeq, {
       onOpen() {
         if (!current()) return;
         pushAttempt = 0;
         setPush("open");
+        if (!current()) return;
         armWatchdog();
         if (status === "idle" || status === "blocked") clearTimer(); // Push replaces polling.
       },
@@ -314,19 +331,22 @@ export async function connectSync<S extends SchemaShape>(
         dropPush();
         void sync().catch(() => {}); // Catch-up confirms the gap before reporting it.
       },
-      onEnd() { if (current()) lostPush(); },
+      onEnd(cause) { if (current()) lostPush(cause); },
     });
     // A transport may report synchronously; keep the channel only while it is current.
     if (current()) closePush = close; else close();
   }
   /** Polls only while no push channel is open. */
   function afterPass(): void {
+    usable();
     if (status !== "idle" && status !== "blocked") return;
     ensurePush();
+    usable();
     if (pollInterval > 0 && push !== "open") schedule(pollInterval);
   }
 
   async function pass(): Promise<boolean> {
+    usable();
     setStatus("syncing");
     await persist();
     if (!(await catchUp())) { clearTimer(); setStatus("gap"); return false; }
@@ -338,6 +358,7 @@ export async function connectSync<S extends SchemaShape>(
       // Batches before the conflicting one still replay; send them, then wait.
       if (document.replayConflict?.batch.seq === batch.seq) { setStatus("blocked"); return false; }
       await persist();
+      usable();
       await transport.submit(batch);
       usable();
       if (!(await catchUp())) { clearTimer(); setStatus("gap"); return false; }
@@ -352,9 +373,14 @@ export async function connectSync<S extends SchemaShape>(
     const previous = running;
     let current: Promise<boolean> | undefined;
     current = (async () => {
-      if (previous !== undefined) await previous.catch(() => {});
-      try { return await work(); }
-      finally {
+      try {
+        if (previous !== undefined) await previous.catch(() => {});
+        usable();
+        return await work();
+      } catch (cause) {
+        if (cause instanceof StoppedSignal) return false;
+        throw cause;
+      } finally {
         // Cleared before callers resume, so a later sync() never joins a finished pass.
         if (running === current) running = undefined;
         // A sync() that joined after the final pending check would otherwise be lost. A retry
@@ -374,7 +400,7 @@ export async function connectSync<S extends SchemaShape>(
       afterPass();
       return done;
     } catch (cause) {
-      if (cause instanceof StoppedSignal) return false;
+      if (status === "stopped" || cause instanceof StoppedSignal) return false;
       if (status === "failed" || !isRetryable(cause)) fail(cause);
       // Transport errors leave the outcome unknown; the next pass catches up before resending.
       const delay = Math.min(maxDelay, initialDelay * 2 ** attempt);
@@ -394,11 +420,10 @@ export async function connectSync<S extends SchemaShape>(
 
   async function rejectPending(): Promise<boolean> {
     usable();
+    const cutoff = document.checkpoint().lastLocalSeq;
     clearTimer();
     return exclusive(async () => {
       try {
-        // Capture before the first await: listener-created batches are not targets.
-        const cutoff = document.checkpoint().lastLocalSeq;
         setStatus("syncing");
         await persist();
         if (!(await catchUp())) { setStatus("gap"); return false; }
@@ -414,12 +439,13 @@ export async function connectSync<S extends SchemaShape>(
           }
         }
         setStatus(document.replayConflict === null ? "idle" : "blocked");
+        usable();
         // Batches created after the cutoff are ordinary pending work.
         if (document.checkpoint().pendingBatches.length > 0) rerun = true;
         else afterPass();
         return true;
       } catch (cause) {
-        if (cause instanceof StoppedSignal) return false;
+        if (status === "stopped" || cause instanceof StoppedSignal) return false;
         if (status === "failed" || !isRetryable(cause)) fail(cause);
         // A transport error leaves the outcome unknown; the caller may retry rejectPending().
         setStatus("idle");
