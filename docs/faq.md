@@ -36,8 +36,8 @@ No. It prevents a batch from allocating insertion IDs under another writer/path 
 
 ## What must a production application add?
 
-Transport, quotas, storage barriers, authentication/authorization, writer coordination, document lineage checks, and recovery after ambiguous outcomes or history gaps.
+An HTTP host or custom transport, quotas, storage, authentication/authorization, writer coordination, document lineage checks, and an application recovery policy for history gaps. The optional [sync adapter](sync.md) supplies HTTP push/polling, catch-up, retries and reconnects, including acknowledgement after a lost response; applications still provide checkpoint storage.
 
-The package has no rich text, presence, undo, bulk List editing, move, automatic migration or background reconnect. Same-ID server rollback/forks and power-loss durability are not promised. See the [complete boundaries](reference.md#boundaries).
+The package has no rich text, presence, undo, bulk List editing, move or automatic migration. Same-ID server rollback/forks and power-loss durability are not promised. See the [complete boundaries](reference.md#boundaries).
 
 [Previous: Core reference](reference.md) · [Back to Overview](README.md)

@@ -55,13 +55,17 @@ sync.on("status", (status) => console.log(status));
 
 `connectSync` creates the `ClientDocument` and owns its `onBatch`, so local edits are scheduled for submission automatically; several edits in one synchronous block share one pass. While no push channel is open it polls every `pollInterval` milliseconds (default 1000; `0` disables polling and you call `sync()` yourself). `sync()` resolves `true` when everything pending is acknowledged.
 
+`rejectPending()` captures the local sequence when you call it, even if it must wait for a running pass. It cancels only the pending batches up to that sequence, catching up first so accepted work is never undone. Later edits are ordinary pending work: they may sync normally, or stay blocked if they depend on an insertion that was cancelled.
+
 Decode a stored checkpoint with `decodeClientCheckpoint` before passing it as `checkpoint`. Use one `SyncClient` per writer and client ID, as with any checkpoint.
 
 ## Live updates
 
 With `createHttpTransport`, the client opens `GET events?since=n` after its first pass and keeps it open. The handler first sends the saved commits after `n`, then every new commit as soon as its checkpoint is saved, as `event: commits` with the commits as JSON and the last server sequence as the event `id`. A `: ping` comment every `heartbeatInterval` milliseconds (default 15000) keeps proxies from closing an idle stream.
 
-Pushed commits go through the same checks as catch-up. A delivery that continues the client's watermark is applied directly, with no extra request; duplicates are ignored, and anything that skips ahead triggers a normal catch-up. While the channel is open the client does not poll. If the stream ends, fails or carries no traffic for `pushTimeout` milliseconds (default 45000), the client catches up at once, polls, and reconnects with the same backoff as other retries.
+Pushed commits go through the same checks as catch-up. A delivery that continues the client's watermark is applied directly, with no extra request; duplicates are ignored, and anything that skips ahead triggers a normal catch-up. While the channel is open the client does not poll. If the stream ends normally, has a retryable error or carries no traffic for `pushTimeout` milliseconds (default 45000), the client catches up at once, polls, and reconnects with the same backoff as other retries.
+
+A push error marked `retryable: false`, including a 403/404 response or malformed JSON, fails the whole connection instead of silently switching to polling. Its first error remains in `sync.error`; polling and reconnect timers stop. If the server does not support SSE, explicitly use `push: false`.
 
 ```ts
 sync.on("push", (state) => setLiveIndicator(state === "open")); // "off" | "connecting" | "open"
@@ -86,6 +90,8 @@ The handler pushes the commits it applies itself. If your server also commits ou
 A lost response is safe: the next pass catches up first, so a batch the server already accepted is acknowledged rather than sent again, and a resent batch the server has seen is replayed with its original result.
 
 The transport throws an error with `retryable: false` for failures that retrying cannot fix. `createHttpTransport` treats network errors, 408, 429 and 5xx as retryable and throws `SyncHttpError` for other statuses. Malformed responses, out-of-order commits, a submission that was never acknowledged, a failing `save` and a throwing status listener also fail the client, because continuing could lose or duplicate work.
+
+**Stopping.** `stop()` is terminal, as is `failed`. Queued work cannot restart either state. Work called before stopping but still waiting or running resolves `false` when interrupted by stop; new `sync()`/`rejectPending()` calls after stop reject. Queued work interrupted by failure rejects with the same `sync.error`. Requests or saves already started may still complete, but the client ignores their late results and starts no further work. Completed mutations are not rolled back, pending work is not purged, and stopping after failure keeps the original failure visible.
 
 **Saving.** With `save`, the checkpoint is saved after connecting, before any pending batch is sent, and after commits are received, including acknowledgements that change nothing visible. Keep `save` fast; it runs inside each pass.
 
