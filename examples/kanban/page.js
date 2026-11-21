@@ -1,7 +1,9 @@
 // @ts-check
 import { connectSync, createHttpTransport } from "../../dist/sync/index.js";
 import { createOfflineSwitch, describeSync } from "../sync-ui.js";
-import { addCard, Board, COLUMNS, createSelection, deleteCard, findCard, moveCard, renameCard } from "./board.js";
+import {
+  addCard, Board, cardFor, COLUMNS, createSelection, deleteCard, findCard, lostRenames, moveCard, renameCard,
+} from "./board.js";
 import { observeColumn } from "./view.js";
 
 /** @typedef {import("./board.js").Card} Card */
@@ -139,10 +141,11 @@ function mountWriter(parent, name, sync, network) {
     lists.set(column, list);
     container.append(title, form, list);
     columns.append(container);
+    // Columns hold card IDs; the title comes from the `cards` Map, which observers below keep current.
     cleanups.push(observeColumn(doc.state[column], {
-      insert(index, card) { list.insertBefore(renderCard(card), list.children[index] ?? null); },
+      insert(index, cardId) { list.insertBefore(renderCard(cardFor(doc, cardId)), list.children[index] ?? null); },
       remove(index) { list.children[index]?.remove(); },
-      update(index, card) { const item = list.children[index]; if (item !== undefined) updateCard(item, card); },
+      update(index, cardId) { const item = list.children[index]; if (item !== undefined) updateCard(item, cardFor(doc, cardId)); },
     }));
   }
 
@@ -323,11 +326,25 @@ function mountWriter(parent, name, sync, network) {
     notices.append(item);
   }
 
-  const stopChange = doc.on("change", () => { refresh(); schedule(); });
-  // A rename that reached the server after another writer deleted the card changed nothing.
-  const stopDiscard = doc.on("discard", ({ operations }) => {
-    for (const operation of operations) notify(`Not saved: “${operation.value.title}”. Another writer deleted this card.`);
+  const clientId = doc.checkpoint().clientId;
+  const stopChange = doc.on("change", (event) => {
+    refresh(); schedule();
+    // A peer deleted cards this writer is still renaming: the server will apply those renames after the
+    // delete, and the policy drops them. Removing a card from its column is visible, so this event fires.
+    if (event.origin !== "server" || event.commit.source.clientId === clientId ||
+      !event.commit.operations.some((operation) => operation.type === "map/delete")) return;
+    for (const card of lostRenames(event.commit, doc.checkpoint().pendingBatches)) {
+      notify(`Not saved: “${card.title}”. Another writer deleted this card.`);
+    }
   });
+  // Titles live in the `cards` Map: update the card's row in place, wherever it is.
+  cleanups.push(doc.state.cards.observe(({ changes }) => {
+    for (const change of changes) {
+      if (change.type !== "set") continue;
+      const item = columns.querySelector(`li[data-card-id="${CSS.escape(change.key)}"]`);
+      if (item !== null) updateCard(item, { id: change.key, title: change.value.title });
+    }
+  }));
   const stopStatus = sync.on("status", refresh), stopPush = sync.on("push", refresh);
   const onOffline = () => {
     network.set(offline.checked);
@@ -349,7 +366,7 @@ function mountWriter(parent, name, sync, network) {
     stopped = true;
     sync.stop();
     for (const cleanup of cleanups) cleanup();
-    stopChange(); stopDiscard(); stopStatus(); stopPush();
+    stopChange(); stopStatus(); stopPush();
     clearTimeout(refreshing);
     columns.removeEventListener("click", onClick);
     columns.removeEventListener("dragstart", onDragStart);

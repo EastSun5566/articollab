@@ -5,7 +5,7 @@ import { describe, it, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { connectSync, createHttpTransport } from "../../../dist/sync/index.js";
 import { createOfflineSwitch } from "../../sync-ui.js";
-import { addCard, Board, COLUMNS, deleteCard, findCard, moveCard, renameCard } from "../board.js";
+import { addCard, Board, COLUMNS, deleteCard, findCard, lostRenames, moveCard, renameCard } from "../board.js";
 import { createBoardServer, SEED_CARDS, startKanbanServer } from "../server.ts";
 
 /** Waits for `condition` with real timers: writers synchronize on their own. */
@@ -26,24 +26,30 @@ async function fixture(t: TestContext) {
     const network = createOfflineSwitch();
     const sync = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 },
       transport: createHttpTransport({ url: host.url + "/sync/", fetch: network.fetch }) });
-    const discards: string[] = [];
-    const stopDiscard = sync.doc.on("discard", ({ operations }) => { for (const { value } of operations) discards.push(value.title); });
-    stops.push(() => { stopDiscard(); sync.stop(); });
+    // The page's check: a peer's delete of a card this writer is still renaming means a lost rename.
+    const lost: string[] = [];
+    const clientId = sync.doc.checkpoint().clientId;
+    const stopChange = sync.doc.on("change", (event) => {
+      if (event.origin !== "server" || event.commit.source.clientId === clientId) return;
+      for (const card of lostRenames(event.commit, sync.doc.checkpoint().pendingBatches)) lost.push(card.title);
+    });
+    stops.push(() => { stopChange(); sync.stop(); });
     await sync.sync();
     await until(() => sync.push === "open", "the push channel");
-    return { sync, network, discards,
-      board: () => COLUMNS.map((column) => sync.doc.state[column].toArray()),
+    return { sync, network, lost,
+      board: () => [...COLUMNS.map((column) => sync.doc.state[column].toArray()), sync.doc.state.cards.toObject()],
       settled: () => sync.doc.checkpoint().pendingBatches.length === 0 && sync.doc.checkpoint().snapshot.serverSeq === server.snapshot().serverSeq,
     };
   }
-  const serverBoard = () => { const { data } = server.snapshot(); return COLUMNS.map((column) => data[column].values); };
+  const serverBoard = () => { const { data } = server.snapshot(); return [...COLUMNS.map((column) => data[column].values), data.cards]; };
   return { host, server, connect, serverBoard };
 }
 
 describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
   it("starts from the seeded cards and converges both writers without explicit syncs", async (t) => {
     const f = await fixture(t), a = await f.connect(), b = await f.connect();
-    assert.deepEqual(a.board().flat().map(({ id }) => id), SEED_CARDS.map(({ id }) => id));
+    assert.deepEqual(COLUMNS.flatMap((column) => a.sync.doc.state[column].toArray()), SEED_CARDS.map(({ id }) => id));
+    assert.deepEqual(a.sync.doc.state.cards.toObject(), Object.fromEntries(SEED_CARDS.map(({ id, title }) => [id, { title }])));
     moveCard(a.sync.doc, "seed-drag", "done", 0);
     addCard(b.sync.doc, "doing", "From B", "from-b");
     await until(() => a.settled() && b.settled() && f.server.snapshot().serverSeq === 6, "convergence");
@@ -66,10 +72,10 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
       assert.deepEqual(findCard(writer.sync.doc, "seed-tests"), { column: "done", index: 1, card: { id: "seed-tests", title: "Renamed offline" } });
       assert.deepEqual(writer.board(), f.serverBoard());
     }
-    assert.deepEqual(a.discards, []);
+    assert.deepEqual(a.lost, []);
   });
 
-  it("reports an offline rename of a card another writer deleted meanwhile", async (t) => {
+  it("reports an offline rename of a card another writer deleted meanwhile, leaving no orphan data", async (t) => {
     const f = await fixture(t), a = await f.connect(), b = await f.connect();
     a.network.set(true);
     renameCard(a.sync.doc, "seed-sketch", "Lost rename");
@@ -77,10 +83,11 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
     await until(() => b.settled(), "B's delete");
     a.network.set(false);
     void a.sync.sync().catch(() => {});
-    await until(() => a.settled() && b.settled() && a.discards.length === 1, "the discard");
-    assert.deepEqual(a.discards, ["Lost rename"]);
+    await until(() => a.settled() && b.settled() && a.lost.length === 1, "the lost rename");
+    assert.deepEqual(a.lost, ["Lost rename"]);
     for (const writer of [a, b]) {
       assert.equal(findCard(writer.sync.doc, "seed-sketch"), undefined);
+      assert.equal(writer.sync.doc.state.cards.has("seed-sketch"), false);
       assert.deepEqual(writer.board(), f.serverBoard());
     }
   });

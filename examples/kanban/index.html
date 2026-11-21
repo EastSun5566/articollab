@@ -65,12 +65,13 @@
   <main>
     <header>
       <h1>Two writers, one board.</h1>
-      <p>Each card is a List element. Drag cards between columns or use their buttons; edits are sent as you make
-        them and the other writer receives them over a push channel. Select a card to rename it.</p>
-      <p>A move deletes the card and inserts it again, so the server applies a small policy: when two writers move the
-        same card, the first move wins, and a rename aimed at a card someone else moved follows it. A rename of a card
-        someone else deleted is not saved, and the writer is told. Turn a writer <strong>Offline</strong> to try these
-        races.</p>
+      <p>Each column is a List of card IDs, and each card's title lives in a Map under its ID. Drag cards between
+        columns or use their buttons; edits are sent as you make them and the other writer receives them over a push
+        channel. Select a card to rename it.</p>
+      <p>A rename writes only the Map, so it never conflicts with a move. A move deletes the card's ID and inserts it
+        again, so the server applies a small policy: when two writers move the same card, the first move wins, and a
+        rename of a card someone else deleted is dropped and the writer is told. Turn a writer <strong>Offline</strong>
+        to try these races.</p>
       <p>This localhost prototype has no authentication, persistence or reload recovery.</p>
     </header>
     <div id="app"></div>
