@@ -65,6 +65,8 @@ With `createHttpTransport`, the client opens `GET events?since=n` after its firs
 
 The handler limits open streams with `maxEventStreams`, including concurrent requests. Aborted requests and cancelled readers release their slots and heartbeat timers; a request that aborts before its stream opens starts no heartbeat.
 
+Each stream can queue up to 4 MiB of UTF-8 event data. Heartbeats are skipped when they do not fit. If a commit frame is too large or would exceed the remaining space, the handler lets the reader drain the complete frames already queued and then ends that stream. Other streams and server writes can continue. The limit covers the handler's stream queue; the HTTP host and network can buffer data separately.
+
 Pushed commits go through the same checks as catch-up. A delivery that continues the client's watermark is applied directly, with no extra request; duplicates are ignored, and anything that skips ahead triggers a normal catch-up. While the channel is open the client does not poll. If the stream ends normally, has a retryable error or carries no traffic for `pushTimeout` milliseconds (default 45000), the client catches up at once, polls, and reconnects with the same backoff as other retries.
 
 A push error marked `retryable: false`, including a 403/404 response or malformed JSON, fails the whole connection instead of silently switching to polling. Its first error remains in `sync.error`; polling and reconnect timers stop. If the server does not support SSE, explicitly use `push: false`.
@@ -74,6 +76,8 @@ sync.on("push", (state) => setLiveIndicator(state === "open")); // "off" | "conn
 ```
 
 The stream uses `fetch`, so `headers()` such as an authorization header apply to it, and `authorize` sees it as `catchUp`. Pass `push: false` to `connectSync` to poll only. On the server, `maxEventStreams` (default 1000) bounds open streams; further requests get 503. Some hosting platforms limit how long a response may stream; the client recovers by reconnecting, or set `push: false` there.
+
+If you use `EventSource` directly, catch up with `GET /commits` from the last applied sequence after a stream ends unexpectedly. Apply those commits before opening another stream, so a catch-up frame that exceeds the stream budget does not keep closing every reconnection.
 
 The handler pushes the commits it applies itself. If your server also commits outside the handler, for example with a direct `server.receive()`, save the checkpoint and then call `await handleSync.notify()` to push those commits.
 

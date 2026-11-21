@@ -80,6 +80,7 @@ async function readBody(request: Request, limit: number): Promise<string | null>
 }
 
 const WATERMARK = /^(0|[1-9]\d*)$/;
+const MAX_EVENT_STREAM_BUFFER_BYTES = 4 * 1024 * 1024;
 
 function nonNegativeInteger(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative safe integer`);
@@ -87,9 +88,9 @@ function nonNegativeInteger(value: number, name: string): number {
 }
 
 interface EventStream {
-  /** The last server sequence this stream has sent. */
+  /** The last server sequence queued for delivery. */
   sent: number;
-  send(text: string): void;
+  send(text: string): boolean;
   close(): void;
 }
 
@@ -130,8 +131,12 @@ export function createSyncHandler<S extends SchemaShape>(
       if (commits === null) { stream.send("event: gap\ndata: null\n\n"); stream.close(); continue; }
       const last = commits.at(-1);
       if (last === undefined) continue;
-      stream.send(`event: commits\nid: ${last.serverSeq}\ndata: ${JSON.stringify(commits)}\n\n`);
-      stream.sent = last.serverSeq;
+      if (stream.send(`event: commits\nid: ${last.serverSeq}\ndata: ${JSON.stringify(commits)}\n\n`)) {
+        stream.sent = last.serverSeq;
+      } else {
+        // Finish after the queued frames so the client can catch up from what it received.
+        stream.close();
+      }
     }
   }
   async function allowed(request: Request, action: SyncAction, clientId?: string): Promise<boolean> {
@@ -153,9 +158,19 @@ export function createSyncHandler<S extends SchemaShape>(
           request.signal.removeEventListener("abort", close);
           try { controller.close(); } catch { /* The reader already went away. */ }
         };
-        const send = (text: string): void => {
-          if (!open) return;
-          try { controller.enqueue(encoder.encode(text)); } catch { close(); }
+        const send = (text: string): boolean => {
+          const remaining = controller.desiredSize;
+          // UTF-16 length is a lower bound on UTF-8 bytes, so skip encoding if already too large.
+          if (!open || remaining === null || text.length > remaining) return false;
+          try {
+            const bytes = encoder.encode(text);
+            if (bytes.byteLength > remaining) return false;
+            controller.enqueue(bytes);
+            return true;
+          } catch {
+            close();
+            return false;
+          }
         };
         stream = { sent: watermark, send, close };
         streams.add(stream);
@@ -165,7 +180,7 @@ export function createSyncHandler<S extends SchemaShape>(
         if (heartbeatInterval > 0) heartbeat = setInterval(() => { send(": ping\n\n"); }, heartbeatInterval);
       },
       cancel() { stream?.close(); },
-    });
+    }, new ByteLengthQueuingStrategy({ highWaterMark: MAX_EVENT_STREAM_BUFFER_BYTES }));
     // Commits already saved past the watermark go first; an uncovered watermark ends the stream.
     broadcast();
     return new Response(body, { status: 200, headers: {
