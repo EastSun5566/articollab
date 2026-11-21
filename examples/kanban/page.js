@@ -1,5 +1,5 @@
 // @ts-check
-import { connectSync, createHttpTransport } from "../../dist/sync/index.js";
+import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../dist/sync/index.js";
 import { createOfflineSwitch, describeSync } from "../sync-ui.js";
 import {
   addCard, Board, cardFor, COLUMNS, createSelection, deleteCard, findCard, lostRenames, moveCard, renameCard,
@@ -66,30 +66,94 @@ function dropIndex(list, y) {
   return index === -1 ? items.length : index;
 }
 
+/** IndexedDB database for both writers' checkpoints; each writer has its own key. */
+const DATABASE = "articollab-kanban";
+const LABELS = ["A", "B"];
+
+/** The server's document identity. Stored checkpoints are keyed by it, so a restarted server starts fresh.
+ * @param {string} url */
+async function readDocumentId(url) {
+  const response = await fetch(new URL("/document", url));
+  /** @type {unknown} */
+  const body = response.ok ? await response.json() : undefined;
+  if (typeof body !== "object" || body === null || !("documentId" in body) || typeof body.documentId !== "string") {
+    throw new Error("The server did not report a document ID");
+  }
+  return body.documentId;
+}
+
+/** @param {string} documentId @param {string} label */
+function storeKey(documentId, label) {
+  return `${documentId}:${label}`;
+}
+
 /** Explicit mount keeps imports free of DOM, requests and writer registration.
  * @param {HTMLElement} root @param {string} url */
 export async function mountKanban(root, url) {
   const status = element("p", undefined, "Opening two writer sessions…");
   status.setAttribute("role", "status");
+  const clear = element("button", undefined, "Clear saved edits and reload");
+  clear.type = "button";
   const writers = element("div", "writers");
-  root.append(status, writers);
+  root.append(status, clear, writers);
   /** @type {(() => void)[]} */
   const stops = [];
   let destroyed = false;
+  /** @type {string | undefined} */
+  let documentId;
   function destroy() {
     if (destroyed) return;
     destroyed = true;
     for (const stop of stops) stop();
   }
-  try {
-    for (const label of ["A", "B"]) {
-      const network = createOfflineSwitch();
-      const sync = await connectSync(Board, { pollInterval: 1000,
-        transport: createHttpTransport({ url: new URL("/sync/", url), fetch: network.fetch }) });
-      if (destroyed) { sync.stop(); break; }
-      stops.push(mountWriter(writers, "Writer " + label, sync, network));
+  // Stopping the writers releases their locks; a writer open in another tab keeps its saved edits.
+  clear.addEventListener("click", async () => {
+    destroy();
+    if (documentId !== undefined) {
+      for (const label of LABELS) {
+        try {
+          const store = await openIndexedDbStore({ database: DATABASE, key: storeKey(documentId, label) });
+          try { await store.clear(); } finally { store.close(); }
+        } catch (error) {
+          if (!(error instanceof CheckpointLockedError)) throw error;
+        }
+      }
     }
-    if (!destroyed) status.textContent = "Ready. Drag cards or use their buttons; both writers update automatically.";
+    location.reload();
+  });
+  try {
+    documentId = await readDocumentId(url);
+    let locked = 0;
+    for (const label of LABELS) {
+      const name = "Writer " + label;
+      let store;
+      try {
+        store = await openIndexedDbStore({ database: DATABASE, key: storeKey(documentId, label) });
+      } catch (error) {
+        if (!(error instanceof CheckpointLockedError)) throw error;
+        // Another tab already runs this writer; a second copy would reuse its client ID.
+        const pane = element("section", "writer");
+        pane.append(element("h2", undefined, name), element("p", "message", `${name} is open in another tab.`));
+        writers.append(pane);
+        locked++;
+        continue;
+      }
+      const network = createOfflineSwitch();
+      let sync;
+      try {
+        sync = await connectSync(Board, { pollInterval: 1000, store,
+          transport: createHttpTransport({ url: new URL("/sync/", url), fetch: network.fetch }) });
+      } catch (error) {
+        store.close();
+        throw error;
+      }
+      if (destroyed) { sync.stop(); break; }
+      stops.push(mountWriter(writers, name, sync, network, sync.doc.checkpoint().pendingBatches.length));
+    }
+    if (!destroyed) {
+      status.textContent = locked === LABELS.length ? "Both writers are open in another tab."
+        : "Ready. Drag cards or use their buttons; both writers update automatically. Unsent edits survive a reload.";
+    }
   } catch (error) {
     status.textContent = "Stopped: " + describeError(error);
     status.dataset.state = "error";
@@ -103,9 +167,10 @@ export async function mountKanban(root, url) {
  * change, once the observers have updated the DOM.
  * @param {HTMLElement} parent @param {string} name @param {BoardSync} sync
  * @param {ReturnType<typeof createOfflineSwitch>} network
+ * @param {number} [restored] Pending batches restored from the store, for a notice.
  * @returns {() => void} Stops the writer and removes its listeners.
  */
-function mountWriter(parent, name, sync, network) {
+function mountWriter(parent, name, sync, network, restored = 0) {
   const doc = sync.doc;
   const section = element("section", "writer");
   section.setAttribute("aria-label", name);
@@ -361,6 +426,7 @@ function mountWriter(parent, name, sync, network) {
   offline.addEventListener("change", onOffline);
   discard.addEventListener("click", onDiscard);
   refresh();
+  if (restored > 0) notify(`Restored ${restored} unsent ${restored === 1 ? "edit" : "edits"} from before the reload; they are sent once this writer is online.`);
 
   return () => {
     stopped = true;

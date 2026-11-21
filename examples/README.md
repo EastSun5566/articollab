@@ -20,7 +20,7 @@ All commands and snippet imports below are relative to the **repository root**, 
 | [Browser HTTP smoke](#browser-http-smoke-example) | Browser clients through the shared HTTP sync controller |
 | [Browser reload recovery](#browser-reload-recovery-example) | Session storage, server restart and document lineage protection |
 | [Text editor prototype](#text-editor-prototype) | Two CodeMirror editors kept live by `articollab/sync`, with offline editing and shared cursors |
-| [Kanban board](#kanban-board) | Card positions in Lists and card data in a Map, both rendered with `observe`; moves settled by a server policy |
+| [Kanban board](#kanban-board) | Card positions in Lists and card data in a Map, both rendered with `observe`; moves settled by a server policy; unsent edits kept across reloads in IndexedDB |
 
 Use one writer per client ID/document lineage and one writer per checkpoint file. None of these helpers adds authentication, automatic history-gap recovery, rebase or power-loss durability. If a helper returns `false` or throws, preserve the checkpoint; replacing pending work with a fresh snapshot can lose edits.
 
@@ -83,9 +83,11 @@ A dropped rename produces no `discard` event, which reports only List `set()`s. 
 
 The writer whose move was dropped replays it over the winning move until its own commit arrives, so for that moment it shows the card twice. If it moved the card again after its dropped move, that move targets an element the server never inserted: the writer is **Blocked** until **Discard blocked edits** rejects it.
 
+Each writer keeps its checkpoint in IndexedDB through `openIndexedDbStore` and `connectSync({ store })`, so a reload resumes the same writer with its unsent edits: go **Offline**, edit, reload, and the writer shows how many edits it restored and sends them when it is back online. Edits are saved as they are made, not only when they are sent. The store key includes a document ID that the host generates at each start (`GET /document`), so after a server restart the page starts fresh instead of restoring a checkpoint into a different document; checkpoints of earlier documents stay in the browser until **Clear saved edits and reload** or clearing site data. A second tab cannot open a writer the first tab holds: the store's Web Lock refuses it and that writer's pane says it is open in another tab.
+
 The selected card is remembered by card ID and, as a fallback, by a [cursor](../docs/collections.md#stable-positions-with-cursors) bound right to its element. A move keeps the selection on the card; when the card is deleted, the cursor moves to the gap where it was and the card now at that gap is selected. Use **Offline** on one writer to try each race: rename or move there, change the same card in the other writer, then go back online.
 
-Node tests cover the policy against the core server and client with explicit delivery, the board helpers, observed columns and titles, `lostRenames()`, and both writers over real HTTP, including offline renames of a card that was moved or deleted meanwhile. Drag and drop, focus and layout need a browser check. Reload opens new sessions and does not restore pending work, and the host has no authentication or persistence.
+Node tests cover the policy against the core server and client with explicit delivery, the board helpers, observed columns and titles, `lostRenames()`, and both writers over real HTTP, including offline renames of a card that was moved or deleted meanwhile. Drag and drop, focus and layout need a browser check. The host keeps the document in memory and has no authentication.
 
 ## In-memory broadcast walkthrough
 

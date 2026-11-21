@@ -72,7 +72,9 @@
         again, so the server applies a small policy: when two writers move the same card, the first move wins, and a
         rename of a card someone else deleted is dropped and the writer is told. Turn a writer <strong>Offline</strong>
         to try these races.</p>
-      <p>This localhost prototype has no authentication, persistence or reload recovery.</p>
+      <p>Each writer saves its edits in this browser as you make them, so reloading the page keeps edits that were not
+        sent yet. A writer open in another tab stays locked there. This localhost prototype has no authentication, and
+        the server keeps the document in memory: restarting it starts a new document.</p>
     </header>
     <div id="app"></div>
   </main>
