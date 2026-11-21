@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { IDBFactory } from "fake-indexeddb";
 import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../../dist/sync/index.js";
 import { createOfflineSwitch } from "../../sync-ui.js";
-import { addCard, Board, cardsIn, COLUMNS, deleteCard, findCard, lostRenames, moveCard, renameCard } from "../board.js";
+import { addCard, Board, cardsIn, COLUMNS, deleteCard, droppedEdits, findCard, moveCard, renameCard } from "../board.js";
 import { createBoardServer, SEED_CARDS, startKanbanServer } from "../server.ts";
 
 /** Waits for `condition` with real timers: writers synchronize on their own. */
@@ -36,14 +36,12 @@ async function fixture(t: TestContext) {
     const network = createOfflineSwitch();
     const sync = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 },
       transport: createHttpTransport({ url: host.url + "/sync/", fetch: network.fetch }) });
-    // The page's check: a peer's delete of a card this writer is still renaming means a lost rename.
+    // The page's check: the server dropped a rename of a card a peer deleted first.
     const lost: string[] = [];
-    const clientId = sync.doc.checkpoint().clientId;
-    const stopChange = sync.doc.on("change", (event) => {
-      if (event.origin !== "server" || event.commit.source.clientId === clientId) return;
-      for (const card of lostRenames(event.commit, sync.doc.checkpoint().pendingBatches)) lost.push(card.title);
+    const stopTransform = sync.doc.on("transform", ({ dropped }) => {
+      for (const edit of droppedEdits(dropped)) if (edit.kind === "rename") lost.push(edit.title ?? "");
     });
-    stops.push(() => { stopChange(); sync.stop(); });
+    stops.push(() => { stopTransform(); sync.stop(); });
     await sync.sync();
     await until(() => sync.push === "open", "the push channel");
     return { sync, network, lost,

@@ -2,7 +2,7 @@
 import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../dist/sync/index.js";
 import { createOfflineSwitch, describeSync } from "../sync-ui.js";
 import {
-  addCard, Board, cardFor, cardsIn, COLUMNS, createSelection, deleteCard, findCard, lostRenames, moveCard, renameCard,
+  addCard, Board, cardFor, cardsIn, COLUMNS, createSelection, deleteCard, findCard, moveCard, renameCard, watchDroppedEdits,
 } from "./board.js";
 
 /** @typedef {import("./board.js").Card} Card */
@@ -409,23 +409,9 @@ function mountWriter(parent, name, sync, network, restored = 0) {
     notices.append(item);
   }
 
-  const clientId = doc.checkpoint().clientId;
-  const stopChange = doc.on("change", (event) => {
-    refresh(); schedule();
-    // A peer deleted cards this writer is still renaming: the server will apply those renames after the
-    // delete, and the policy drops them. Removing a card from its column is visible, so this event fires.
-    if (event.origin !== "server" || event.commit.source.clientId === clientId ||
-      !event.commit.operations.some((operation) => operation.type === "map/delete")) return;
-    for (const card of lostRenames(event.commit, doc.checkpoint().pendingBatches)) {
-      notify(`Not saved: “${card.title}”. Another writer deleted this card.`);
-    }
-  });
-  // A move of a card a peer deleted first changed nothing; the server reports it on acknowledgement.
-  const stopDiscard = doc.on("discard", ({ operations }) => {
-    for (const operation of operations) {
-      if (operation.type === "list/move") notify("Not moved: another writer deleted that card.");
-    }
-  });
+  const stopChange = doc.on("change", () => { refresh(); schedule(); });
+  // The server dropped this writer's rename or move of a card a peer deleted first.
+  const dropped = watchDroppedEdits(doc, notify);
   cleanups.push(doc.state.order.observe(schedule), doc.state.columns.observe(schedule));
   // Titles live in `titles`: update the card's row in place, wherever it is.
   cleanups.push(doc.state.titles.observe(({ changes }) => {
@@ -442,7 +428,8 @@ function mountWriter(parent, name, sync, network, restored = 0) {
     refresh();
     if (!offline.checked) sync.sync().catch(() => {}); // Like the browser's online event.
   };
-  const onDiscard = () => { sync.rejectPending().catch(() => {}).finally(refresh); };
+  // Edits this writer cancels itself are not news.
+  const onDiscard = () => { dropped.cancel(() => sync.rejectPending()).catch(() => {}).finally(refresh); };
   columns.addEventListener("click", onClick);
   columns.addEventListener("dragstart", onDragStart);
   columns.addEventListener("dragover", onDragOver);
@@ -458,7 +445,7 @@ function mountWriter(parent, name, sync, network, restored = 0) {
     stopped = true;
     sync.stop();
     for (const cleanup of cleanups) cleanup();
-    stopChange(); stopDiscard(); stopStatus(); stopPush();
+    stopChange(); dropped.stop(); stopStatus(); stopPush();
     clearTimeout(refreshing);
     columns.removeEventListener("click", onClick);
     columns.removeEventListener("dragstart", onDragStart);
