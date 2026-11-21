@@ -7,4 +7,4 @@
 - [Recovery](recovery.md)
 - [Sync adapter](sync.md)
 - [Core reference](reference.md)
-- [FAQ and limitations](faq.md)
+- [FAQ](faq.md)

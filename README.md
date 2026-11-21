@@ -1,12 +1,10 @@
 # Articollab
 
-Typed, server-authoritative collaborative collections for TypeScript, powered by [articulated](https://github.com/mweidner037/articulated).
-
-Clients edit optimistically; the server orders commits and clients replay unacknowledged work. **Not a CRDT.** Includes Value, List, Unicode Text and keyed Map collections, transactions, server policy, wire decoding, checkpoints and catch-up. An optional HTTP [sync adapter](docs/sync.md) handles submission, catch-up, push and retries, and can keep client checkpoints in IndexedDB or a file; your application supplies server storage and authentication.
+Articollab is a TypeScript library for collaborative state. Clients show edits immediately. The server orders commits and decides their effect.
 
 ## Install
 
-Install from [npm](https://www.npmjs.com/package/articollab). Use an ESM project (`"type": "module"`); the Node.js examples require Node 24+.
+Use Node.js 24 or later and an ESM project (`"type": "module"`).
 
 ```sh
 pnpm add articollab
@@ -14,7 +12,7 @@ pnpm add articollab
 
 ## Quick start
 
-A single client and server, connected in memory:
+Save this example as `counter.ts` and run `node counter.ts`.
 
 ```ts
 import { createClient, createServer, defineDocument, value } from "articollab";
@@ -32,16 +30,16 @@ doc.state.count.value = 1;
 console.log(doc.state.count.value); // 1
 ```
 
-The server opens a writer session before its first batch. Disconnecting preserves that session; `server.closeClient(id)` permanently retires it. This example submits and acknowledges each batch synchronously. For multiple clients, deliver commits to every client in server order; see the walkthroughs below.
+The example opens a writer session, submits one edit and delivers the server commit back to the writer. It prints `1`.
 
 ## Documentation
 
-- [Counter walkthrough](docs/quick-start.md)
-- [API, core contracts and compatibility](docs/reference.md)
-- [Recovery](docs/recovery.md)
-- [Sync adapter](docs/sync.md)
-- [Contributing](CONTRIBUTING.md)
+- [Follow an edit from client to server](docs/quick-start.md)
+- [Connect clients over HTTP](docs/sync.md)
+- [Read the API reference](docs/reference.md)
+
+Visit the [documentation site](https://eastsun5566.github.io/articollab/) or read the [contributor guide](CONTRIBUTING.md).
 
 ## License
 
-MIT.
+[MIT](LICENSE). Articollab uses [articulated](https://github.com/mweidner037/articulated) for stable List and Text identities.
