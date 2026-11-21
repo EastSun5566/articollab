@@ -260,6 +260,7 @@ function objectTrial(api: Api, size: number, scenario: typeof objectScenarios[nu
     notifications++;
     for (const change of event.changes) {
       if (change.type === "set") mirror[change.index] = change.value;
+      else if (change.type === "move") mirror.splice(change.to, 0, ...mirror.splice(change.from, 1));
       else mirror.splice(change.index, change.deleteCount, ...change.insert);
     }
   });

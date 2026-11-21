@@ -95,7 +95,7 @@ If `onBatch` or an existing change listener throws, observers do not run for tha
 
 ## Update a list view incrementally
 
-`List.observe()` works like `Text.observe()`, but a change is either a splice or an in-place set. Handle `set` separately so a row keeps its own key when only its value changes:
+`List.observe()` works like `Text.observe()`, but a change is a splice, an in-place set or a move. Handle `set` and `move` separately so a row keeps its own key when only its value or position changes:
 
 ```ts
 import { createClient, createServer, defineDocument, list } from "articollab";
@@ -114,6 +114,8 @@ const stop = doc.state.cards.observe(({ changes }) => {
   for (const change of changes) {
     if (change.type === "set") {
       rows = rows.with(change.index, { key: rows[change.index]!.key, card: change.value });
+    } else if (change.type === "move") {
+      rows = rows.toSpliced(change.from, 1).toSpliced(change.to, 0, rows[change.from]!);
     } else {
       const inserted = change.insert.map((card) => ({ key: nextKey++, card }));
       rows = rows.toSpliced(change.index, change.deleteCount, ...inserted);
@@ -124,11 +126,12 @@ const stop = doc.state.cards.observe(({ changes }) => {
 doc.state.cards.push({ title: "Write docs", done: false });
 doc.state.cards.push({ title: "Ship", done: false });
 doc.state.cards.set(0, { title: "Write docs", done: true }); // Row 0 keeps key 0.
-console.log(rows.map(({ key, card }) => `${key}:${card.title}:${card.done}`)); // [ '0:Write docs:true', '1:Ship:false' ]
+doc.state.cards.move(1, 0); // "Ship" moves first and keeps key 1.
+console.log(rows.map(({ key, card }) => `${key}:${card.title}:${card.done}`)); // [ '1:Ship:false', '0:Write docs:true' ]
 stop();
 ```
 
-All indices refer to the pre-event view and changes arrive by descending index, with a set before a splice at the same index, so apply them in the supplied order. A set means the same element changed value; there is no move event, so a delete-and-reinsert move arrives as two splices and the moved row gets a new key. Payloads keep `Object.is` identity: an acknowledgement that replaces an object with an equal decoded copy is reported as a set, which a view may skip after its own equality check.
+Apply changes in the supplied order: each index refers to the view after the changes before it. Moves come first; then splices and sets follow by descending index, with a set before a splice at the same index, so without moves every index is in the pre-event view. A set means the same element changed value, and a move means the same element changed position. A delete-and-reinsert still arrives as two splices and gets a new key; use `move()` to keep it. Payloads keep `Object.is` identity: an acknowledgement that replaces an object with an equal decoded copy is reported as a set, which a view may skip after its own equality check.
 
 ## Update a view from a Map
 

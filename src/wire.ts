@@ -267,6 +267,17 @@ function decodeOperation<S extends SchemaShape>(
         value: decodeJsonValue(record.value, [...path, "value"]),
       }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; business payload T remains the caller’s responsibility.
     }
+    case "list/move": {
+      requireExactFields(record, path, ["type", "path", "id", "before", "position"]);
+      requireKind(descriptor.kind, "list", [...path, "path"]);
+      return Object.freeze({
+        type,
+        path: descriptor.path,
+        id: decodeElementId(record.id, [...path, "id"]),
+        before: decodeOptionalElementId(record.before, [...path, "before"]),
+        position: decodeElementId(record.position, [...path, "position"]),
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; moves carry no payload.
+    }
     case "list/delete": {
       requireExactFields(record, path, ["type", "path", "id"]);
       requireKind(descriptor.kind, "list", [...path, "path"]);
@@ -505,12 +516,23 @@ function decodeSnapshotCollection(
 
   const record = decodeRecord(input, path, `${kind} snapshot`);
   if (kind === "list") {
-    requireExactFields(record, path, ["idList", "values"]);
+    const hasMoves = Object.hasOwn(record, "moves");
+    requireExactFields(record, path, hasMoves ? ["idList", "values", "moves"] : ["idList", "values"]);
     const inputValues = decodeDenseArray(
       record.values,
       [...path, "values"],
       "List snapshot values"
     );
+    const moves = hasMoves ? Object.freeze(decodeDenseArray(record.moves, [...path, "moves"], "List snapshot moves")
+      .map((entry, index) => {
+        const entryPath = [...path, "moves", index];
+        const move = decodeRecord(entry, entryPath, "List snapshot move");
+        requireExactFields(move, entryPath, ["id", "position"]);
+        return Object.freeze({
+          id: decodeElementId(move.id, [...entryPath, "id"]),
+          position: decodeElementId(move.position, [...entryPath, "position"]),
+        });
+      })) : undefined;
     const snapshot: ListSnapshotData = Object.freeze({
       idList: decodeSavedIdList(record.idList, [...path, "idList"]),
       values: Object.freeze(
@@ -518,6 +540,7 @@ function decodeSnapshotCollection(
           decodeJsonValue(value, [...path, "values", index])
         )
       ),
+      ...(moves === undefined ? {} : { moves }),
     });
     validateSnapshotCollection(kind, snapshot, path);
     return snapshot;
@@ -741,11 +764,14 @@ export function decodeClientCheckpoint<S extends SchemaShape>(
     }
     for (const [operationIndex, operation] of batch.operations.entries()) {
       const operationPath = [...batchPath, "operations", operationIndex];
-      if (operation.type === "list/insert" || operation.type === "text/insert") {
-        const seq = localBunchSeq(operation.id.bunchId, clientId, operation.path);
+      if (operation.type === "list/insert" || operation.type === "text/insert" || operation.type === "list/move") {
+        // A move allocates its new position ID the way an insertion allocates its element ID.
+        const field = operation.type === "list/move" ? "position" : "id";
+        const allocated = operation.type === "list/move" ? operation.position : operation.id;
+        const seq = localBunchSeq(allocated.bunchId, clientId, operation.path);
         if (seq === undefined) {
           fail(
-            [...operationPath, "id", "bunchId"],
+            [...operationPath, field, "bunchId"],
             "pending insert must use this client/path's canonical bunch ID"
           );
         }
@@ -755,12 +781,12 @@ export function decodeClientCheckpoint<S extends SchemaShape>(
             "bunch sequence must cover pending insert IDs"
           );
         }
-        const key = JSON.stringify([operation.path, operation.id.bunchId]);
+        const key = JSON.stringify([operation.path, allocated.bunchId]);
         const ranges = insertedRanges.get(key) ?? [];
         // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
-        const count = operation.type === "list/insert" ? 1 : [...operation.value].length;
-        ranges.push({ start: operation.id.counter,
-          end: operation.id.counter + count - 1, path: operationPath });
+        const count = operation.type === "text/insert" ? [...operation.value].length : 1;
+        ranges.push({ start: allocated.counter,
+          end: allocated.counter + count - 1, path: operationPath });
         insertedRanges.set(key, ranges);
       }
     }

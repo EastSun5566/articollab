@@ -83,6 +83,7 @@ const stopObservingItems = peer.state.items.observe((event) => {
   for (const change of event.changes) {
     assert.ok(Object.isFrozen(change));
     if (change.type === "set") { peerItems = peerItems.with(change.index, change.value); listSets++; }
+    else if (change.type === "move") peerItems = peerItems.toSpliced(change.from, 1).toSpliced(change.to, 0, change.value);
     else { peerItems = peerItems.toSpliced(change.index, change.deleteCount, ...change.insert); listSplices++; }
   }
   assert.equal(event.afterLength, peerItems.length);
@@ -293,6 +294,21 @@ assert.equal(cursorReader.state.body.cursorIndex(caret), 2);
 cursorWriter.state.items.push("x");
 assert.equal(cursorWriter.state.items.cursorIndex(cursorWriter.state.items.cursorAt(1, "right")), 1);
 
+const moveServer = createServer(Board);
+const moveBatches = [];
+const mover = createClient(Board, { clientId: moveServer.openClient(), onBatch: (batch) => moveBatches.push(batch) });
+const watcher = createClient(Board, { clientId: moveServer.openClient(), onBatch() {} });
+mover.transact(() => { for (const item of ["a", "b", "c"]) mover.state.items.push(item); });
+mover.state.items.move(0, 2);
+const watched = [];
+watcher.state.items.observe((event) => watched.push(...event.changes.map((change) => change.type)));
+for (const batch of moveBatches) {
+  watcher.receive(decodeServerCommit(Board, roundTrip(moveServer.receive(decodeClientBatch(Board, roundTrip(batch))).commit)));
+}
+assert.deepEqual(watcher.state.items.toArray(), ["b", "c", "a"]);
+assert.deepEqual(watched, ["splice", "move"]);
+assert.equal(roundTrip(moveServer.snapshot()).data.items.moves.length, 1);
+
 const MapBoard = defineDocument({ fields: map() });
 const mapServer = createServer(MapBoard);
 const mapBatches = [];
@@ -320,7 +336,7 @@ import {
   type MapChange, type MapChangeEvent, type MapCollection, type MapSetOperation, type MapSnapshotData,
   type Cursor, type Value, type List, type Text, type TextChange, type TextChangeEvent, type DocumentOperation, type DocumentSnapshot,
   type ListChange, type ListChangeEvent,
-  type ListSnapshotData, type ListSetOperation, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
+  type ListSnapshotData, type ListSetOperation, type ListMoveOperation, type ListMoveEntry, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
   type CreateServerOptions, type ClientBatch, type ServerCommit, type ServerClientSession, type DiscardEvent,
 } from "articollab";
 import {
@@ -377,6 +393,8 @@ doc.state.items.observe((event) => {
   for (const change of event.changes) {
     if (change.type === "set") {
       type SetValue = Expect<Equal<typeof change.value, string>>;
+    } else if (change.type === "move") {
+      type MovedValue = Expect<Equal<typeof change.value, string>>;
     } else {
       type Inserted = Expect<Equal<typeof change.insert, readonly string[]>>;
       // @ts-expect-error Inserted elements are readonly.
@@ -390,7 +408,7 @@ doc.state.items.observe((event) => {
 doc.state.items.observe("callback");
 doc.on("discard", (event) => {
   type Discard = Expect<Equal<typeof event, DiscardEvent<Operation>>>;
-  type Discarded = Expect<Equal<(typeof event.operations)[number], ListSetOperation<"items", string>>>;
+  type Discarded = Expect<Equal<(typeof event.operations)[number], ListSetOperation<"items", string> | ListMoveOperation<"items">>>;
   // @ts-expect-error Discarded operations are readonly.
   event.operations.push(event.operations[0]!);
 });
@@ -432,6 +450,10 @@ type ListPayload = Expect<Equal<Extract<Operation, { type: "list/insert" }>['val
 type ListSet = Expect<Equal<Extract<Operation, { type: "list/set" }>, ListSetOperation<"items", string>>>;
 type ListSetArgs = Expect<Equal<Parameters<typeof doc.state.items.set>, [index: number, value: string]>>;
 type ListSetResult = Expect<Equal<ReturnType<typeof doc.state.items.set>, void>>;
+type ListMoveArgs = Expect<Equal<Parameters<typeof doc.state.items.move>, [from: number, to: number]>>;
+type ListMove = Expect<Equal<Extract<Operation, { type: "list/move" }>, ListMoveOperation<"items">>>;
+type MoveChange = Expect<Equal<Extract<ListChange<string>, { type: "move" }>, { readonly type: "move"; readonly from: number; readonly to: number; readonly value: string }>>;
+type SnapshotMoves = Expect<Equal<ListSnapshotData<string>["moves"], readonly ListMoveEntry[] | undefined>>;
 type TextPath = Expect<Equal<Extract<Operation, { type: "text/insert" }>['path'], "body">>;
 type TextPayload = Expect<Equal<Extract<Operation, { type: "text/insert" }>['value'], string>>;
 type Snapshot = Expect<Equal<typeof snapshot, DocumentSnapshot<Shape>>>;

@@ -65,13 +65,13 @@
   <main>
     <header>
       <h1>Two writers, one board.</h1>
-      <p>Each column is a List of card IDs, and each card's title lives in a Map under its ID. Drag cards between
-        columns or use their buttons; edits are sent as you make them and the other writer receives them over a push
-        channel. Select a card to rename it.</p>
-      <p>A rename writes only the Map, so it never conflicts with a move. A move deletes the card's ID and inserts it
-        again, so the server applies a small policy: when two writers move the same card, the first move wins, and a
-        rename of a card someone else deleted is dropped and the writer is told. Turn a writer <strong>Offline</strong>
-        to try these races.</p>
+      <p>One List orders every card, and Maps hold each card's column and title. Drag cards between columns or use
+        their buttons; edits are sent as you make them and the other writer receives them over a push channel. Select a
+        card to rename it.</p>
+      <p>A move is a List move plus a column change, and a rename touches only the title, so they never conflict: when
+        two writers move the same card, the later move wins and the card never appears twice. Moving or renaming a card
+        someone else deleted is not saved, and the writer is told. Turn a writer <strong>Offline</strong> to try these
+        races.</p>
       <p>Each writer saves its edits in this browser as you make them, so reloading the page keeps edits that were not
         sent yet. A writer open in another tab stays locked there. This localhost prototype has no authentication, and
         the server keeps the document in memory: restarting it starts a new document.</p>

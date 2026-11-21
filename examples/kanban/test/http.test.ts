@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { IDBFactory } from "fake-indexeddb";
 import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../../dist/sync/index.js";
 import { createOfflineSwitch } from "../../sync-ui.js";
-import { addCard, Board, COLUMNS, deleteCard, findCard, lostRenames, moveCard, renameCard } from "../board.js";
+import { addCard, Board, cardsIn, COLUMNS, deleteCard, findCard, lostRenames, moveCard, renameCard } from "../board.js";
 import { createBoardServer, SEED_CARDS, startKanbanServer } from "../server.ts";
 
 /** Waits for `condition` with real timers: writers synchronize on their own. */
@@ -47,19 +47,20 @@ async function fixture(t: TestContext) {
     await sync.sync();
     await until(() => sync.push === "open", "the push channel");
     return { sync, network, lost,
-      board: () => [...COLUMNS.map((column) => sync.doc.state[column].toArray()), sync.doc.state.cards.toObject()],
+      board: () => [sync.doc.state.order.toArray(), sync.doc.state.columns.toObject(), sync.doc.state.titles.toObject()],
       settled: () => sync.doc.checkpoint().pendingBatches.length === 0 && sync.doc.checkpoint().snapshot.serverSeq === server.snapshot().serverSeq,
     };
   }
-  const serverBoard = () => { const { data } = server.snapshot(); return [...COLUMNS.map((column) => data[column].values), data.cards]; };
+  const serverBoard = () => { const { data } = server.snapshot(); return [data.order.values, data.columns, data.titles]; };
   return { host, server, connect, serverBoard };
 }
 
 describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
   it("starts from the seeded cards and converges both writers without explicit syncs", async (t) => {
     const f = await fixture(t), a = await f.connect(), b = await f.connect();
-    assert.deepEqual(COLUMNS.flatMap((column) => a.sync.doc.state[column].toArray()), SEED_CARDS.map(({ id }) => id));
-    assert.deepEqual(a.sync.doc.state.cards.toObject(), Object.fromEntries(SEED_CARDS.map(({ id, title }) => [id, { title }])));
+    assert.deepEqual(COLUMNS.flatMap((column) => cardsIn(a.sync.doc, column)), SEED_CARDS.map(({ id }) => id));
+    assert.deepEqual(a.sync.doc.state.titles.toObject(), Object.fromEntries(SEED_CARDS.map(({ id, title }) => [id, title])));
+    assert.deepEqual(COLUMNS.map((column) => cardsIn(a.sync.doc, column).length), [2, 1, 1]);
     moveCard(a.sync.doc, "seed-drag", "done", 0);
     addCard(b.sync.doc, "doing", "From B", "from-b");
     await until(() => a.settled() && b.settled() && f.server.snapshot().serverSeq === 6, "convergence");
@@ -79,7 +80,8 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
     void a.sync.sync().catch(() => {});
     await until(() => a.settled() && b.settled(), "convergence");
     for (const writer of [a, b]) {
-      assert.deepEqual(findCard(writer.sync.doc, "seed-tests"), { column: "done", index: 1, card: { id: "seed-tests", title: "Renamed offline" } });
+      const found = findCard(writer.sync.doc, "seed-tests");
+      assert.deepEqual([found?.column, found?.index, found?.card], ["done", 1, { id: "seed-tests", title: "Renamed offline" }]);
       assert.deepEqual(writer.board(), f.serverBoard());
     }
     assert.deepEqual(a.lost, []);
@@ -97,7 +99,7 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
     assert.deepEqual(a.lost, ["Lost rename"]);
     for (const writer of [a, b]) {
       assert.equal(findCard(writer.sync.doc, "seed-sketch"), undefined);
-      assert.equal(writer.sync.doc.state.cards.has("seed-sketch"), false);
+      assert.equal(writer.sync.doc.state.titles.has("seed-sketch"), false);
       assert.deepEqual(writer.board(), f.serverBoard());
     }
   });
@@ -148,13 +150,13 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Parses this example's fixed import map, which is independently checked by fetching every target.
     const map = JSON.parse(match[1]!) as { imports: Record<string, string> };
     for (const route of [...Object.values(map.imports), "/dist/index.js", "/dist/sync/index.js", "/kanban/page.js",
-      "/kanban/view.js", "/kanban/board.js", "/sync-ui.js"]) {
+      "/kanban/board.js", "/sync-ui.js"]) {
       const asset = await fetch(f.host.url + route);
       assert.equal(asset.status, 200, route);
       assert.equal(asset.headers.get("Content-Type"), "text/javascript; charset=utf-8");
       assert.ok((await asset.text()).length > 0);
     }
-    for (const route of ["/server.ts", "/kanban/policy.ts", "/kanban/server.ts", "/package.json", "/src/index.ts", "/sync/unknown"]) {
+    for (const route of ["/server.ts", "/kanban/view.js", "/kanban/policy.ts", "/kanban/server.ts", "/package.json", "/src/index.ts", "/sync/unknown"]) {
       const asset = await fetch(f.host.url + route); assert.equal(asset.status, 404, route); await asset.text();
     }
     const commits = await fetch(f.host.url + "/sync/commits?since=0");
@@ -165,7 +167,7 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
   });
 
   it("imports without DOM, fetch, registration or listening side effects", async () => {
-    const modules = ["server.ts", "page.js", "view.js", "board.js", "policy.ts", "../sync-ui.js"];
+    const modules = ["server.ts", "page.js", "board.js", "policy.ts", "../sync-ui.js"];
     const script = `
       const { Server } = await import("node:http");
       Server.prototype.listen = () => { throw new Error("Unexpected listen"); };

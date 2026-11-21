@@ -137,6 +137,10 @@ Your storage and subscription handoff are application responsibilities. Same URL
 
 The repository's browser recovery demo uses document-ID envelopes/headers and session storage. Those are application examples, not core wire fields or authentication. Neither ordinary checkpoint containers nor these examples promise power-loss durability or cross-file transactions.
 
+## Upgrading to List moves
+
+`List.move()` adds the `list/move` operation and, once a visible element has moved, an optional `moves` field in List snapshots. Snapshots without moved elements keep the old format, and new runtimes accept existing snapshots and checkpoints without conversion. Older runtimes reject both the operation and the field, so upgrade the server, every client and every other snapshot/checkpoint reader before any writer moves an element, following the same coordinated steps as the [0.4 upgrade](#upgrading-from-03-to-04). Once a saved snapshot or pending batch contains a move, a package downgrade is not enough: preserve the data and use compatible readers. Do not strip `moves` or rewrite moves as delete + insert to make old readers load it; that changes element identities.
+
 ## Upgrading from 0.7 to 0.8
 
 Version 0.8 adds [Map collections](collections.md) and optional [Sync Client checkpoint stores](sync.md#persist-checkpoints). Existing 0.7.2 snapshots and checkpoints for Value, List and Text can be restored with the same schema, document lineage and open writer sessions. Back up both sides, stop the old writers, then restore and catch up before resuming edits. Pending batches keep their original sequence numbers.

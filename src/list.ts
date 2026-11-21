@@ -20,9 +20,17 @@ export interface SavedIdRange {
   readonly isDeleted: boolean;
 }
 
+/** A moved element: its permanent ID and the position ID it occupies now. */
+export interface ListMoveEntry {
+  readonly id: Readonly<ElementId>;
+  readonly position: Readonly<ElementId>;
+}
+
 export interface ListSnapshotData<T extends JsonValue = JsonValue> {
   readonly idList: readonly SavedIdRange[];
   readonly values: readonly T[];
+  /** Visible elements that were moved; omitted when there are none. */
+  readonly moves?: readonly ListMoveEntry[];
 }
 
 export interface ListInsertOperation<
@@ -52,12 +60,27 @@ export interface ListSetOperation<
   readonly value: T;
 }
 
+/**
+ * Moves element `id` to a new position after `before`. `position` is a new ID from the mover's
+ * namespace; `id` keeps identifying the element for later sets, deletes and moves.
+ */
+export interface ListMoveOperation<Path extends string = string> {
+  readonly type: "list/move";
+  readonly path: Path;
+  readonly id: Readonly<ElementId>;
+  readonly before: Readonly<ElementId> | null;
+  readonly position: Readonly<ElementId>;
+}
+
 export type ListOperation<
   Path extends string = string,
   T extends JsonValue = JsonValue,
-> = ListInsertOperation<Path, T> | ListDeleteOperation<Path> | ListSetOperation<Path, T>;
+> = ListInsertOperation<Path, T> | ListDeleteOperation<Path> | ListSetOperation<Path, T> | ListMoveOperation<Path>;
 
-/** A visible List edit in pre-event index coordinates. */
+/**
+ * A visible List edit. Apply an event's changes in order; each index refers to the view after the
+ * changes before it. A move removes the element at `from` and reinserts it so it ends at `to`.
+ */
 export type ListChange<T extends JsonValue = JsonValue> =
   | {
     readonly type: "splice";
@@ -65,7 +88,10 @@ export type ListChange<T extends JsonValue = JsonValue> =
     readonly deleteCount: number;
     readonly insert: readonly T[];
   }
-  | { readonly type: "set"; readonly index: number; readonly value: T };
+  | { readonly type: "set"; readonly index: number; readonly value: T }
+  | { readonly type: "move"; readonly from: number; readonly to: number; readonly value: T };
+
+type IndexedChange<T extends JsonValue> = Exclude<ListChange<T>, { readonly type: "move" }>;
 
 export interface ListChangeEvent<T extends JsonValue = JsonValue> {
   readonly beforeLength: number;
@@ -81,9 +107,11 @@ export interface List<T extends JsonValue> extends Iterable<T> {
   insert(index: number, value: T): void;
   push(value: T): void;
   delete(index: number): void;
+  /** Moves the element at `from` so that it ends at index `to`, keeping its identity. */
+  move(from: number, to: number): void;
   values(): IterableIterator<T>;
   toArray(): T[];
-  /** Subscribes from the current view; changes use descending pre-event indices, sets first at a tie. */
+  /** Subscribes from the current view; apply each event's changes in order. */
   observe(listener: (event: ListChangeEvent<T>) => void): () => void;
   /** A stable position for the gap before `index`; "left" binds to the element before it. */
   cursorAt(index: number, bind?: "left" | "right"): Cursor;
@@ -91,20 +119,27 @@ export interface List<T extends JsonValue> extends Iterable<T> {
   cursorIndex(cursor: Cursor): number | undefined;
 }
 
-/** Descending pre-event indices; at one index a set applies before a splice that may insert there. */
+/**
+ * Moves first, in order; then descending indices, where at one index a set applies before a splice
+ * that may insert there. Applying the changes in order therefore always keeps indices valid.
+ */
 function listChangeEvent<T extends JsonValue>(
-  beforeLength: number, afterLength: number, changes: ListChange<T>[]
+  beforeLength: number, afterLength: number, changes: IndexedChange<T>[], moves: ListChange<T>[] = []
 ): ListChangeEvent<T> {
   changes.sort((left, right) => right.index - left.index ||
     (left.type === right.type ? 0 : left.type === "set" ? -1 : 1));
-  return Object.freeze({ beforeLength, afterLength, changes: Object.freeze(changes) });
+  return Object.freeze({ beforeLength, afterLength, changes: Object.freeze([...moves, ...changes]) });
 }
 
-function spliceChange<T extends JsonValue>(index: number, deleteCount: number, insert: T[]): ListChange<T> {
+function moveChange<T extends JsonValue>(from: number, to: number, value: T): ListChange<T> {
+  return Object.freeze({ type: "move", from, to, value });
+}
+
+function spliceChange<T extends JsonValue>(index: number, deleteCount: number, insert: T[]): IndexedChange<T> {
   return Object.freeze({ type: "splice", index, deleteCount, insert: Object.freeze(insert) });
 }
 
-function setChange<T extends JsonValue>(index: number, value: T): ListChange<T> {
+function setChange<T extends JsonValue>(index: number, value: T): IndexedChange<T> {
   return Object.freeze({ type: "set", index, value });
 }
 
@@ -114,6 +149,15 @@ function idKey(id: Readonly<ElementId>): string {
 
 function ownId(id: Readonly<ElementId>): Readonly<ElementId> {
   return Object.freeze({ bunchId: id.bunchId, counter: id.counter });
+}
+
+function requireElementId(value: unknown, name: string): ElementId {
+  const record = requireObject(value, name) as { readonly bunchId?: unknown; readonly counter?: unknown };
+  if (typeof record.bunchId !== "string" || record.bunchId.length === 0 ||
+    typeof record.counter !== "number" || !Number.isSafeInteger(record.counter) || record.counter < 0) {
+    throw new Error(`${name} must be an element ID`);
+  }
+  return { bunchId: record.bunchId, counter: record.counter };
 }
 
 function requireObject(value: unknown, name: string): object {
@@ -171,17 +215,30 @@ export function loadIdList(
   return IdList.load(saved);
 }
 
-/** Internal persistent state for one List collection. */
+/**
+ * Internal persistent state for one List collection.
+ *
+ * An element's ID is permanent: sets, deletes and moves name it. Its position ID is where it sits
+ * in the IdList now. They are equal until the element moves; `positionOf`/`logicalOf` hold the
+ * pairs for visible moved elements only, so a deleted element falls back to its original,
+ * tombstoned position and reads as known but absent.
+ */
 export class ListState<T extends JsonValue> {
   private readonly idList: IdList;
   private readonly valuesById: HamtMap<T>;
+  private readonly positionOf: HamtMap<Readonly<ElementId>>;
+  private readonly logicalOf: HamtMap<Readonly<ElementId>>;
 
   private constructor(
     idList: IdList,
-    valuesById: HamtMap<T>
+    valuesById: HamtMap<T>,
+    positionOf: HamtMap<Readonly<ElementId>> = HamtMap.empty(),
+    logicalOf: HamtMap<Readonly<ElementId>> = HamtMap.empty()
   ) {
     this.idList = idList;
     this.valuesById = valuesById;
+    this.positionOf = positionOf;
+    this.logicalOf = logicalOf;
   }
 
   static empty<T extends JsonValue>(): ListState<T> {
@@ -206,11 +263,48 @@ export class ListState<T extends JsonValue> {
       );
     }
 
+    let positionOf = HamtMap.empty<Readonly<ElementId>>();
+    let logicalOf = HamtMap.empty<Readonly<ElementId>>();
+    if (data.moves !== undefined) {
+      if (!Array.isArray(data.moves)) throw new Error("List snapshot moves must be an array");
+      const entries: readonly unknown[] = data.moves;
+      const moves = entries.map((entry, index) => {
+        const record = requireObject(entry, `List snapshot move ${index}`) as { readonly id?: unknown; readonly position?: unknown };
+        const id = requireElementId(record.id, `List snapshot move ${index} id`);
+        const position = requireElementId(record.position, `List snapshot move ${index} position`);
+        if (!idList.isKnown(id) || idList.has(id)) {
+          throw new Error(`List snapshot move ${index} id must be a known, moved element`);
+        }
+        if (!idList.has(position)) throw new Error(`List snapshot move ${index} position must be visible`);
+        return { id: ownId(id), position: ownId(position) };
+      });
+      positionOf = positionOf.mutate((draft) => {
+        for (const { id, position } of moves) {
+          if (draft.get(idKey(id)) !== undefined) throw new Error(`Duplicate moved list element: ${idKey(id)}`);
+          draft.set(idKey(id), position);
+        }
+      });
+      logicalOf = logicalOf.mutate((draft) => {
+        for (const { id, position } of moves) {
+          if (draft.get(idKey(position)) !== undefined) throw new Error(`Duplicate list move position: ${idKey(position)}`);
+          draft.set(idKey(position), id);
+        }
+      });
+      // A moved element's position must not also be another element's original ID.
+      for (const { position } of moves) {
+        if (positionOf.get(idKey(position)) !== undefined) {
+          throw new Error(`List move position is also a moved element: ${idKey(position)}`);
+        }
+      }
+    }
+
     const valuesById = HamtMap.empty<T>().mutate((draft) => {
       let index = 0;
-      for (const id of idList) draft.set(idKey(id), snapshot.values[index++]!);
+      for (const position of idList) {
+        draft.set(idKey(logicalOf.get(idKey(position)) ?? position), snapshot.values[index++]!);
+      }
     });
-    return new ListState(idList, valuesById);
+    return new ListState(idList, valuesById, positionOf, logicalOf);
   }
 
   get length(): number {
@@ -218,16 +312,22 @@ export class ListState<T extends JsonValue> {
   }
 
   get(index: number): T {
-    return this.valueFor(this.idList.at(index));
+    return this.valueFor(this.logicalAt(index));
   }
 
-  idAt(index: number): ElementId {
+  /** The permanent ID of the element at `index`: the target of set, delete and move. */
+  logicalAt(index: number): Readonly<ElementId> {
+    return this.logicalFor(this.idList.at(index));
+  }
+
+  /** The position ID at `index`: an insertion anchor. */
+  positionAt(index: number): ElementId {
     return this.idList.at(index);
   }
 
   /** Whether the element is visible, as opposed to unknown or deleted. */
   has(id: Readonly<ElementId>): boolean {
-    return this.idList.has(id);
+    return this.idList.has(this.positionFor(id));
   }
 
   cursorAt(index: number, bind?: Cursor["bind"]): Cursor {
@@ -253,30 +353,59 @@ export class ListState<T extends JsonValue> {
 
     const nextIdList = this.idList.insertAfter(operation.before, operation.id);
     const nextValues = this.valuesById.set(idKey(operation.id), operation.value);
-    return new ListState(nextIdList, nextValues);
+    return new ListState(nextIdList, nextValues, this.positionOf, this.logicalOf);
   }
 
   delete(operation: ListDeleteOperation): ListState<T> {
-    if (!this.idList.isKnown(operation.id)) {
-      throw new CollectionConflictError(`Unknown list element id: ${idKey(operation.id)}`);
-    }
-    if (!this.idList.has(operation.id)) return this;
+    this.requireTarget(operation.id);
+    const position = this.positionFor(operation.id);
+    if (!this.idList.has(position)) return this;
 
-    const nextValues = this.valuesById.delete(idKey(operation.id));
-    return new ListState(this.idList.delete(operation.id), nextValues);
+    const key = idKey(operation.id);
+    const moved = this.positionOf.get(key) !== undefined;
+    return new ListState(this.idList.delete(position), this.valuesById.delete(key),
+      moved ? this.positionOf.delete(key) : this.positionOf,
+      moved ? this.logicalOf.delete(idKey(position)) : this.logicalOf);
   }
 
   set(operation: ListSetOperation<string, T>): ListState<T> {
-    if (!this.idList.isKnown(operation.id)) {
-      throw new CollectionConflictError(`Unknown list element id: ${idKey(operation.id)}`);
-    }
-    if (!this.idList.has(operation.id) || Object.is(this.valueFor(operation.id), operation.value)) return this;
+    this.requireTarget(operation.id);
+    if (!this.has(operation.id) || Object.is(this.valueFor(operation.id), operation.value)) return this;
 
-    return new ListState(this.idList, this.valuesById.set(idKey(operation.id), operation.value));
+    return new ListState(this.idList, this.valuesById.set(idKey(operation.id), operation.value),
+      this.positionOf, this.logicalOf);
+  }
+
+  /**
+   * Inserts the new position after `before` and, when the element is visible, retires its old position.
+   * Moving a deleted element still records the position, as a tombstone, so later anchors resolve.
+   */
+  move(operation: ListMoveOperation): ListState<T> {
+    if (operation.before !== null && !this.idList.isKnown(operation.before)) {
+      throw new CollectionConflictError(`Unknown list move anchor: ${idKey(operation.before)}`);
+    }
+    if (this.idList.isKnown(operation.position)) {
+      throw new CollectionConflictError(`Duplicate list element id: ${idKey(operation.position)}`);
+    }
+    this.requireTarget(operation.id);
+    const inserted = this.idList.insertAfter(operation.before, operation.position);
+    if (!this.has(operation.id)) {
+      return new ListState(inserted.delete(operation.position), this.valuesById, this.positionOf, this.logicalOf);
+    }
+    const key = idKey(operation.id);
+    const previous = this.positionFor(operation.id);
+    const position = ownId(operation.position);
+    return new ListState(inserted.delete(previous), this.valuesById,
+      this.positionOf.set(key, position),
+      this.logicalOf.delete(idKey(previous)).set(idKey(position), ownId(operation.id)));
   }
 
   *values(): IterableIterator<T> {
-    for (const id of this.idList) yield this.valueFor(id);
+    if (this.logicalOf.size === 0) {
+      for (const id of this.idList) yield this.valueFor(id);
+      return;
+    }
+    for (const position of this.idList) yield this.valueFor(this.logicalFor(position));
   }
 
   toArray(): T[] {
@@ -284,11 +413,12 @@ export class ListState<T extends JsonValue> {
   }
 
   visibleValueEquals(other: ListState<T>, id: Readonly<ElementId>): boolean {
-    const present = this.idList.has(id);
-    if (present !== other.idList.has(id)) return false;
+    const present = this.has(id);
+    if (present !== other.has(id)) return false;
     return !present || Object.is(this.valueFor(id), other.valueFor(id));
   }
 
+  /** Same elements, by permanent ID, in the same order with the same values. */
   visibleEquals(other: ListState<T>): boolean {
     if (this === other) return true;
     if (this.length !== other.length) return false;
@@ -301,15 +431,9 @@ export class ListState<T extends JsonValue> {
       if (leftNext.done || rightNext.done) {
         return leftNext.done === rightNext.done;
       }
-      if (!equalsId(leftNext.value, rightNext.value)) return false;
-      if (
-        !Object.is(
-          this.valueFor(leftNext.value),
-          other.valueFor(rightNext.value)
-        )
-      ) {
-        return false;
-      }
+      const leftId = this.logicalFor(leftNext.value), rightId = other.logicalFor(rightNext.value);
+      if (!equalsId(leftId, rightId)) return false;
+      if (!Object.is(this.valueFor(leftId), other.valueFor(rightId))) return false;
     }
   }
 
@@ -324,19 +448,19 @@ export class ListState<T extends JsonValue> {
     const seen = new Set<string>();
     const removed: Array<{ index: number; value: T }> = [];
     const inserted: Array<{ index: number; value: T }> = [];
-    const changes: ListChange<T>[] = [];
+    const changes: IndexedChange<T>[] = [];
     for (const id of targets) {
       const key = idKey(id);
       if (seen.has(key)) continue;
       seen.add(key);
-      const before = this.idList.has(id), after = other.idList.has(id);
+      const before = this.has(id), after = other.has(id);
       if (before && after) {
         const value = other.valueFor(id);
-        if (!Object.is(this.valueFor(id), value)) changes.push(setChange(this.idList.indexOf(id), value));
+        if (!Object.is(this.valueFor(id), value)) changes.push(setChange(this.indexOf(id), value));
       } else if (before) {
-        removed.push({ index: this.idList.indexOf(id), value: this.valueFor(id) });
+        removed.push({ index: this.indexOf(id), value: this.valueFor(id) });
       } else if (after) {
-        inserted.push({ index: other.idList.indexOf(id), value: other.valueFor(id) });
+        inserted.push({ index: other.indexOf(id), value: other.valueFor(id) });
       }
     }
     removed.sort((a, b) => a.index - b.index);
@@ -374,10 +498,16 @@ export class ListState<T extends JsonValue> {
     return listChangeEvent(this.length, other.length, changes);
   }
 
-  /** Same-ID prefix/suffix become sets; the middle becomes one value-trimmed splice. */
+  /** Permanent IDs in visible order. */
+  private logicalIds(): Readonly<ElementId>[] {
+    return [...this.idList].map((position) => this.logicalFor(position));
+  }
+
+  /** Without moves: same-ID prefix/suffix become sets and the middle one value-trimmed splice. */
   private fullChangesTo(other: ListState<T>): ListChangeEvent<T> {
-    const beforeIds = [...this.idList], afterIds = [...other.idList];
-    const changes: ListChange<T>[] = [];
+    const beforeIds = this.logicalIds(), afterIds = other.logicalIds();
+    if (reordered(beforeIds, afterIds)) return this.movedChangesTo(other, beforeIds, afterIds);
+    const changes: IndexedChange<T>[] = [];
     let start = 0;
     while (start < beforeIds.length && start < afterIds.length && equalsId(beforeIds[start]!, afterIds[start]!)) {
       const value = other.valueFor(afterIds[start]!);
@@ -404,12 +534,90 @@ export class ListState<T extends JsonValue> {
     return listChangeEvent(this.length, other.length, changes);
   }
 
+  /**
+   * With moves: first move the elements outside the longest run of survivors already in order,
+   * each in its final order, so survivors line up; then remove, insert and set like a merge.
+   */
+  private movedChangesTo(
+    other: ListState<T>, beforeIds: readonly Readonly<ElementId>[], afterIds: readonly Readonly<ElementId>[]
+  ): ListChangeEvent<T> {
+    const afterIndex = new Map(afterIds.map((id, index) => [idKey(id), index]));
+    const beforeKeys = new Set(beforeIds.map(idKey));
+    const survivors = beforeIds.filter((id) => afterIndex.has(idKey(id)));
+    const stay = longestIncreasing(survivors.map((id) => afterIndex.get(idKey(id))!)).map((at) => idKey(survivors[at]!));
+    const placed = new Set(stay);
+    const working = [...beforeIds];
+    const moves: ListChange<T>[] = [];
+    for (const id of afterIds) {
+      const key = idKey(id);
+      if (!beforeKeys.has(key) || placed.has(key)) continue;
+      const from = working.findIndex((entry) => idKey(entry) === key);
+      working.splice(from, 1);
+      // After the nearest earlier survivor that is already in place, or first.
+      let to = 0;
+      for (let at = afterIndex.get(key)! - 1; at >= 0; at--) {
+        const previous = idKey(afterIds[at]!);
+        if (!placed.has(previous)) continue;
+        to = working.findIndex((entry) => idKey(entry) === previous) + 1;
+        break;
+      }
+      working.splice(to, 0, id);
+      placed.add(key);
+      moves.push(moveChange(from, to, this.valueFor(id)));
+    }
+    // Survivors now share one order; merge the rest in working coordinates.
+    const changes: IndexedChange<T>[] = [];
+    let i = 0, j = 0;
+    while (i < working.length || j < afterIds.length) {
+      const start = i, gone: number[] = [], insert: T[] = [];
+      while (i < working.length && !afterIndex.has(idKey(working[i]!))) { gone.push(i); i++; }
+      while (j < afterIds.length && !beforeKeys.has(idKey(afterIds[j]!))) { insert.push(other.valueFor(afterIds[j]!)); j++; }
+      if (gone.length > 0 || insert.length > 0) changes.push(spliceChange(start, gone.length, insert));
+      if (i < working.length && j < afterIds.length) {
+        const value = other.valueFor(afterIds[j]!);
+        if (!Object.is(this.valueFor(working[i]!), value)) changes.push(setChange(i, value));
+        i++; j++;
+      }
+    }
+    return listChangeEvent(this.length, other.length, changes, moves);
+  }
+
   save(): ListSnapshotData<T> {
     const idList = Object.freeze(
       this.idList.save().map((range) => Object.freeze({ ...range }))
     );
     const values = Object.freeze(this.toArray());
-    return Object.freeze({ idList, values });
+    if (this.positionOf.size === 0) return Object.freeze({ idList, values });
+    const moves: ListMoveEntry[] = [];
+    for (const position of this.idList) {
+      const id = this.logicalOf.get(idKey(position));
+      if (id !== undefined) moves.push(Object.freeze({ id, position: ownId(position) }));
+    }
+    return Object.freeze({ idList, values, moves: Object.freeze(moves) });
+  }
+
+  /**
+   * Set, delete and move name an element by its permanent ID. A visible move position is not one:
+   * targeting it would detach the moved element from its value, so it is as unknown as any other ID.
+   * A retired position is a known tombstone, so naming it is a harmless no-op.
+   */
+  private requireTarget(id: Readonly<ElementId>): void {
+    if (!this.idList.isKnown(id) || (this.logicalOf.size !== 0 && this.logicalOf.get(idKey(id)) !== undefined)) {
+      throw new CollectionConflictError(`Unknown list element id: ${idKey(id)}`);
+    }
+  }
+
+  // Lists that never moved an element skip the lookups, and their key strings, entirely.
+  private positionFor(id: Readonly<ElementId>): Readonly<ElementId> {
+    return this.positionOf.size === 0 ? id : this.positionOf.get(idKey(id)) ?? id;
+  }
+
+  private logicalFor(position: Readonly<ElementId>): Readonly<ElementId> {
+    return this.logicalOf.size === 0 ? position : this.logicalOf.get(idKey(position)) ?? position;
+  }
+
+  private indexOf(id: Readonly<ElementId>): number {
+    return this.idList.indexOf(this.positionFor(id));
   }
 
   private valueFor(id: Readonly<ElementId>): T {
@@ -422,6 +630,31 @@ export class ListState<T extends JsonValue> {
   }
 }
 
+/** Whether the elements both lists contain appear in a different relative order. */
+function reordered(before: readonly Readonly<ElementId>[], after: readonly Readonly<ElementId>[]): boolean {
+  const afterKeys = new Set(after.map(idKey)), beforeKeys = new Set(before.map(idKey));
+  const left = before.filter((id) => afterKeys.has(idKey(id)));
+  const right = after.filter((id) => beforeKeys.has(idKey(id)));
+  return left.some((id, index) => !equalsId(id, right[index]!));
+}
+
+/** Indices of one longest strictly increasing subsequence, in order. O(n log n). */
+function longestIncreasing(values: readonly number[]): number[] {
+  const tails: number[] = [], previous = new Array<number>(values.length).fill(-1);
+  for (const [index, value] of values.entries()) {
+    let low = 0, high = tails.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (values[tails[middle]!]! < value) low = middle + 1; else high = middle;
+    }
+    if (low > 0) previous[index] = tails[low - 1]!;
+    tails[low] = index;
+  }
+  const result: number[] = [];
+  for (let at = tails.at(-1) ?? -1; at !== -1; at = previous[at]!) result.push(at);
+  return result.reverse();
+}
+
 export function freezeListOperation<
   Path extends string,
   T extends JsonValue,
@@ -432,6 +665,9 @@ export function freezeListOperation<Path extends string>(
 export function freezeListOperation<Path extends string, T extends JsonValue>(
   operation: ListSetOperation<Path, T>
 ): ListSetOperation<Path, T>;
+export function freezeListOperation<Path extends string>(
+  operation: ListMoveOperation<Path>
+): ListMoveOperation<Path>;
 export function freezeListOperation<
   Path extends string,
   T extends JsonValue,
@@ -452,6 +688,10 @@ export function freezeListOperation<
   if (operation.type === "list/set") {
     return Object.freeze({ type: operation.type, path: operation.path,
       id: ownId(operation.id), value: operation.value });
+  }
+  if (operation.type === "list/move") {
+    return Object.freeze({ type: operation.type, path: operation.path, id: ownId(operation.id),
+      before: operation.before === null ? null : ownId(operation.before), position: ownId(operation.position) });
   }
   return Object.freeze({
     type: operation.type,
@@ -518,7 +758,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
     this.beforeMutation();
     validateJsonValue(value, [this.path]);
     const operation = freezeListOperation({
-      type: "list/set", path: this.path, id: this.current.idAt(index), value,
+      type: "list/set", path: this.path, id: this.current.logicalAt(index), value,
     });
     this.current = this.current.set(operation);
     this.mutate(operation);
@@ -531,7 +771,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
 
     this.beforeMutation();
     validateJsonValue(value, [this.path]);
-    const before = index === 0 ? null : this.current.idAt(index - 1);
+    const before = index === 0 ? null : this.current.positionAt(index - 1);
     const operation = freezeListOperation({
       type: "list/insert",
       path: this.path,
@@ -556,9 +796,32 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
     const operation = freezeListOperation({
       type: "list/delete",
       path: this.path,
-      id: this.current.idAt(index),
+      id: this.current.logicalAt(index),
     });
     this.current = this.current.delete(operation);
+    this.mutate(operation);
+  }
+
+  move(from: number, to: number): void {
+    for (const [name, index] of [["from", from], ["to", to]] as const) {
+      if (!Number.isSafeInteger(index) || index < 0 || index >= this.length) {
+        throw new Error(`Index out of bounds: ${name} ${index} (length: ${this.length})`);
+      }
+    }
+    if (from === to) return;
+
+    this.beforeMutation();
+    // The anchor is the element that will precede it once it is taken out of the list.
+    const anchorIndex = to - 1 < from ? to - 1 : to;
+    const before = to === 0 ? null : this.current.positionAt(anchorIndex);
+    const operation = freezeListOperation({
+      type: "list/move",
+      path: this.path,
+      id: this.current.logicalAt(from),
+      before,
+      position: this.idGenerator.generateAfter(before),
+    });
+    this.current = this.current.move(operation);
     this.mutate(operation);
   }
 
@@ -582,9 +845,10 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
     return this.observers.observe(listener);
   }
 
-  /** Every List operation changes at most the visibility or value of its own target ID. */
+  /** Inserts, sets and deletes change at most their own element; a move reorders the List. */
   track(operation: ListOperation): void {
-    this.observers.track([operation.id]);
+    if (operation.type === "list/move") this.observers.requireFullComparison();
+    else this.observers.track([operation.id]);
   }
 
   requireFullComparison(): void {

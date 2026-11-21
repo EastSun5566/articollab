@@ -28,6 +28,15 @@ function mirror<T extends Item>(items: List<T>, callback?: (event: ListChangeEve
     let previous: { index: number; type: string } | undefined;
     for (const change of event.changes) {
       assert.ok(Object.isFrozen(change));
+      if (change.type === "move") {
+        assert.equal(previous, undefined, "moves come before every splice and set");
+        assert.ok(change.from >= 0 && change.from < elements.length && change.to >= 0 && change.to < elements.length);
+        assert.notEqual(change.from, change.to);
+        assert.ok(Object.is(elements[change.from], change.value), "a move carries the moved value");
+        const moved = elements.toSpliced(change.from, 1);
+        elements = moved.toSpliced(change.to, 0, change.value);
+        continue;
+      }
       if (previous !== undefined) {
         assert.ok(change.index < previous.index ||
           (change.index === previous.index && previous.type === "set" && change.type === "splice"),
@@ -74,6 +83,61 @@ function setup() {
 }
 
 describe("List visible changes", () => {
+  it("reports a local move as one move change and a peer's move as a move too", () => {
+    const net = setup();
+    const a = net.client(), b = net.client();
+    a.doc.transact(() => { for (const item of ["a", "b", "c", "d"]) a.doc.state.items.push(item); });
+    net.server.receive(a.batches.shift()!);
+    net.catchUp(b.doc);
+    const local = mirror(a.doc.state.items), remote = mirror(b.doc.state.items);
+    a.doc.state.items.move(0, 2);
+    assert.deepEqual(local.events.at(-1)!.changes, [{ type: "move", from: 0, to: 2, value: "a" }]);
+    net.server.receive(a.batches.shift()!);
+    net.catchUp(a.doc);
+    assert.equal(local.events.length, 1, "the exact acknowledgement is silent");
+    net.catchUp(b.doc);
+    assert.deepEqual(remote.events.at(-1)!.changes, [{ type: "move", from: 0, to: 2, value: "a" }]);
+    assert.deepEqual(remote.elements, ["b", "c", "a", "d"]);
+  });
+
+  it("orders moves before splices and sets when one event mixes them", () => {
+    const net = setup();
+    const a = net.client(), b = net.client();
+    a.doc.transact(() => { for (const item of ["a", "b", "c", "d", "e"]) a.doc.state.items.push(item); });
+    net.server.receive(a.batches.shift()!);
+    net.catchUp(b.doc);
+    const view = mirror(b.doc.state.items);
+    a.doc.transact(() => {
+      const items = a.doc.state.items;
+      items.move(4, 0); // e first
+      items.set(2, "B!"); // b
+      items.delete(3); // c
+      items.insert(1, "new");
+      items.move(4, 2); // d
+    });
+    net.server.receive(a.batches.shift()!);
+    net.catchUp(b.doc);
+    const changes = view.events.at(-1)!.changes;
+    assert.ok(changes.some(({ type }) => type === "move"));
+    assert.deepEqual(view.elements, a.doc.state.items.toArray());
+    assert.deepEqual(b.doc.state.items.toArray(), ["e", "new", "d", "a", "B!"]);
+  });
+
+  it("reports a rejected own move as a move back", () => {
+    const net = setup();
+    const a = net.client();
+    a.doc.transact(() => { for (const item of ["a", "b", "c"]) a.doc.state.items.push(item); });
+    net.server.receive(a.batches.shift()!);
+    net.catchUp(a.doc);
+    const view = mirror(a.doc.state.items);
+    a.doc.state.items.move(0, 2);
+    net.setMode("reject");
+    net.server.receive(a.batches.shift()!);
+    net.catchUp(a.doc);
+    assert.deepEqual(view.events.map(({ changes }) => changes.map(({ type }) => type)), [["move"], ["move"]]);
+    assert.deepEqual(view.elements, ["a", "b", "c"]);
+  });
+
   it("starts at the current view and emits frozen splice and set changes in original coordinates", () => {
     const { doc } = setup().client();
     doc.state.items.push("a"); doc.state.items.push("b");
@@ -363,9 +427,10 @@ describe("List visible changes", () => {
           const items = target.doc.state.items;
           target.doc.transact(() => {
             for (let edits = random(3) + 1; edits > 0; edits--) {
-              const choice = random(3);
+              const choice = random(4);
               if (choice === 0 && items.length > 0) items.delete(random(items.length));
               else if (choice === 1 && items.length > 0) items.set(random(items.length), item());
+              else if (choice === 2 && items.length > 1) items.move(random(items.length), random(items.length));
               else items.insert(random(items.length + 1), item());
             }
           });

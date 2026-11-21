@@ -2,9 +2,8 @@
 import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../dist/sync/index.js";
 import { createOfflineSwitch, describeSync } from "../sync-ui.js";
 import {
-  addCard, Board, cardFor, COLUMNS, createSelection, deleteCard, findCard, lostRenames, moveCard, renameCard,
+  addCard, Board, cardFor, cardsIn, COLUMNS, createSelection, deleteCard, findCard, lostRenames, moveCard, renameCard,
 } from "./board.js";
-import { observeColumn } from "./view.js";
 
 /** @typedef {import("./board.js").Card} Card */
 /** @typedef {import("./board.js").Column} Column */
@@ -163,8 +162,9 @@ export async function mountKanban(root, url) {
 }
 
 /**
- * One writer's board. Columns render through `observeColumn`; the selection is re-read after every
- * change, once the observers have updated the DOM.
+ * One writer's board. Observers of `order` and `columns` schedule one render per microtask, which
+ * places each card's row in its column and reuses rows, so a moved card keeps its row; titles update
+ * in place. The selection is re-read after each render.
  * @param {HTMLElement} parent @param {string} name @param {BoardSync} sync
  * @param {ReturnType<typeof createOfflineSwitch>} network
  * @param {number} [restored] Pending batches restored from the store, for a notice.
@@ -206,12 +206,29 @@ function mountWriter(parent, name, sync, network, restored = 0) {
     lists.set(column, list);
     container.append(title, form, list);
     columns.append(container);
-    // Columns hold card IDs; the title comes from the `cards` Map, which observers below keep current.
-    cleanups.push(observeColumn(doc.state[column], {
-      insert(index, cardId) { list.insertBefore(renderCard(cardFor(doc, cardId)), list.children[index] ?? null); },
-      remove(index) { list.children[index]?.remove(); },
-      update(index, cardId) { const item = list.children[index]; if (item !== undefined) updateCard(item, cardFor(doc, cardId)); },
-    }));
+  }
+
+  /** Places each card's row in its column in board order, reusing existing rows. */
+  function renderColumns() {
+    /** @type {Map<string, HTMLLIElement>} */
+    const rows = new Map();
+    for (const item of columns.querySelectorAll("li.card")) {
+      if (item instanceof HTMLLIElement && item.dataset.cardId !== undefined) rows.set(item.dataset.cardId, item);
+    }
+    for (const column of COLUMNS) {
+      const list = lists.get(column);
+      if (list === undefined) continue;
+      const ids = cardsIn(doc, column);
+      ids.forEach((id, index) => {
+        const existing = rows.get(id);
+        rows.delete(id);
+        const item = existing ?? renderCard(cardFor(doc, id));
+        if (existing !== undefined) updateCard(item, cardFor(doc, id));
+        if (list.children[index] !== item) list.insertBefore(item, list.children[index] ?? null);
+      });
+      // Rows past the column's cards belong to another column, which re-attaches them, or were deleted.
+      while (list.children.length > ids.length) list.lastElementChild?.remove();
+    }
   }
 
   const editor = element("form", "rename");
@@ -261,6 +278,7 @@ function mountWriter(parent, name, sync, network, restored = 0) {
   function refreshSelection() {
     scheduled = false;
     if (stopped) return;
+    renderColumns();
     const current = selection.resolve();
     for (const item of columns.querySelectorAll("li.card")) {
       if (!(item instanceof HTMLLIElement)) continue;
@@ -286,13 +304,13 @@ function mountWriter(parent, name, sync, network, restored = 0) {
       const found = findCard(doc, cardId);
       if (found === undefined) return;
       const position = COLUMNS.indexOf(found.column);
-      const length = doc.state[found.column].length;
+      const length = cardsIn(doc, found.column).length;
       if (action === "delete") { selection.select(cardId); deleteCard(doc, cardId); return; }
       if (action === "up" && found.index > 0) moveCard(doc, cardId, found.column, found.index - 1);
       if (action === "down" && found.index < length - 1) moveCard(doc, cardId, found.column, found.index + 2);
       const next = COLUMNS[position + (action === "left" ? -1 : action === "right" ? 1 : 0)];
       if (next !== undefined && next !== found.column) {
-        moveCard(doc, cardId, next, Math.min(found.index, doc.state[next].length));
+        moveCard(doc, cardId, next, Math.min(found.index, cardsIn(doc, next).length));
       }
       selection.select(cardId);
       refocus = { cardId, action };
@@ -402,14 +420,22 @@ function mountWriter(parent, name, sync, network, restored = 0) {
       notify(`Not saved: “${card.title}”. Another writer deleted this card.`);
     }
   });
-  // Titles live in the `cards` Map: update the card's row in place, wherever it is.
-  cleanups.push(doc.state.cards.observe(({ changes }) => {
+  // A move of a card a peer deleted first changed nothing; the server reports it on acknowledgement.
+  const stopDiscard = doc.on("discard", ({ operations }) => {
+    for (const operation of operations) {
+      if (operation.type === "list/move") notify("Not moved: another writer deleted that card.");
+    }
+  });
+  cleanups.push(doc.state.order.observe(schedule), doc.state.columns.observe(schedule));
+  // Titles live in `titles`: update the card's row in place, wherever it is.
+  cleanups.push(doc.state.titles.observe(({ changes }) => {
     for (const change of changes) {
       if (change.type !== "set") continue;
       const item = columns.querySelector(`li[data-card-id="${CSS.escape(change.key)}"]`);
-      if (item !== null) updateCard(item, { id: change.key, title: change.value.title });
+      if (item !== null) updateCard(item, { id: change.key, title: change.value });
     }
   }));
+  renderColumns();
   const stopStatus = sync.on("status", refresh), stopPush = sync.on("push", refresh);
   const onOffline = () => {
     network.set(offline.checked);
@@ -432,7 +458,7 @@ function mountWriter(parent, name, sync, network, restored = 0) {
     stopped = true;
     sync.stop();
     for (const cleanup of cleanups) cleanup();
-    stopChange(); stopStatus(); stopPush();
+    stopChange(); stopDiscard(); stopStatus(); stopPush();
     clearTimeout(refreshing);
     columns.removeEventListener("click", onClick);
     columns.removeEventListener("dragstart", onDragStart);
