@@ -549,7 +549,7 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     assert.deepEqual(installed.publishConfig, {
       registry: "https://registry.npmjs.org/", access: "public", tag: "beta",
     });
-    assert.deepEqual(installed.dependencies, { articulated: "^1.3.1" });
+    assert.deepEqual(installed.dependencies, { articulated: "^1.4.0" });
     assert.deepEqual(installed.exports, original.exports);
     for (const subpath of [".", "./sync"]) {
       const entry = record(record(installed.exports)[subpath]);
