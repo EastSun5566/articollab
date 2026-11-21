@@ -84,6 +84,29 @@ describe("text runtime", () => {
     assert.deepEqual(base.save(), { idList: base.save().idList, value: "A😀\ud83dX\ude00" });
   });
 
+  it("saves fragmented Text in range order across tombstones and bunches", (t) => {
+    const saved = {
+      idList: [
+        { bunchId: "first", startCounter: 20, count: 2, isDeleted: false },
+        { bunchId: "deleted", startCounter: 4, count: 3, isDeleted: true },
+        { bunchId: "second", startCounter: 17, count: 2, isDeleted: false },
+        { bunchId: "first", startCounter: 2, count: 1, isDeleted: false },
+      ],
+      value: "😀😀e\u0301",
+      surrogateBoundaries: [3],
+    };
+    const state = TextState.load(saved);
+    const expected = ["😀", "\ud83d", "\ude00", "e", "\u0301"];
+    assert.deepEqual([...state.values()], expected);
+    const values = t.mock.method(state, "values");
+
+    const snapshot = state.save();
+    assert.deepEqual(snapshot, saved);
+    assert.equal(JSON.stringify(snapshot), JSON.stringify(saved));
+    assert.equal(values.mock.callCount(), 0);
+    assert.deepEqual([...TextState.load(snapshot).values()], expected);
+  });
+
   it("restores client and server element boundaries, pending work, retries and late joins", () => {
     const roundTrip = (input: unknown): unknown => JSON.parse(JSON.stringify(input));
     let server = createServer(Note);

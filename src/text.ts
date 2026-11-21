@@ -387,11 +387,16 @@ export class TextState {
     );
     const values: string[] = [], boundaries: number[] = [];
     let offset = 0, previous = NaN;
-    for (const element of this.values()) {
-      if (isHighSurrogate(previous) && isLowSurrogate(element.charCodeAt(0))) boundaries.push(offset);
-      values.push(element);
-      offset += element.length;
-      previous = element.charCodeAt(element.length - 1);
+    // The saved ranges already give the visible IDs in order.
+    for (const { bunchId, startCounter, count, isDeleted } of idList) {
+      if (isDeleted) continue;
+      for (let index = 0; index < count; index++) {
+        const element = this.valueFor({ bunchId, counter: startCounter + index });
+        if (isHighSurrogate(previous) && isLowSurrogate(element.charCodeAt(0))) boundaries.push(offset);
+        values.push(element);
+        offset += element.length;
+        previous = element.charCodeAt(element.length - 1);
+      }
     }
     return Object.freeze({ idList, value: values.join(""),
       ...(boundaries.length === 0 ? {} : { surrogateBoundaries: Object.freeze(boundaries) }),
