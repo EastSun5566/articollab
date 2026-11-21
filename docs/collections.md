@@ -108,7 +108,7 @@ Each key is decided on its own, by server order: the last `set` or `delete` the 
 - Keys may be any string, including `""` and `"__proto__"`. Iteration (`keys()`, `values()`, `entries()`, `for...of`) is sorted by UTF-16 code unit, so every replica lists keys in the same order whatever order they were written in.
 - A Map snapshot is a JSON object from key to value, so a server `resolve` policy can read `snapshot.data.settings["theme"]` directly.
 
-Map updates have no `discard` event: a `set` is never a no-op, because it recreates a deleted key. If an application should not recreate a key, for example a deleted record's field, its server policy must drop that `set`. To follow changes, subscribe with `observe()`; see [Update a view from a Map](transactions.md#update-a-view-from-a-map).
+Map updates have no `discard` event: a `set` is never a no-op, because it recreates a deleted key. If an application should not recreate a key, for example a deleted record's field, its server policy must drop that `set`; the writer learns of it through [`transform`](server-wire.md#accept-transform-or-reject). To follow changes, subscribe with `observe()`; see [Update a view from a Map](transactions.md#update-a-view-from-a-map).
 
 ## Text: Unicode code points
 

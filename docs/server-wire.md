@@ -34,6 +34,17 @@ const server = createServer(Counter, {
 
 A pending `set(12)` displays 12 locally, then becomes 10 after receiving its transformed commit. Once the authoritative count is 10, this policy rejects later batches.
 
+To tell the writer, listen for `transform` on its client. It fires when the server's commit of that writer's batch differs from what it sent, with the operations it `dropped` and `added`:
+
+```ts
+const stop = doc.on("transform", ({ commit, added }) => {
+  if (commit.operations.length === 0) console.warn("Not saved: the server rejected this change.");
+  for (const operation of added) console.warn(`Saved as ${operation.value} instead.`);
+});
+```
+
+For the `set(12)` above it logs `Saved as 10 instead.` Identical acknowledgements, including decoded copies, are silent. See the [reference](reference.md#mutations-transactions-and-events) for exact matching and ordering.
+
 The resolver receives the pre-batch snapshot and returns operations synchronously. Return `batch.operations` to accept unchanged, a valid operation set to transform, or `[]` to acknowledge without an authoritative effect. It need not return one operation per input.
 
 For explicit cancellation, trusted application code can call `server.reject(originalBatch)`. It skips the resolver and incoming operation application. A previously accepted batch cannot become rejected: an identical latest retry returns its original result through either entrypoint.

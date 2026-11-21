@@ -60,6 +60,7 @@ export {
   ServerDocument,
   type ChangeEvent,
   type DiscardEvent,
+  type TransformEvent,
   type ClientBatch,
   type ClientBatchRef,
   type ClientCheckpoint,

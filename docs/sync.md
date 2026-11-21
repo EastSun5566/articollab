@@ -99,7 +99,7 @@ When committing outside the handler, save the checkpoint before calling `await h
 | `failed` | An unrecoverable error | Stops syncing. Inspect `sync.error`. |
 | `stopped` | `stop()` was called | Later responses are ignored |
 
-If you choose to discard blocked work, call `rejectPending()`. It cancels batches pending when you call it and catches up first to confirm any edits the server already accepted.
+If you choose to discard blocked work, call `rejectPending()`. It cancels batches pending when you call it and catches up first to confirm any edits the server already accepted. Each cancelled batch is reported by the document's [`transform`](server-wire.md#accept-transform-or-reject) event, so ignore those events while your own call runs.
 
 After a history gap, preserve the checkpoint if pending work remains. With an empty pending queue, call `restartFromSnapshot()` and use the returned client. Close the old session on the server if your application manages sessions.
 
