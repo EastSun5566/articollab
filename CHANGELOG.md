@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.7.2](https://github.com/EastSun5566/articollab/compare/v0.7.1...v0.7.2) (2026-11-22)
+
+### Bug Fixes
+
+* **sync:** bound SSE backpressure for slow readers ([b7a38ff](https://github.com/EastSun5566/articollab/commit/b7a38ff3f00648044a2e8b00bba20880cd056a06))
+
+### Performance Improvements
+
+* **sync:** avoid building checkpoints to read client progress ([1049898](https://github.com/EastSun5566/articollab/commit/10498988d6a8eeac11c44964f6309dabb34614f2))
+
+### Dependencies
+
+* upgrade articulated to 1.4.0 ([7367a0e](https://github.com/EastSun5566/articollab/commit/7367a0ed296c1d9b9f9d15c3caa709353ed961e7))
+
 ## [0.7.1](https://github.com/EastSun5566/articollab/compare/v0.7.0...v0.7.1) (2026-11-21)
 
 ### Bug Fixes
