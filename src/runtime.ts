@@ -7,6 +7,7 @@ import {
   type List,
   type ListDeleteOperation,
   type ListInsertOperation,
+  type ListMoveOperation,
   type ListSetOperation,
   type ListOperation,
 } from "./list.ts";
@@ -67,6 +68,7 @@ export type Operation =
   | ListInsertOperation
   | ListDeleteOperation
   | ListSetOperation
+  | ListMoveOperation
   | TextInsertOperation
   | TextDeleteOperation
   | MapSetOperation
@@ -140,10 +142,10 @@ export interface ServerChangeEvent<TOperation extends Operation = Operation> {
   readonly commit: ServerCommit<TOperation>;
 }
 
-/** List sets in an own acknowledged commit that had no effect because their target was already deleted. */
+/** List sets and moves in an own acknowledged commit that had no effect because their target was already deleted. */
 export interface DiscardEvent<TOperation extends Operation = Operation> {
   readonly commit: ServerCommit<TOperation>;
-  readonly operations: readonly Extract<TOperation, { readonly type: "list/set" }>[];
+  readonly operations: readonly Extract<TOperation, { readonly type: "list/set" | "list/move" }>[];
 }
 
 export type ChangeEvent<TOperation extends Operation = Operation> =
@@ -324,6 +326,9 @@ function sameOperations(
       case "list/set":
         return other.type === "list/set" && equalsId(operation.id, other.id) &&
           (allowValueChanges || Object.is(operation.value, other.value));
+      case "list/move":
+        return other.type === "list/move" && equalsId(operation.id, other.id) &&
+          sameAnchor(operation.before, other.before) && equalsId(operation.position, other.position);
       case "text/insert":
         return other.type === "text/insert" && sameAnchor(operation.before, other.before) &&
           equalsId(operation.id, other.id) && operation.value === other.value;
@@ -404,6 +409,7 @@ function freezeOperation(operation: Operation): Operation {
     case "list/insert":
     case "list/delete":
     case "list/set":
+    case "list/move":
       return freezeListOperation(operation);
     case "text/insert":
     case "text/delete":
@@ -683,7 +689,7 @@ export class ClientDocument<S extends SchemaShape> {
   }
 
   on(event: "change", listener: ChangeListener<S>): () => void;
-  /** Own list sets that the server applied after their target was deleted, once per acknowledged commit. */
+  /** Own list sets and moves that the server applied after their target was deleted, once per acknowledged commit. */
   on(event: "discard", listener: DiscardListener<S>): () => void;
   on(event: "change" | "discard", listener: ChangeListener<S> | DiscardListener<S>): () => void {
     if (event !== "change" && event !== "discard") {
@@ -712,10 +718,10 @@ export class ClientDocument<S extends SchemaShape> {
     this.flushObservers();
   }
 
-  /** Applies one commit and returns the own list sets it discarded. */
+  /** Applies one commit and returns the own list sets and moves it discarded. */
   private receiveCommit(
     commit: ServerCommit<DocumentOperation<S>>
-  ): Extract<DocumentOperation<S>, { readonly type: "list/set" }>[] {
+  ): Extract<DocumentOperation<S>, { readonly type: "list/set" | "list/move" }>[] {
     if (this.transactionDepth !== 0) {
       throw new Error("Cannot receive a server commit during a transaction");
     }
@@ -739,10 +745,10 @@ export class ClientDocument<S extends SchemaShape> {
     }
 
     const nextAuthoritativeStates = new Map(this.authoritativeStates);
-    const discarded: Extract<DocumentOperation<S>, { readonly type: "list/set" }>[] = [];
+    const discarded: Extract<DocumentOperation<S>, { readonly type: "list/set" | "list/move" }>[] = [];
     applyOperations(nextAuthoritativeStates, commit.operations, isOwnCommit
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Commit operations are this schema's operations.
-      ? (operation) => { discarded.push(operation as Extract<DocumentOperation<S>, { readonly type: "list/set" }>); }
+      ? (operation) => { discarded.push(operation as Extract<DocumentOperation<S>, { readonly type: "list/set" | "list/move" }>); }
       : undefined);
 
     // shortcut: exact, conflict-free own acks preserve the entire optimistic view.
@@ -783,7 +789,7 @@ export class ClientDocument<S extends SchemaShape> {
     // Both replays must be conflict-free; otherwise compare the entire visible prefix.
     const compareOwnPayloads = isOwnCommit && previous === null && conflict === null &&
       sameOperations(commit.operations, this.pendingBatches[0]!.operations, true);
-    // shortcut: complete fixed-ID replay preserves untouched IDs/values; revisit for moves or undelete.
+    // shortcut: complete fixed-ID replay preserves untouched IDs/values; moved paths compare in full below.
     const compareRemoteTargets = !isOwnCommit && previous === null && conflict === null;
     const listComparisonIds = compareOwnPayloads || compareRemoteTargets
       ? new Map<string, Readonly<ElementId>[]>() : undefined;
@@ -810,13 +816,16 @@ export class ClientDocument<S extends SchemaShape> {
         }
       }
     }
+    const movedPaths = new Set<string>(commit.operations.flatMap((operation) => operation.type === "list/move" ? [operation.path] : []));
     let changed = !sameConflict;
     for (const [path, runtime] of this.collections) {
       const nextState = nextOptimisticStates.get(path);
       if (nextState === undefined) {
         throw new Error(`Missing document path: ${path}`);
       }
-      const ids = listComparisonIds === undefined ? undefined : listComparisonIds.get(path) ?? [];
+      // A move reorders untouched elements, so a remote move needs the whole List compared.
+      const ids = listComparisonIds === undefined || (compareRemoteTargets && movedPaths.has(path))
+        ? undefined : listComparisonIds.get(path) ?? [];
       const textOperations = textComparisonOperations === undefined ? undefined : textComparisonOperations.get(path) ?? [];
       const keys = mapComparisonKeys === undefined ? undefined : mapComparisonKeys.get(path) ?? [];
       if (!runtimeVisibleEquals(runtime, nextState, path, changed, compareOwnPayloads, ids, textOperations, keys)) changed = true;
@@ -881,7 +890,7 @@ export class ClientDocument<S extends SchemaShape> {
         case "text/insert": case "text/delete":
           if (runtime instanceof RuntimeText) runtime.track(operation);
           break;
-        case "list/insert": case "list/delete": case "list/set":
+        case "list/insert": case "list/delete": case "list/set": case "list/move":
           if (runtime instanceof RuntimeList) runtime.track(operation);
           break;
         case "map/set": case "map/delete":

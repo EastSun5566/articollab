@@ -49,11 +49,13 @@ console.log(doc.state.items.toArray()); // ["Implement API"]
 
 The element keeps its stable ID and position. `set()` replaces its whole value, not individual object fields, and allocates no new IDs or tombstones. If two writers update that same element, the last update applied by the server wins. Their fields are not merged. An update to an element already deleted by a peer is a no-op, never a resurrection.
 
-To tell the writer that an edit was lost this way, listen for `discard`. It fires when this writer's own update is acknowledged after its element was deleted:
+To tell the writer that an edit was lost this way, listen for `discard`. It fires when this writer's own update, or [move](#move-an-element), is acknowledged after its element was deleted:
 
 ```ts
 const stop = doc.on("discard", ({ operations }) => {
-  for (const { value } of operations) console.warn(`Not saved, the item was deleted by someone else: ${value}`);
+  for (const operation of operations) {
+    if (operation.type === "list/set") console.warn(`Not saved, the item was deleted by someone else: ${operation.value}`);
+  }
 });
 ```
 
@@ -61,7 +63,19 @@ const stop = doc.on("discard", ({ operations }) => {
 
 To update a view without calling `toArray()` after every change, subscribe with `doc.state.items.observe()`; it reports `set()` as an in-place `set` change. See [Update a list view incrementally](transactions.md#update-a-list-view-incrementally).
 
-Delete + insert inside a transaction remains available when you mean to create a new element identity. If two writers concurrently do this for the same old element, both new insertions can remain: the second deletion targets an already-deleted ID. It is not equivalent to `set()`. There is no move method. The [Kanban board example](https://github.com/EastSun5566/articollab/blob/main/examples/README.md#kanban-board) moves cards this way: its columns are Lists of card IDs, the card data lives in a [Map](#map-keyed-values) so a move never touches it, and a server `resolve` policy keeps one copy when two writers move the same card.
+### Move an element
+
+`move(from, to)` moves the element at index `from` so that it ends at index `to`, like moving an array item. With the List above containing `"Implement API"`:
+
+```ts
+doc.state.items.push("Write tests");
+doc.state.items.move(1, 0);
+console.log(doc.state.items.toArray()); // ["Write tests", "Implement API"]
+```
+
+The element keeps its identity: a peer's `set()` or `delete()` aimed at it still applies after the move, and a concurrent move of the same element is decided by server order, so the element never appears twice. Moving an element that a peer deleted first changes nothing and is reported through `discard`, like a lost `set()`. A cursor bound to a moved element stays at the element's old gap, as it would after a deletion. Moves stay within one List; to move an item between Lists, delete and insert it, or keep one List and record the group in a [Map](#map-keyed-values), as the [Kanban board example](https://github.com/EastSun5566/articollab/blob/main/examples/README.md#kanban-board) does.
+
+Delete + insert inside a transaction still creates a new element identity. If two writers concurrently do this for the same old element, both new insertions can remain: the second deletion targets an already-deleted ID.
 
 ## Map: keyed values
 

@@ -75,7 +75,7 @@ describe("Discarded list sets", () => {
     b.doc.transact(() => { b.doc.state.items.delete(2); b.doc.state.items.delete(0); });
     deliver(submit(b), a.doc, b.doc);
     deliver(submit(a), a.doc, b.doc);
-    assert.deepEqual(a.discards.map((event) => event.operations.map((operation) => operation.value)), [["A!", "C!"]]);
+    assert.deepEqual(a.discards.map((event) => event.operations.map((operation) => operation.type === "list/set" ? operation.value : operation.type)), [["A!", "C!"]]);
     assert.deepEqual(a.doc.state.items.toArray(), ["B!"]);
 
     a.doc.state.items.set(0, "applied");
@@ -113,13 +113,13 @@ describe("Discarded list sets", () => {
     setResolve(undefined);
     assert.deepEqual(order, ["change", "discard", "observe"]);
     assert.strictEqual(a.discards.at(-1)!.commit, ack);
-    assert.deepEqual(a.discards.at(-1)!.operations.map((operation) => operation.value), ["gone"]);
+    assert.deepEqual(a.discards.at(-1)!.operations.map((operation) => operation.type === "list/set" ? operation.value : operation.type), ["gone"]);
 
     a.doc.state.items.set(0, "offline");
     const saved = decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(a.doc.checkpoint())));
     const restored = createClient(Board, { clientId: saved.clientId, checkpoint: saved, onBatch() {} });
     const seen: unknown[] = [];
-    restored.on("discard", (event) => seen.push(event.operations[0]!.value));
+    restored.on("discard", (event) => { const operation = event.operations[0]!; seen.push(operation.type === "list/set" ? operation.value : operation.type); });
     b.doc.state.items.delete(0);
     const deletion = submit(b);
     deliver(deletion, a.doc, b.doc);

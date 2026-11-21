@@ -29,7 +29,7 @@ export function localBunchSeq(
 
 /**
  * Checks a typed incoming batch against an application-authenticated writer ID.
- * Only new insertion IDs are checked, not anchors or deletion targets.
+ * Only new insertion and move position IDs are checked, not anchors or targets.
  * Decode unknown wire input first; this opt-in check does not authenticate writers.
  */
 export function assertClientBatchNamespace(
@@ -43,6 +43,12 @@ export function assertClientBatchNamespace(
     throw new TypeError("Invalid batch /clientId: does not match the authenticated writer ID");
   }
   for (const [index, operation] of batch.operations.entries()) {
+    if (operation.type === "list/move") {
+      if (localBunchSeq(operation.position.bunchId, expectedClientId, operation.path) === undefined) {
+        throw new TypeError(`Invalid batch /operations/${index}/position/bunchId: expected this writer's canonical namespace for ${operation.path}`);
+      }
+      continue;
+    }
     if (operation.type !== "list/insert" && operation.type !== "text/insert") continue;
     if (localBunchSeq(operation.id.bunchId, expectedClientId, operation.path) === undefined) {
       throw new TypeError(`Invalid batch /operations/${index}/id/bunchId: expected this writer's canonical namespace for ${operation.path}`);

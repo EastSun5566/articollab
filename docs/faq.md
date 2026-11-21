@@ -38,6 +38,6 @@ No. It prevents a batch from allocating insertion IDs under another writer/path 
 
 An HTTP host or custom transport, quotas, storage, authentication/authorization, writer coordination, document lineage checks, and an application recovery policy for history gaps. The optional [sync adapter](sync.md) supplies HTTP push/polling, catch-up, retries and reconnects, including acknowledgement after a lost response, and stores client checkpoints in IndexedDB or a file; applications still provide server storage.
 
-The package has no rich text, presence, undo, bulk List editing, move or automatic migration. Same-ID server rollback/forks and power-loss durability are not promised. See the [complete boundaries](reference.md#boundaries).
+The package has no rich text, presence, undo, bulk List editing, move between Lists or automatic migration. Same-ID server rollback/forks and power-loss durability are not promised. See the [complete boundaries](reference.md#boundaries).
 
 [Previous: Core reference](reference.md) · [Back to Overview](README.md)

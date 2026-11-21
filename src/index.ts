@@ -24,6 +24,8 @@ export {
   type ListChangeEvent,
   type ListDeleteOperation,
   type ListInsertOperation,
+  type ListMoveEntry,
+  type ListMoveOperation,
   type ListSetOperation,
   type ListOperation,
   type ListSnapshotData,
