@@ -12,10 +12,12 @@ import {
   type SavedIdRange,
 } from "./list.ts";
 import type {
+  CollectionSchema,
   DocumentSchema,
   JsonValue,
   SchemaShape,
 } from "./schema.ts";
+import { MapState, type MapSnapshotData } from "./map.ts";
 import {
   TextState,
   type TextIdRange,
@@ -33,6 +35,7 @@ import type {
 } from "./runtime.ts";
 
 type PathSegment = JsonPathSegment;
+type CollectionKind = CollectionSchema["kind"];
 type WireRecord = Readonly<Record<string, unknown>>;
 
 /** An invalid value encountered while decoding parsed wire JSON. */
@@ -194,7 +197,7 @@ function descriptorForPath<S extends SchemaShape>(
   schema: DocumentSchema<S>,
   pathValue: unknown,
   path: readonly PathSegment[]
-): { readonly path: string; readonly kind: "value" | "list" | "text" } {
+): { readonly path: string; readonly kind: CollectionKind } {
   const operationPath = decodeString(pathValue, path, "Operation path", true);
   if (!Object.hasOwn(schema.definition, operationPath)) {
     fail(path, `unknown document path: ${operationPath}`);
@@ -206,8 +209,8 @@ function descriptorForPath<S extends SchemaShape>(
 }
 
 function requireKind(
-  actual: "value" | "list" | "text",
-  expected: "value" | "list" | "text",
+  actual: CollectionKind,
+  expected: CollectionKind,
   path: readonly PathSegment[]
 ): void {
   if (actual !== expected) {
@@ -324,6 +327,25 @@ function decodeOperation<S extends SchemaShape>(
         path: descriptor.path,
         ranges,
       }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; business payload T remains the caller’s responsibility.
+    }
+    case "map/set": {
+      requireExactFields(record, path, ["type", "path", "key", "value"]);
+      requireKind(descriptor.kind, "map", [...path, "path"]);
+      return Object.freeze({
+        type,
+        path: descriptor.path,
+        key: decodeString(record.key, [...path, "key"], "Map key"),
+        value: decodeJsonValue(record.value, [...path, "value"]),
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; business payload T remains the caller’s responsibility.
+    }
+    case "map/delete": {
+      requireExactFields(record, path, ["type", "path", "key"]);
+      requireKind(descriptor.kind, "map", [...path, "path"]);
+      return Object.freeze({
+        type,
+        path: descriptor.path,
+        key: decodeString(record.key, [...path, "key"], "Map key"),
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; map operations carry no IDs.
     }
     default:
       return fail([...path, "type"], `unknown operation type: ${type}`);
@@ -467,11 +489,19 @@ function validateSnapshotCollection(
 }
 
 function decodeSnapshotCollection(
-  kind: "value" | "list" | "text",
+  kind: CollectionKind,
   input: unknown,
   path: readonly PathSegment[]
-): JsonValue | ListSnapshotData | TextSnapshotData {
+): JsonValue | ListSnapshotData | TextSnapshotData | MapSnapshotData {
   if (kind === "value") return decodeJsonValue(input, path);
+  if (kind === "map") {
+    const record = decodeRecord(input, path, "map snapshot");
+    // fromEntries defines own properties, so "__proto__" stays an ordinary key.
+    const snapshot: MapSnapshotData = Object.freeze(Object.fromEntries(Object.keys(record).map((key) =>
+      [key, decodeJsonValue(record[key], [...path, key])])));
+    decodedCollectionStates.set(snapshot, MapState.load(snapshot));
+    return snapshot;
+  }
 
   const record = decodeRecord(input, path, `${kind} snapshot`);
   if (kind === "list") {
@@ -657,9 +687,10 @@ export function decodeClientCheckpoint<S extends SchemaShape>(
     );
   }
 
-  const allocationPaths = Object.keys(schema.definition).filter(
-    (path) => schema.definition[path]!.kind !== "value"
-  );
+  const allocationPaths = Object.keys(schema.definition).filter((path) => {
+    const kind = schema.definition[path]!.kind;
+    return kind === "list" || kind === "text";
+  });
   const allocationRecord = decodeRecord(
     record.lastBunchSeqs, ["lastBunchSeqs"], "Bunch sequences"
   );

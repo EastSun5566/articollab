@@ -15,6 +15,7 @@ Start with the [Counter quick start](quick-start.md). It runs in memory so you c
 - **Value** replaces an immutable JSON payload.
 - **List** inserts, updates and deletes elements with stable identities.
 - **Text** edits plain text using Unicode code-point indices.
+- **Map** sets and deletes values under string keys, each key decided by server order.
 - **Transactions** group edits into one batch.
 - **Policy, decoders and checkpoints** help you control submissions and recover unconfirmed work.
 

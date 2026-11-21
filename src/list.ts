@@ -10,7 +10,7 @@ import type { JsonValue } from "./schema.ts";
 import { CollectionConflictError } from "./conflict.ts";
 import { HamtMap } from "./vendor/hamt.ts";
 import { validateJsonValue } from "./json.ts";
-import { CollectionObservers } from "./observe.ts";
+import { CollectionObservers, elementTargets } from "./observe.ts";
 import { cursorAt, cursorIndex, type Cursor } from "./cursor.ts";
 
 export interface SavedIdRange {
@@ -468,7 +468,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
   private readonly idGenerator: ElementIdGenerator;
   private readonly beforeMutation: () => void;
   private bunchSeq: number;
-  private readonly observers: CollectionObservers<ListState<T>, ListChangeEvent<T>>;
+  private readonly observers: CollectionObservers<ListState<T>, ListChangeEvent<T>, Readonly<ElementId>>;
 
   constructor(
     mutate: (operation: ListOperation<string, T>) => void,
@@ -484,7 +484,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
     this.current = initialState;
 
     this.beforeMutation = beforeMutation;
-    this.observers = new CollectionObservers(() => this.current, beforeObserve);
+    this.observers = new CollectionObservers(() => this.current, beforeObserve, elementTargets);
     this.bunchSeq = lastBunchSeq;
     this.idGenerator = new ElementIdGenerator(() => {
       if (this.bunchSeq === Number.MAX_SAFE_INTEGER) {

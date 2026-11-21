@@ -47,7 +47,7 @@ const runtimeFixture = `
 import assert from "node:assert/strict";
 import {
   assertClientBatchNamespace,
-  createClient, createServer, defineDocument, list, text, value,
+  createClient, createServer, defineDocument, list, map, text, value,
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeCursor,
 } from "articollab";
 import { connectSync, createHttpTransport, createSyncHandler } from "articollab/sync";
@@ -277,13 +277,32 @@ cursorReader.receive(decodeServerCommit(Board, roundTrip(cursorServer.receive(cu
 assert.equal(cursorReader.state.body.cursorIndex(caret), 2);
 cursorWriter.state.items.push("x");
 assert.equal(cursorWriter.state.items.cursorIndex(cursorWriter.state.items.cursorAt(1, "right")), 1);
+
+const MapBoard = defineDocument({ fields: map() });
+const mapServer = createServer(MapBoard);
+const mapBatches = [];
+const mapWriter = createClient(MapBoard, { clientId: mapServer.openClient(), onBatch: (batch) => mapBatches.push(batch) });
+const mapReader = createClient(MapBoard, { clientId: mapServer.openClient(), onBatch() {} });
+const mapChanges = [];
+mapReader.state.fields.observe((event) => mapChanges.push(...event.changes));
+mapWriter.state.fields.set("b", 2);
+mapWriter.state.fields.set("a", 1);
+assert.equal(mapWriter.state.fields.delete("a"), true);
+for (const batch of mapBatches) {
+  mapReader.receive(decodeServerCommit(MapBoard, roundTrip(mapServer.receive(decodeClientBatch(MapBoard, roundTrip(batch))).commit)));
+}
+assert.deepEqual(mapReader.state.fields.toObject(), { b: 2 });
+assert.deepEqual(mapChanges, [{ type: "set", key: "b", value: 2, previous: undefined },
+  { type: "set", key: "a", value: 1, previous: undefined }, { type: "delete", key: "a", previous: 1 }]);
+assert.deepEqual(roundTrip(mapServer.snapshot().data), { fields: { b: 2 } });
 `;
 
 const typesFixture = `
 import {
   assertClientBatchNamespace,
-  createClient, createServer, defineDocument, list, text, value,
+  createClient, createServer, defineDocument, list, map, text, value,
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeSnapshot, decodeCursor,
+  type MapChange, type MapChangeEvent, type MapCollection, type MapSetOperation, type MapSnapshotData,
   type Cursor, type Value, type List, type Text, type TextChange, type TextChangeEvent, type DocumentOperation, type DocumentSnapshot,
   type ListChange, type ListChangeEvent,
   type ListSnapshotData, type ListSetOperation, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
@@ -420,6 +439,37 @@ server.closeClient(123);
 // @ts-expect-error Legacy replay-array checkpoints are not accepted.
 createServer(Board, { checkpoint: { snapshot, replays: [], history: [] } });
 type BunchCounters = Expect<Equal<typeof checkpoint.lastBunchSeqs, Readonly<{ items: number; body: number }>>>;
+
+const Settings = defineDocument({ fields: map<{ title: string }>(), count: value(0) });
+type SettingsShape = typeof Settings.definition;
+type SettingsOperation = DocumentOperation<SettingsShape>;
+declare const settings: import("articollab").ClientDocument<SettingsShape>;
+type SettingsFields = Expect<Equal<typeof settings.state.fields, MapCollection<{ title: string }>>>;
+type MapGet = Expect<Equal<ReturnType<typeof settings.state.fields.get>, { title: string } | undefined>>;
+type MapDelete = Expect<Equal<ReturnType<typeof settings.state.fields.delete>, boolean>>;
+type MapEntry = Expect<Equal<ReturnType<typeof settings.state.fields.entries>, IterableIterator<[string, { title: string }]>>>;
+type MapSet = Expect<Equal<Extract<SettingsOperation, { type: "map/set" }>, MapSetOperation<"fields", { title: string }>>>;
+type MapSnapshot = Expect<Equal<ReturnType<typeof settings.checkpoint>["snapshot"]["data"]["fields"], MapSnapshotData<{ title: string }>>>;
+type MapBunchCounters = Expect<Equal<ReturnType<typeof settings.checkpoint>["lastBunchSeqs"], Readonly<{}>>>;
+settings.state.fields.observe((event) => {
+  type Event = Expect<Equal<typeof event, MapChangeEvent<{ title: string }>>>;
+  for (const change of event.changes) {
+    type Change = Expect<Equal<typeof change, MapChange<{ title: string }>>>;
+    if (change.type === "set") {
+      type Previous = Expect<Equal<typeof change.previous, { title: string } | undefined>>;
+    } else {
+      type Removed = Expect<Equal<typeof change.previous, { title: string }>>;
+    }
+  }
+  // @ts-expect-error Observed Map changes are readonly.
+  event.changes.push({ type: "delete", key: "x", previous: { title: "x" } });
+});
+// @ts-expect-error Map values retain their schema type.
+settings.state.fields.set("a", { title: 1 });
+// @ts-expect-error Map keys are strings.
+settings.state.fields.set(1, { title: "x" });
+// @ts-expect-error A Map operation cannot target a Value path.
+const wrongMapPath: SettingsOperation = { type: "map/set", path: "count", key: "a", value: { title: "x" } };
 
 doc.state.count.value = 1;
 doc.state.items.push("valid");

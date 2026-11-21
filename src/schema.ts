@@ -1,4 +1,5 @@
 import type { ListSnapshotData } from "./list.ts";
+import type { MapSnapshotData } from "./map.ts";
 import type { TextSnapshotData } from "./text.ts";
 import { validateJsonValue } from "./json.ts";
 
@@ -25,7 +26,14 @@ export interface TextSchema {
   readonly kind: "text";
 }
 
-export type CollectionSchema = ValueSchema | ListSchema | TextSchema;
+declare const mapValueType: unique symbol;
+
+export interface MapSchema<T extends JsonValue = JsonValue> {
+  readonly kind: "map";
+  readonly [mapValueType]?: T;
+}
+
+export type CollectionSchema = ValueSchema | ListSchema | TextSchema | MapSchema;
 
 export type SchemaShape = Record<string, CollectionSchema>;
 
@@ -53,6 +61,11 @@ export function list<T extends JsonValue>(): ListSchema<T> {
   return Object.freeze({ kind: "list" });
 }
 
+/** Defines an initially empty map from string keys to immutable JSON-compatible values. */
+export function map<T extends JsonValue>(): MapSchema<T> {
+  return Object.freeze({ kind: "map" });
+}
+
 /** Defines an initially empty collaborative plain-text string. */
 export function text(): TextSchema {
   return Object.freeze({ kind: "text" });
@@ -75,6 +88,8 @@ export type ValueType<D> = D extends ValueSchema<infer T> ? T : never;
 
 export type ListType<D> = D extends ListSchema<infer T> ? T : never;
 
+export type MapType<D> = D extends MapSchema<infer T> ? T : never;
+
 /** The JSON data saved for one collection descriptor. */
 export type SnapshotType<D> = D extends ValueSchema<infer T>
   ? T
@@ -82,4 +97,6 @@ export type SnapshotType<D> = D extends ValueSchema<infer T>
     ? ListSnapshotData<T>
     : D extends TextSchema
       ? TextSnapshotData
-      : never;
+      : D extends MapSchema<infer T>
+        ? MapSnapshotData<T>
+        : never;

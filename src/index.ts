@@ -2,6 +2,7 @@ export {
   defineDocument,
   DocumentSchema,
   list,
+  map,
   text,
   value,
   type CollectionSchema,
@@ -9,6 +10,8 @@ export {
   type JsonValue,
   type ListSchema,
   type ListType,
+  type MapSchema,
+  type MapType,
   type SchemaShape,
   type TextSchema,
   type ValueSchema,
@@ -26,6 +29,16 @@ export {
   type ListSnapshotData,
   type SavedIdRange,
 } from "./list.ts";
+
+export {
+  type MapChange,
+  type MapChangeEvent,
+  type MapCollection,
+  type MapDeleteOperation,
+  type MapOperation,
+  type MapSetOperation,
+  type MapSnapshotData,
+} from "./map.ts";
 
 export {
   type Text,

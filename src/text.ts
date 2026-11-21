@@ -9,7 +9,7 @@ import { loadIdList, type SavedIdRange } from "./list.ts";
 import { CollectionConflictError } from "./conflict.ts";
 import { HamtMap } from "./vendor/hamt.ts";
 import { jsonArray, jsonPointer, type JsonPathSegment } from "./json.ts";
-import { CollectionObservers } from "./observe.ts";
+import { CollectionObservers, elementTargets } from "./observe.ts";
 import { cursorAt, cursorIndex, type Cursor } from "./cursor.ts";
 
 export interface TextSnapshotData {
@@ -477,7 +477,7 @@ export class RuntimeText implements Text {
   private readonly idGenerator: ElementIdGenerator;
   private readonly beforeMutation: () => void;
   private bunchSeq: number;
-  private readonly observers: CollectionObservers<TextState, TextChangeEvent>;
+  private readonly observers: CollectionObservers<TextState, TextChangeEvent, Readonly<ElementId>>;
 
   constructor(
     mutate: (operation: TextOperation) => void,
@@ -493,7 +493,7 @@ export class RuntimeText implements Text {
     this.current = initialState;
 
     this.beforeMutation = beforeMutation;
-    this.observers = new CollectionObservers(() => this.current, beforeObserve);
+    this.observers = new CollectionObservers(() => this.current, beforeObserve, elementTargets);
     this.bunchSeq = lastBunchSeq;
     this.idGenerator = new ElementIdGenerator(() => {
       if (this.bunchSeq === Number.MAX_SAFE_INTEGER) {

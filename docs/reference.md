@@ -14,14 +14,15 @@ Import from `"articollab"`; internal modules and example helpers are not package
 
 | API | Purpose |
 | --- | --- |
-| `defineDocument(definition)`, `value(initialValue)`, `list<T>()`, `text()` | Fixed typed schema; property keys are wire paths. List/Text start empty. |
+| `defineDocument(definition)`, `value(initialValue)`, `list<T>()`, `text()`, `map<T>()` | Fixed typed schema; property keys are wire paths. List, Text and Map start empty. |
 | `createClient(schema, options)` | Requires nonempty `clientId` and `onBatch`; optional `snapshot` or `checkpoint`, never both. |
-| `doc.state` | Readonly collection bindings; mutate through Value/List/Text methods. |
+| `doc.state` | Readonly collection bindings; mutate through Value/List/Text/Map methods. |
 | `doc.transact(callback)` | Groups synchronous mutations and returns the callback result. |
 | `doc.on("change", listener)` | Subscribes to document-level events; returns an unsubscribe function. |
 | `doc.on("discard", listener)` | Subscribes to this writer's List `set()` operations that the server applied after their element was deleted. |
 | `doc.state.body.observe(listener)` | Opt-in visible Text edits; returns an unsubscribe function. |
 | `doc.state.items.observe(listener)` | Opt-in visible List splices and in-place sets; returns an unsubscribe function. |
+| `doc.state.settings.observe(listener)` | Opt-in visible Map sets and deletes, with previous values; returns an unsubscribe function. |
 | `cursorAt(index, bind?)`, `cursorIndex(cursor)` on Text and List | Stable gap positions: create a frozen cursor, then resolve its current index or `undefined`. |
 | `doc.receive(commit)` | Applies the next authoritative commit, acknowledges own pending work and replays the rest. |
 | `doc.replayConflict`, `doc.checkpoint()` | Read the first replay failure or save authoritative state and pending work. |
@@ -40,18 +41,19 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | Types | Role |
 | --- | --- |
 | `JsonPrimitive`, `JsonValue` | JSON-compatible payload types. |
-| `SchemaShape`, `CollectionSchema`, `ValueSchema`, `ListSchema`, `TextSchema`, `ValueType`, `ListType` | Schema descriptors and inferred element types. |
-| `Value`, `List`, `Text`, `DocumentState` | Typed collection views. |
+| `SchemaShape`, `CollectionSchema`, `ValueSchema`, `ListSchema`, `TextSchema`, `MapSchema`, `ValueType`, `ListType`, `MapType` | Schema descriptors and inferred element types. |
+| `Value`, `List`, `Text`, `MapCollection`, `DocumentState` | Typed collection views. |
 | `CreateClientOptions`, `CreateServerOptions`, `ServerResolveContext`, `ServerResolver` | Construction and batch policy contracts. |
 | `ServerClientSession` | One open writer session from `server.listClients()`. |
-| `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation`, `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextOperation`, `TextIdRange`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
+| `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation`, `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextOperation`, `TextIdRange`, `MapSetOperation`, `MapDeleteOperation`, `MapOperation`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
 | `ClientBatchRef`, `ClientBatch`, `ServerCommit`, `ServerReceipt`, `ServerReplayEntry` | Batch identity, authoritative result, local routing metadata and retry entries. |
 | `LocalChangeEvent`, `ServerChangeEvent`, `ChangeEvent`, `PendingReplayConflict` | Local/server notifications and the first blocked pending operation. |
 | `DiscardEvent` | This writer's List sets that had no effect because their element was already deleted. |
 | `TextChange`, `TextChangeEvent` | Visible Text element edits from an opt-in subscription. |
 | `ListChange`, `ListChangeEvent` | Visible List splices and in-place sets from an opt-in subscription. |
+| `MapChange`, `MapChangeEvent` | Visible Map sets and deletes, with previous values, from an opt-in subscription. |
 | `Cursor` | A stable Text or List gap position: `{ anchor, bind }`. |
-| `DocumentSnapshotData`, `DocumentSnapshot`, `ListSnapshotData`, `TextSnapshotData`, `SavedIdRange` | Typed snapshot payloads, including List/Text tombstones. |
+| `DocumentSnapshotData`, `DocumentSnapshot`, `ListSnapshotData`, `TextSnapshotData`, `MapSnapshotData`, `SavedIdRange` | Typed snapshot payloads, including List/Text tombstones. |
 | `ClientCheckpoint`, `ServerCheckpoint` | Complete client/server restore data. |
 
 ## Core contracts
@@ -63,6 +65,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `Value<T>` | `.value` | `.value = next` or `.set(next)`; replace the whole JSON value. |
 | `List<T>` | `.length`, `.get(index)`, `.values()`, `.toArray()`, iteration | `.insert(index, value)`, `.push(value)`, `.delete(index)`; `.set(index, value)` updates one element without changing its ID. |
 | `Text` | `.length`, `.values()`, `.toString()`, iteration | `.insert(index, string)`, `.delete(index, count = 1)`; Unicode code points. |
+| `MapCollection<T>` | `.size`, `.get(key)`, `.has(key)`, `.keys()`, `.values()`, `.entries()`, `.toObject()`, iteration of `[key, value]` | `.set(key, value)`, `.delete(key)`, `.clear()`; each key holds one whole JSON value. |
 
 Values and List elements must be JSON-compatible and immutable after being supplied. Nested object/array edits are not intercepted: replace a Value rather than editing its fields; use List `set()` to replace the whole element value while preserving identity. Delete + insert creates a new identity instead. The public state container, operation/ID containers and library-owned wire arrays are frozen, but user payloads are not generally deep-cloned or deep-frozen. `toArray()` copies the array, but its shared elements must still remain immutable.
 
@@ -78,6 +81,8 @@ List/Text operations use stable IDs, not mutable indices. The wire field `before
 
 `List.set(index, value): void` emits `{ type: "list/set", path, id, value }`, with exactly those fields. The target is the visible ID at call time. Setting a present target replaces the whole payload without changing its ID, position, length or allocation counters; concurrent updates follow server operation order. A known deleted target is a legal no-op and never stores the new value or resurrects the element. An unknown target is a collection conflict: server processing fails atomically, while pending replay blocks at that batch. Other operations in a batch containing a tombstone no-op still apply. Updating another writer's element is allowed; insertion namespace checks are not update authorization.
 
+`map<T>()` paths hold string keys, including `""` and `"__proto__"`, each with one immutable JSON value. `set(key, value)` emits `{ type: "map/set", path, key, value }` and `delete(key)` emits `{ type: "map/delete", path, key }`, with exactly those fields; non-string keys throw `TypeError` and values use the same synchronous JSON validation as List `set()`. Each key is last-writer-wins in server operation order: a later `set` recreates a deleted key and a later `delete` removes it. Deleting an absent key is a legal no-op that the writer still records, because the server may hold a value this writer has not received; `delete()` returns whether the key was present in this writer's view. `clear()` emits one `map/delete` per key visible to this writer, in key order and in one batch (or the enclosing transaction); an empty Map records nothing, and keys set concurrently by peers survive. Map operations have no IDs, tombstones, namespace checks or bunch allocation, so they never cause replay conflicts and `lastBunchSeqs` has no entry for Map paths. Iteration (`keys()`, `values()`, `entries()`, `for...of`) is sorted by UTF-16 code unit. A Map snapshot is a frozen own-property object from key to value.
+
 ### Mutations, transactions and events
 
 Outside a transaction, each actual mutation forms a batch. Value assignment and List `set()` record an operation even when assigning the same value. A successful nonempty outer transaction forms one batch; an empty transaction produces neither batch nor local change.
@@ -88,7 +93,7 @@ The local completion order is **optimistic state → pending batch and local seq
 
 `onBatch` and listeners are application callbacks, not rollback boundaries. If `onBatch` throws, the batch and sequence are already pending and the following local notification is not emitted. A local listener throw also leaves the completed batch intact. A server listener throw happens after the commit, watermark and reconciliation have completed. Exceptions propagate and can stop remaining listener notifications; the core does not permanently disable the document or undo callback side effects. Transport examples impose their own stop-on-first-error policy.
 
-Server events are `{ origin: "server", commit }`, emitted only when visible state or the replay-conflict descriptor changes, not merely because an ack/watermark advances. Value and List payload equality uses `Object.is`; List/Text additionally compare visible stable IDs. An accepted own commit is silent when that comparison and the conflict are unchanged. Deep-equal JSON objects decoded into new references can still trigger a change. A change listener is not a reliable ack or checkpoint-save trigger.
+Server events are `{ origin: "server", commit }`, emitted only when visible state or the replay-conflict descriptor changes, not merely because an ack/watermark advances. Value, List and Map payload equality uses `Object.is`; List/Text additionally compare visible stable IDs and Map compares visible keys. An accepted own commit is silent when that comparison and the conflict are unchanged. Deep-equal JSON objects decoded into new references can still trigger a change. A change listener is not a reliable ack or checkpoint-save trigger.
 
 `doc.on("discard", listener)` reports this writer's List `set()` operations that reached the server after a peer deleted their element, so they changed nothing. When `receive()` applies an acknowledgement of this writer's batch whose authoritative commit contains such sets, it calls each discard listener once with `{ commit, operations }`: the commit and those `list/set` operations in commit order, frozen. Detection uses the commit as applied, so server transformations are included; a peer's commit is never reported, and a rejected batch has no operations to report. Discard listeners run after any server `change` event for that commit and before observers, even when the acknowledgement changes nothing visible. They are application callbacks like change listeners: a throw propagates from `receive()` after the commit has been applied, skips later listeners and does not roll back. The event is not part of checkpoints; a restored writer reports discards for acknowledgements it receives after restore.
 
@@ -98,9 +103,11 @@ Text observers run after existing callbacks at successful outermost local commit
 
 `List.observe(listener): () => void` follows the same subscription, delivery, baseline and failure rules as Text. Each change is either `{ type: "splice", index, deleteCount, insert: readonly T[] }` or `{ type: "set", index, value }`. A set reports an element that stayed visible with the same ID but a different payload by `Object.is`, so an in-place `set()` is not reported as a removal and insertion, and an acknowledgement that adopts a decoded copy of an own payload is a set too. Changes are disjoint and sorted by descending pre-event index; at the same index a set comes before a splice, so applying them in the supplied order is always valid. Same-value writes, ID-only replacements and delete-and-reinsert edits that leave equal values in place are silent; a delete-and-reinsert move reports two splices. Normal changes compare the affected IDs, and a move compares only the span between its two edits. Conflicts and transformed own acknowledgements may compare the whole List. See the [incremental List example](transactions.md#update-a-list-view-incrementally).
 
+`Map.observe(listener): () => void` follows the same subscription, delivery, baseline and failure rules. Each event's `changes` are sorted by key with one entry per changed key: `{ type: "set", key, value, previous }`, where `previous` is `undefined` for an added key, or `{ type: "delete", key, previous }`. Equality is `Object.is`: same-value writes, deletes of absent keys and edits that cancel out are silent, and an acknowledgement that adopts a decoded copy of an own payload is a set.
+
 `cursorAt(index, bind = "left"): Cursor` requires a safe integer gap index in `0..length` and returns `{ anchor, bind }`, frozen with an owned anchor copy. With `"left"`, `anchor` is the element before the gap (`null` at index 0); with `"right"`, it is the element after the gap (`null` at `length`). `cursorIndex(cursor): number | undefined` resolves the current gap: an insertion into the gap lands after a left-bound cursor and before a right-bound one, and a deleted anchor moves the cursor to the nearest surviving gap on its side. It returns `undefined` when the anchor ID is unknown to that collection, for example a peer's uncommitted or unreceived insertion, a rejected or rolled-back insertion, or a cursor from another collection; `null` anchors always resolve. Tombstones keep anchors known across snapshots and restores. Both methods are reads that reflect optimistic state, including inside a transaction, never notify and cost O(log n). Text cursor indices count elements. Malformed indices, binds and cursor shapes throw. `decodeCursor` rejects missing or extra fields with a `WireDecodeError`. See [Stable positions with cursors](collections.md#stable-positions-with-cursors).
 
-An `onBatch`/existing-listener throw defers Text and List notifications until a later successful operation. An observer baseline advances before invoking its callback; a throw stops remaining notifications and propagates without rollback or permanently disabling the document. Uncalled observers retain their baselines. After partially applying a failed observer callback, discard that mirror and resubscribe from the current elements. Subscription state is not part of checkpoints.
+An `onBatch`/existing-listener throw defers Text, List and Map notifications until a later successful operation. An observer baseline advances before invoking its callback; a throw stops remaining notifications and propagates without rollback or permanently disabling the document. Uncalled observers retain their baselines. After partially applying a failed observer callback, discard that mirror and resubscribe from the current elements. Subscription state is not part of checkpoints.
 
 ### Ordered reconciliation and blocked pending
 
@@ -154,7 +161,7 @@ To cancel a namespace-invalid original batch, trusted application code must veri
 
 ### Snapshots, checkpoints and catch-up
 
-`server.snapshot()` is `{ serverSeq, data }`, for a fresh client using the same schema. Value data is the JSON payload; List data is `{ idList, values }`; Text data is `{ idList, value }`, with the optional `surrogateBoundaries` extension described below. ID ranges preserve tombstones. Snapshot paths must match the schema, the watermark must be a non-negative safe integer, and List/Text visible counts must match their payloads. Snapshot acquisition and subsequent commit delivery must have a gap-free handoff supplied by the application.
+`server.snapshot()` is `{ serverSeq, data }`, for a fresh client using the same schema. Value data is the JSON payload; List data is `{ idList, values }`; Text data is `{ idList, value }`, with the optional `surrogateBoundaries` extension described below; Map data is a JSON object from key to value. ID ranges preserve tombstones. Snapshot paths must match the schema, the watermark must be a non-negative safe integer, and List/Text visible counts must match their payloads. Snapshot acquisition and subsequent commit delivery must have a gap-free handoff supplied by the application.
 
 **Text snapshot boundaries:** `surrogateBoundaries?: readonly number[]` preserves adjacent surrogate halves that belong to separate Text elements. Its offsets are UTF-16 code-unit positions in `value`, not the element indices used by Text operations and notifications. Each offset separates a high surrogate immediately before it from a low surrogate at it. The array must be non-empty, dense and strictly increasing, with safe-integer offsets in `1..value.length - 1`. Empty arrays, explicit `undefined`, duplicates and invalid boundaries are rejected. Without this field, normal code-point segmentation applies; with it, marked pairs remain separate. The resulting element count must equal the present-ID count. Saved arrays are owned/frozen, and the field is omitted when unnecessary. Older runtimes reject snapshots containing the field; see [recovery compatibility](recovery.md#text-snapshot-boundaries).
 

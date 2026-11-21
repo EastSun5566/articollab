@@ -3,7 +3,7 @@
  * https://github.com/mattbierner/hamt_plus/tree/b8845c7343fdde3966f875d732248fec597cf538
  * Code based on https://github.com/exclipy/pdata.
  *
- * Adaptations: typed string-key ESM subset; no custom hash or traversal API;
+ * Adaptations: typed string-key ESM subset; no custom hash; unordered entry traversal only;
  * undefined represents empty nodes/array slots; native array copy/splice;
  * Object.is value equality; unique object edit tokens; finally-scoped transients.
  *
@@ -262,7 +262,7 @@ function modify<V>(
   throw new Error("Unknown HAMT node");
 }
 
-/** Internal string-key persistent map. Ordering belongs to IdList, not this map. */
+/** Internal string-key persistent map. Callers own ordering: IdList for List/Text, sorted keys for Map. */
 export class HamtMap<V> {
   private root: Node<V> | undefined;
   private edit: Edit;
@@ -313,6 +313,21 @@ export class HamtMap<V> {
 
   delete(key: string): HamtMap<V> {
     return this.update(key, { type: "delete" });
+  }
+
+  /** Every entry once, in no particular order. */
+  *entries(): IterableIterator<[string, V]> {
+    if (this.root === undefined) return;
+    const stack: Node<V>[] = [this.root];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      switch (node.type) {
+        case 1: yield [node.key, node.value]; break;
+        case 2: for (const child of node.children) yield [child.key, child.value]; break;
+        case 3: stack.push(...node.children); break;
+        case 4: for (const child of node.children) if (child !== undefined) stack.push(child); break;
+      }
+    }
   }
 
   /** Draft updates are scoped to this callback; async/nested mutation is unsupported. */

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createClient, type DocumentOperation, type ServerCommit, type ServerDocument } from "../../../dist/index.js";
-import { addCard, Board, COLUMNS, deleteCard, findCard, moveCard, renameCard, type Shape } from "../board.js";
+import { addCard, Board, COLUMNS, deleteCard, findCard, lostRenames, moveCard, renameCard, type Shape } from "../board.js";
 import { resolveBoard } from "../policy.ts";
 import { createBoardServer } from "../server.ts";
 
@@ -10,11 +10,11 @@ function network(server: ServerDocument<Shape> = createBoardServer()) {
   const log: ServerCommit<DocumentOperation<Shape>>[] = [];
   function writer() {
     let sent = 0, received = server.snapshot().serverSeq;
-    const discards: string[] = [];
+    const lost: string[] = [];
     const doc = createClient(Board, { clientId: server.openClient(), snapshot: server.snapshot(), onBatch() {} });
-    doc.on("discard", ({ operations }) => { for (const operation of operations) discards.push(operation.value.title); });
+    const clientId = doc.checkpoint().clientId;
     return {
-      doc, discards,
+      doc, lost,
       /** Sends the next unsent pending batch, as the sync engine does: never past a replay conflict. */
       send() {
         const batch = doc.checkpoint().pendingBatches.find(({ seq }) => seq > sent);
@@ -25,16 +25,20 @@ function network(server: ServerDocument<Shape> = createBoardServer()) {
         log.push(commit);
         return commit;
       },
-      /** Receives every commit it has not seen yet, in order. */
+      /** Receives every commit it has not seen yet, in order, checking peers' commits for lost renames. */
       receive(upTo = log.length) {
         for (const commit of log.slice(0, upTo)) {
           if (commit.serverSeq <= received) continue;
           doc.receive(commit);
           received = commit.serverSeq;
+          if (commit.source.clientId !== clientId) {
+            for (const card of lostRenames(commit, doc.checkpoint().pendingBatches)) lost.push(card.title);
+          }
         }
       },
       board: () => COLUMNS.map((column) => doc.state[column].toArray()),
-      count: (cardId: string) => COLUMNS.reduce((total, column) => total + doc.state[column].toArray().filter(({ id }) => id === cardId).length, 0),
+      cards: () => doc.state.cards.toObject(),
+      count: (cardId: string) => COLUMNS.reduce((total, column) => total + doc.state[column].toArray().filter((id) => id === cardId).length, 0),
     };
   }
   return { server, log, writer };
@@ -64,36 +68,50 @@ describe("Kanban move policy", () => {
     }
   });
 
-  it("moves a rename aimed at a card's old element to where the card is now", () => {
+  it("applies a rename and a concurrent move to the same card unchanged", () => {
     const n = network(), a = n.writer(), b = n.writer();
     assert.ok(moveCard(a.doc, "seed-tests", "done", 1));
     assert.ok(renameCard(b.doc, "seed-tests", "Write policy tests"));
-    a.send();
-    const rename = b.send();
-    const moved = findCard(a.doc, "seed-tests");
-    assert.ok(moved !== undefined);
-    assert.deepEqual(rename.operations, [{ type: "list/set", path: "done",
-      id: a.doc.state.done.cursorAt(moved.index, "right").anchor, value: { id: "seed-tests", title: "Write policy tests" } }]);
+    const move = a.send(), rename = b.send();
+    assert.deepEqual(rename.operations, [{ type: "map/set", path: "cards", key: "seed-tests", value: { title: "Write policy tests" } }],
+      "the rename writes the Map, which the move never touched");
+    assert.equal(move.operations.length, 2);
     a.receive(); b.receive();
     for (const writer of [a, b]) {
       assert.deepEqual(findCard(writer.doc, "seed-tests"), { column: "done", index: 1, card: { id: "seed-tests", title: "Write policy tests" } });
       assert.deepEqual(writer.board(), serverBoard(n.server));
     }
-    assert.deepEqual(b.discards, [], "nothing was lost");
+    assert.deepEqual(b.lost, []);
   });
 
-  it("reports a rename of a card that another writer deleted as a discard, without bringing it back", () => {
+  it("drops a rename of a card another writer deleted, leaves no orphan data, and reports it as lost", () => {
     const n = network(), a = n.writer(), b = n.writer();
     assert.ok(deleteCard(a.doc, "seed-sketch"));
     assert.ok(renameCard(b.doc, "seed-sketch", "Too late"));
-    a.send(); b.send();
+    a.send();
+    b.receive();
+    assert.deepEqual(b.lost, ["Too late"], "B learns from A's delete that its pending rename will be dropped");
+    const dropped = b.send();
+    assert.deepEqual(dropped.operations, []);
     a.receive(); b.receive();
-    assert.deepEqual(b.discards, ["Too late"]);
-    assert.deepEqual(a.discards, []);
+    assert.deepEqual(a.lost, []);
     for (const writer of [a, b]) {
       assert.equal(writer.count("seed-sketch"), 0);
+      assert.equal(writer.doc.state.cards.has("seed-sketch"), false);
       assert.deepEqual(writer.board(), serverBoard(n.server));
     }
+    assert.equal(Object.hasOwn(n.server.snapshot().data.cards, "seed-sketch"), false, "no data without a position");
+  });
+
+  it("keeps a rename that reached the server before the delete, and reports nothing", () => {
+    const n = network(), a = n.writer(), b = n.writer();
+    assert.ok(renameCard(b.doc, "seed-sketch", "In time"));
+    b.send();
+    assert.ok(deleteCard(a.doc, "seed-sketch"));
+    a.send();
+    a.receive(); b.receive();
+    assert.deepEqual([a.lost, b.lost], [[], []]);
+    assert.equal(n.server.snapshot().data.cards["seed-sketch"], undefined);
   });
 
   it("does not let a concurrent move bring back a deleted card", () => {
@@ -122,22 +140,49 @@ describe("Kanban move policy", () => {
     for (const batch of batches) assert.equal(resolveBoard({ batch, snapshot }), batch.operations);
   });
 
-  it("blocks a follow-up edit to a move that the server dropped until it is rejected", () => {
+  it("tracks card data within one batch: a set after the card's own delete is dropped", () => {
+    const server = createBoardServer();
+    const snapshot = server.snapshot();
+    const batch = { clientId: "client-9", seq: 1, operations: [
+      { type: "map/delete", path: "cards", key: "seed-ship" },
+      { type: "map/set", path: "cards", key: "seed-ship", value: { title: "Orphan" } },
+    ] } as const;
+    assert.deepEqual(resolveBoard({ batch, snapshot }), [batch.operations[0]]);
+  });
+
+  it("blocks a follow-up move of a card whose move the server dropped until it is rejected", () => {
     const n = network(), a = n.writer(), b = n.writer();
     assert.ok(moveCard(a.doc, "seed-drag", "done", 0));
     assert.ok(moveCard(b.doc, "seed-drag", "todo", 0));
-    assert.ok(renameCard(b.doc, "seed-drag", "Renamed after my move"));
+    assert.ok(moveCard(b.doc, "seed-drag", "todo", 2), "moves B's own, not yet confirmed, element");
     a.send(); b.send();
     b.receive();
-    assert.notEqual(b.doc.replayConflict, null, "the rename targets B's dropped insertion");
+    assert.notEqual(b.doc.replayConflict, null, "the second move deletes B's dropped insertion");
     assert.throws(() => addCard(b.doc, "todo", "Blocked"));
     const blocked = b.doc.checkpoint().pendingBatches[0]!;
     n.log.push(n.server.reject(blocked).commit);
     a.receive(); b.receive();
     assert.equal(b.doc.replayConflict, null);
     for (const writer of [a, b]) {
-      assert.equal(findCard(writer.doc, "seed-drag")?.card.title, "Drag cards between columns");
+      assert.equal(writer.count("seed-drag"), 1);
       assert.deepEqual(writer.board(), serverBoard(n.server));
     }
+  });
+});
+
+describe("Lost renames", () => {
+  it("names only cards a commit deletes that have pending renames, with the last pending title", () => {
+    const pending = [
+      { clientId: "c", seq: 1, operations: [{ type: "map/set", path: "cards", key: "x", value: { title: "first" } }] },
+      { clientId: "c", seq: 2, operations: [{ type: "map/set", path: "cards", key: "x", value: { title: "last" } },
+        { type: "map/set", path: "cards", key: "kept", value: { title: "kept" } }] },
+    ] as const;
+    const commit = { serverSeq: 9, source: { clientId: "peer", seq: 1 }, operations: [
+      { type: "list/delete", path: "todo", id: { bunchId: "b", counter: 0 } },
+      { type: "map/delete", path: "cards", key: "x" },
+      { type: "map/delete", path: "cards", key: "unrelated" },
+    ] } as const;
+    assert.deepEqual(lostRenames(commit, pending), [{ id: "x", title: "last" }]);
+    assert.deepEqual(lostRenames(commit, []), []);
   });
 });

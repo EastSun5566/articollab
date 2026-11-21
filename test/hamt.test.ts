@@ -143,4 +143,26 @@ describe("vendored HAMT", () => {
     assert.ok(Object.is(collision.set("Aa", -0).get("Aa"), -0));
     assert.ok(Object.is(collision.get("Aa"), 0));
   });
+
+  it("traverses every entry once across leaf, collision, indexed and array nodes", () => {
+    const entries = (map: HamtMap<number>) => [...map.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+    const expected = new Map<string, number>();
+    // Equal-hash keys form collision nodes; many keys fill indexed and array nodes at several depths.
+    const keys = ["AaAa", "AaBB", "BBAa", "BBBB", ...Array.from({ length: 2000 }, (_, index) => `key-${index}`)];
+    let map = HamtMap.empty<number>();
+    assert.deepEqual([...map.entries()], []);
+    keys.forEach((key, index) => { map = map.set(key, index); expected.set(key, index); });
+    const full = map;
+    assert.deepEqual(entries(full), [...expected].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+    for (const [index, key] of keys.entries()) {
+      if (index % 3 !== 0) continue;
+      map = map.delete(key);
+      expected.delete(key);
+    }
+    assert.equal(map.size, expected.size);
+    assert.deepEqual(entries(map), [...expected].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+    assert.equal(entries(full).length, keys.length, "older versions keep every entry");
+    const single = HamtMap.empty<number>().set("only", 1);
+    assert.deepEqual([...single.entries()], [["only", 1]]);
+  });
 });

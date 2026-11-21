@@ -1,69 +1,61 @@
 import type { DocumentOperation, DocumentSnapshot, ServerResolveContext } from "../../dist/index.js";
-import { COLUMNS, type Card, type Column, type Shape } from "./board.js";
+import { COLUMNS, type Shape } from "./board.js";
 
 type Operation = DocumentOperation<Shape>;
-type ElementId = Operation["id"];
-type Located = { readonly path: Column; readonly id: ElementId; readonly card: Card };
+type ElementId = Extract<Operation, { type: "list/delete" }>["id"];
 
 function key(id: ElementId): string {
   return id.bunchId + "\u0000" + id.counter;
 }
 
-/** Visible cards by element and by card ID. Built from the saved ID ranges, so O(cards) per batch. */
-function visibleCards(snapshot: DocumentSnapshot<Shape>) {
-  const byElement = new Map<string, Located>(), byCard = new Map<string, Located>();
+/** Elements visible in any column, from the saved ID ranges. O(cards) per batch. */
+function visibleElements(snapshot: DocumentSnapshot<Shape>): Set<string> {
+  const visible = new Set<string>();
   for (const path of COLUMNS) {
-    const { idList, values } = snapshot.data[path];
-    let next = 0;
-    for (const range of idList) {
+    for (const range of snapshot.data[path].idList) {
       if (range.isDeleted) continue;
       for (let offset = 0; offset < range.count; offset++) {
-        const located = { path, id: { bunchId: range.bunchId, counter: range.startCounter + offset }, card: values[next++]! };
-        byElement.set(key(located.id), located);
-        byCard.set(located.card.id, located);
+        visible.add(key({ bunchId: range.bunchId, counter: range.startCounter + offset }));
       }
     }
   }
-  return { byElement, byCard };
+  return visible;
 }
 
 /**
- * Example server policy for card moves, which are a delete plus an insert of the same card:
+ * Example server policy. A move is a delete plus an insert of the same card ID, and card data lives
+ * in the `cards` Map, whose keys are last-writer-wins:
  * - a move whose source element is already gone (moved or deleted by someone else) loses its insert,
  *   so a card is never duplicated or brought back by a concurrent move;
- * - a title `set()` aimed at a card's old element follows the card ID to where the card is now.
- * Everything else is accepted unchanged. A `set()` on a deleted card still changes nothing, which the
- * writer sees as a `discard` event. This is not authorization or payload validation.
+ * - a `cards` set for a card that no longer exists is dropped, unless the same batch adds the card,
+ *   so a rename that arrives after a delete does not leave data without a position.
+ * Renames and moves touch different collections and need no rule. Everything else is accepted
+ * unchanged. This is not authorization or payload validation.
  */
 export function resolveBoard({ batch, snapshot }: ServerResolveContext<Shape>): readonly Operation[] {
-  const { byElement, byCard } = visibleCards(snapshot);
+  const visible = visibleElements(snapshot);
+  const cards = new Set(Object.keys(snapshot.data.cards));
+  const added = new Set(batch.operations.flatMap((operation) => operation.type === "list/insert" ? [operation.value] : []));
   const resolved: Operation[] = [];
   let changed = false, staleDelete = false;
   for (const operation of batch.operations) {
-    const target = byElement.get(key(operation.id));
-    if (operation.type === "list/delete") {
-      if (target === undefined) staleDelete = true;
-      else { byElement.delete(key(operation.id)); byCard.delete(target.card.id); }
-    } else if (operation.type === "list/insert") {
-      if (staleDelete) { changed = true; continue; }
-      const located = { path: operation.path, id: operation.id, card: operation.value };
-      byElement.set(key(operation.id), located);
-      byCard.set(operation.value.id, located);
-    } else if (target === undefined) {
-      const moved = byCard.get(operation.value.id);
-      if (moved !== undefined) {
-        // The same card, now at another element; same type and value, another path and ID.
-        const retargeted = { ...operation, path: moved.path, id: moved.id } as Operation;
-        resolved.push(retargeted);
-        byElement.set(key(moved.id), { ...moved, card: operation.value });
-        byCard.set(operation.value.id, { ...moved, card: operation.value });
-        changed = true;
-        continue;
-      }
-    } else {
-      const located = { ...target, card: operation.value };
-      byElement.set(key(operation.id), located);
-      byCard.set(operation.value.id, located);
+    switch (operation.type) {
+      case "list/delete":
+        if (!visible.delete(key(operation.id))) staleDelete = true;
+        break;
+      case "list/insert":
+        if (staleDelete) { changed = true; continue; }
+        visible.add(key(operation.id));
+        break;
+      case "map/set":
+        if (!cards.has(operation.key) && !added.has(operation.key)) { changed = true; continue; }
+        cards.add(operation.key);
+        break;
+      case "map/delete":
+        cards.delete(operation.key);
+        break;
+      default:
+        break;
     }
     resolved.push(operation);
   }
