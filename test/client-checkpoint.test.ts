@@ -6,6 +6,7 @@ import {
   defineDocument, list, text, value, WireDecodeError,
   type ClientBatch, type ClientCheckpoint, type DocumentOperation,
 } from "../src/index.ts";
+import { TextState } from "../src/text.ts";
 
 const Board = defineDocument({ count: value(0), items: list<string>(), body: text() });
 type BoardBatch = ClientBatch<DocumentOperation<typeof Board.definition>>;
@@ -89,6 +90,111 @@ describe("client checkpoint", () => {
     assert.equal(pending.pendingBatches.length, 1);
     assert.equal(doc.checkpoint().snapshot.data.count, 1);
     assert.equal(doc.checkpoint().pendingBatches[0]!.seq, 2);
+  });
+
+  it("materializes lazily and reuses the snapshot across edits and rollback", (t) => {
+    const save = t.mock.method(TextState.prototype, "save");
+    const doc = createClient(Board, { clientId: "client-1", onBatch: () => {} });
+    assert.equal(save.mock.callCount(), 0);
+    const initial = doc.checkpoint();
+    assert.equal(save.mock.callCount(), 1);
+
+    doc.state.body.insert(0, "A😀");
+    const edited = doc.checkpoint();
+    assert.notEqual(edited, initial);
+    assert.equal(edited.snapshot, initial.snapshot);
+    assert.deepEqual(initial.pendingBatches, []);
+    assert.equal(initial.lastLocalSeq, 0);
+    assert.deepEqual(initial.lastBunchSeqs, { items: 0, body: 0 });
+    assert.deepEqual(edited.pendingBatches.map(({ seq }) => seq), [1]);
+    assert.equal(edited.lastLocalSeq, 1);
+    assert.deepEqual(edited.lastBunchSeqs, { items: 0, body: 1 });
+
+    const rollback = new Error("rollback");
+    assert.throws(() => doc.transact(() => {
+      doc.state.items.push("rolled back");
+      assert.throws(() => doc.checkpoint(), /Cannot checkpoint during a transaction/);
+      throw rollback;
+    }), (error) => error === rollback);
+    const afterRollback = doc.checkpoint();
+    assert.equal(afterRollback.snapshot, initial.snapshot);
+    assert.deepEqual(afterRollback.pendingBatches, edited.pendingBatches);
+    assert.equal(afterRollback.lastLocalSeq, 1);
+    assert.deepEqual(afterRollback.lastBunchSeqs, { items: 1, body: 1 });
+    assert.deepEqual(doc.state.items.toArray(), []);
+    assert.equal(doc.state.body.toString(), "A😀");
+    assert.equal(save.mock.callCount(), 1);
+
+    const checkpoint = roundTrip(afterRollback);
+    const restored = createClient(Board, {
+      clientId: "client-1", checkpoint, onBatch: () => assert.fail("restore must not send"),
+    });
+    assert.equal(save.mock.callCount(), 1);
+    const restoredCheckpoint = restored.checkpoint();
+    assert.deepEqual(restoredCheckpoint, checkpoint);
+    assert.notEqual(restoredCheckpoint.snapshot, checkpoint.snapshot);
+    assert.equal(restored.checkpoint().snapshot, restoredCheckpoint.snapshot);
+    assert.equal(save.mock.callCount(), 2);
+  });
+
+  it("refreshes the snapshot on remote commits, silent own acks and empty rejections", (t) => {
+    const server = createServer(Board);
+    const save = t.mock.method(TextState.prototype, "save");
+    const doc = createClient(Board, { clientId: server.openClient(), onBatch: () => {} });
+    const peer = createClient(Board, { clientId: server.openClient(), onBatch: () => {} });
+    const initial = doc.checkpoint();
+    const observed: BoardCheckpoint[] = [];
+    doc.on("change", ({ origin }) => {
+      if (origin === "server") observed.push(doc.checkpoint());
+    });
+
+    peer.state.body.insert(0, "A");
+    const remote = server.receive(peer.checkpoint().pendingBatches[0]!).commit;
+    const countBeforeReceive = save.mock.callCount();
+    assert.throws(() => doc.receive({
+      ...remote,
+      operations: [
+        ...remote.operations,
+        { type: "text/delete", path: "body", ranges: [{ start: { bunchId: "unknown", counter: 0 }, count: 1 }] },
+      ],
+    }), /Unknown text element id/);
+    assert.equal(doc.checkpoint().snapshot, initial.snapshot);
+    assert.equal(doc.state.body.toString(), "");
+    assert.equal(observed.length, 0);
+    assert.equal(save.mock.callCount(), countBeforeReceive);
+
+    doc.receive(remote);
+    const afterRemote = observed[0]!;
+    assert.equal(afterRemote.snapshot.serverSeq, 1);
+    assert.equal(afterRemote.snapshot.data.body.value, "A");
+    assert.equal(doc.checkpoint().snapshot, afterRemote.snapshot);
+    assert.equal(save.mock.callCount(), countBeforeReceive + 1);
+
+    doc.state.body.insert(1, "😀");
+    const pending = doc.checkpoint();
+    assert.equal(pending.snapshot, afterRemote.snapshot);
+    doc.receive(server.receive(pending.pendingBatches[0]!).commit);
+    assert.equal(observed.length, 1, "the accepted own ack remains silent");
+    const afterAck = doc.checkpoint();
+    assert.equal(afterAck.snapshot.serverSeq, 2);
+    assert.equal(afterAck.snapshot.data.body.value, "A😀");
+    assert.deepEqual(afterAck.pendingBatches, []);
+    assert.equal(save.mock.callCount(), countBeforeReceive + 2);
+
+    doc.state.body.insert(2, "rejected");
+    const rejection = server.reject(doc.checkpoint().pendingBatches[0]!).commit;
+    assert.deepEqual(rejection.operations, []);
+    doc.receive(rejection);
+    const afterReject = doc.checkpoint();
+    assert.equal(afterReject.snapshot, observed[1]!.snapshot);
+    assert.equal(afterReject.snapshot.serverSeq, 3);
+    assert.deepEqual(afterReject.snapshot.data, afterAck.snapshot.data);
+    assert.deepEqual(afterReject.pendingBatches, []);
+    assert.equal(doc.state.body.toString(), "A😀");
+    assert.equal(save.mock.callCount(), countBeforeReceive + 3);
+    assert.equal(initial.snapshot.serverSeq, 0);
+    assert.equal(afterRemote.snapshot.data.body.value, "A");
+    assert.equal(afterAck.snapshot.serverSeq, 2);
   });
 
   it("silently restores mixed pending batches and continues sequences and IDs", () => {
