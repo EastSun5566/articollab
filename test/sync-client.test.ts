@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it, type TestContext } from "node:test";
 
 import {
-  createServer, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, value,
+  ClientDocument, createServer, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, value,
   type ClientBatch, type ClientCheckpoint, type CreateServerOptions,
 } from "../src/index.ts";
 import { connectSync, type SyncClient, type SyncStatus, type SyncTransport } from "../src/sync/index.ts";
@@ -56,10 +56,13 @@ function statuses(client: { on(event: "status", listener: (status: SyncStatus) =
 }
 
 describe("connectSync", () => {
-  it("registers, submits local edits automatically and converges two writers", async () => {
+  it("registers and synchronizes two writers without taking checkpoints when saving is disabled", async (t) => {
     const h = harness();
+    const checkpoint = t.mock.method(ClientDocument.prototype, "checkpoint");
     const a = await connectSync(Board, { transport: h.transport(), pollInterval: 0 });
     const b = await connectSync(Board, { transport: h.transport(), pollInterval: 0 });
+    t.after(() => { a.stop(); b.stop(); });
+    assert.equal(await a.sync(), true);
     const seenA = statuses(a);
     a.doc.state.items.push("one");
     a.doc.state.items.push("two");
@@ -69,10 +72,11 @@ describe("connectSync", () => {
     assert.deepEqual(h.server.snapshot().data.items.values, ["one", "two"]);
     assert.equal(await b.sync(), true);
     assert.deepEqual(b.doc.state.items.toArray(), ["one", "two"]);
+    assert.equal(checkpoint.mock.callCount(), 0);
+    checkpoint.mock.restore();
     assert.deepEqual(a.doc.checkpoint().pendingBatches, []);
     assert.equal(seenA[0], "syncing");
     assert.equal(a.status, "idle");
-    a.stop(); b.stop();
   });
 
   it("acknowledges a submission whose response was lost instead of sending it twice", async () => {
@@ -167,11 +171,12 @@ describe("connectSync", () => {
     }
   });
 
-  it("saves pending work before sending it and the watermark after receiving", async () => {
+  it("builds one checkpoint per save, before sending pending work and after silent acknowledgements", async (t) => {
     const h = harness();
     const transport = h.transport();
     const saved: ClientCheckpoint<Shape>[] = [];
-    const a = await connectSync(Board, { pollInterval: 0, save: (checkpoint) => { saved.push(checkpoint); }, transport: {
+    const checkpoint = t.mock.method(ClientDocument.prototype, "checkpoint");
+    const a = await connectSync(Board, { pollInterval: 0, save: (snapshot) => { saved.push(snapshot); }, transport: {
       ...transport,
       async submit(batch) {
         const last = saved.at(-1)!;
@@ -179,17 +184,66 @@ describe("connectSync", () => {
         await transport.submit(batch);
       },
     } });
+    t.after(() => a.stop());
     assert.equal(saved.length, 1, "a fresh connection is saved before use");
+    assert.equal(checkpoint.mock.callCount(), 1);
+    assert.equal(await a.sync(), true);
+    assert.equal(checkpoint.mock.callCount(), 1, "an empty pass does not build a checkpoint");
     a.doc.state.items.push("a");
     a.doc.state.items.push("b");
     assert.equal(await a.sync(), true);
     const last = saved.at(-1)!;
     assert.deepEqual(last.pendingBatches, []);
     assert.equal(last.snapshot.serverSeq, 2, "own acknowledgements are saved even without change events");
-    a.stop();
+    assert.equal(checkpoint.mock.callCount(), saved.length);
+    assert.deepEqual(saved.map(({ lastLocalSeq, snapshot }) => [lastLocalSeq, snapshot.serverSeq]),
+      [[0, 0], [2, 0], [2, 1], [2, 2]]);
   });
 
-  it("stops submitting while blocked and resumes after rejecting pending work", async () => {
+  it("saves an edit made during a pending save before submitting that edit", async (t) => {
+    const h = harness(), transport = h.transport();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const saved: ClientCheckpoint<Shape>[] = [];
+    const checkpoint = t.mock.method(ClientDocument.prototype, "checkpoint");
+    const a = await connectSync(Board, { pollInterval: 0, transport: {
+      ...transport,
+      async submit(batch) {
+        assert.ok(saved.at(-1)?.pendingBatches.some((pending) => pending.seq === batch.seq));
+        await transport.submit(batch);
+      },
+    }, async save(snapshot) {
+      if (snapshot.lastLocalSeq === 1) { entered.resolve(); await release.promise; }
+      saved.push(snapshot);
+    } });
+    t.after(() => { a.stop(); release.resolve(); });
+    a.doc.state.items.push("first");
+    const syncing = a.sync();
+    await entered.promise;
+    a.doc.state.items.push("next");
+    release.resolve();
+    assert.equal(await syncing, true);
+    assert.deepEqual(saved.map(({ lastLocalSeq, snapshot }) => [lastLocalSeq, snapshot.serverSeq]),
+      [[0, 0], [1, 0], [2, 0], [2, 1], [2, 2]]);
+    assert.equal(checkpoint.mock.callCount(), saved.length);
+    assert.deepEqual(h.server.snapshot().data.items.values, ["first", "next"]);
+    checkpoint.mock.restore();
+    assert.deepEqual(a.doc.checkpoint().pendingBatches, []);
+  });
+
+  it("rejects cancellation requested during a document transaction", async (t) => {
+    const h = harness();
+    const a = await connectSync(Board, { transport: h.transport(), pollInterval: 0 });
+    t.after(() => a.stop());
+    const calls = h.calls.slice();
+    let cancelling: Promise<boolean> | undefined;
+    a.doc.transact(() => { cancelling = a.rejectPending(); });
+    assert.ok(cancelling);
+    await assert.rejects(cancelling, /Cannot checkpoint during a transaction/);
+    assert.deepEqual(h.calls, calls);
+    assert.equal(a.status, "idle");
+  });
+
+  it("stops submitting while blocked and resumes after rejecting pending work", async (t) => {
     let rejectInserts = false;
     const h = harness({ resolve: ({ batch }) => rejectInserts && batch.operations.some((operation) => operation.type === "list/insert") ? [] : batch.operations });
     const a = await connectSync(Board, { transport: h.transport(), pollInterval: 0 });
@@ -207,14 +261,17 @@ describe("connectSync", () => {
     const submitted = h.calls.filter((call) => call.startsWith("submit")).length;
     assert.equal(await a.sync(), false, "a blocked client does not submit");
     assert.equal(h.calls.filter((call) => call.startsWith("submit")).length, submitted);
+    const checkpoint = t.mock.method(a.doc, "checkpoint");
     assert.equal(await a.rejectPending(), true);
+    assert.equal(checkpoint.mock.callCount(), 0);
+    checkpoint.mock.restore();
     assert.equal(a.status, "idle");
     assert.deepEqual(a.doc.checkpoint().pendingBatches, []);
     assert.deepEqual(a.doc.state.items.toArray(), ["base"]);
     a.stop();
   });
 
-  it("stops at a history gap, keeps pending work and restarts from a snapshot only without it", async () => {
+  it("stops at a history gap, keeps pending work and restarts from a snapshot only without it", async (t) => {
     const h = harness({ historyLimit: 1 });
     const a = await connectSync(Board, { transport: h.transport(), pollInterval: 0 });
     const b = await connectSync(Board, { transport: h.transport(), pollInterval: 0 });
@@ -229,7 +286,10 @@ describe("connectSync", () => {
     for (let index = 0; index < 3; index++) { b.doc.state.count.value = 10 + index; await b.sync(); }
     assert.equal(await c.sync(), false);
     assert.equal(c.status, "gap");
+    const checkpoint = t.mock.method(ClientDocument.prototype, "checkpoint");
     const fresh = await c.restartFromSnapshot();
+    assert.equal(checkpoint.mock.callCount(), 0);
+    checkpoint.mock.restore();
     assert.equal(c.status, "stopped");
     assert.notEqual(fresh.doc.checkpoint().clientId, c.doc.checkpoint().clientId);
     assert.equal(fresh.doc.state.count.value, 12);

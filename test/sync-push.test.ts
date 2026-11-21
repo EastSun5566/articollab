@@ -87,6 +87,8 @@ describe("connectSync push", () => {
     const a = await connectSync(Board, { transport: ta, pollInterval: 1000 });
     const states = pushStates(a);
     const b = await connectSync(Board, { transport: h.transport({ push: false }), pollInterval: 0 });
+    t.after(() => { a.stop(); b.stop(); });
+    const checkpoint = t.mock.method(a.doc, "checkpoint");
     t.mock.timers.tick(0); await settle();
     assert.equal(a.push, "open");
     assert.deepEqual(states, ["connecting", "open"]);
@@ -103,6 +105,9 @@ describe("connectSync push", () => {
     const afterPass = ta.gets.length;
     t.mock.timers.tick(10_000); await settle();
     assert.equal(ta.gets.length, afterPass, "still no polling after a pass");
+    assert.equal(checkpoint.mock.callCount(), 0);
+    checkpoint.mock.restore();
+    assert.deepEqual(a.doc.checkpoint().pendingBatches, []);
     a.stop(); b.stop();
     assert.equal(ta.closed(), 1);
     assert.equal(a.push, "off");

@@ -10,6 +10,7 @@ import {
   type SchemaShape,
   type ServerCommit,
 } from "../index.ts";
+import { readClientProgress } from "../runtime.ts";
 
 /**
  * The network operations a sync client needs. Each method resolves when the request completed;
@@ -194,9 +195,10 @@ export async function connectSync<S extends SchemaShape>(
   async function persist(): Promise<void> {
     usable();
     if (save === undefined) return;
-    const checkpoint = document.checkpoint();
-    const version = `${checkpoint.lastLocalSeq}:${checkpoint.snapshot.serverSeq}`;
+    const { lastLocalSeq, serverSeq } = readClientProgress(document);
+    const version = `${lastLocalSeq}:${serverSeq}`;
     if (version === savedVersion) return;
+    const checkpoint = document.checkpoint();
     try { await save(checkpoint); }
     catch (cause) { fail(cause); }
     usable();
@@ -206,7 +208,7 @@ export async function connectSync<S extends SchemaShape>(
   /** Applies every missing commit in order; false when history no longer covers the watermark. */
   async function catchUp(): Promise<boolean> {
     usable();
-    const watermark = document.checkpoint().snapshot.serverSeq;
+    const watermark = readClientProgress(document).serverSeq;
     const input = await transport.commitsSince(watermark);
     usable();
     if (input === null) return false;
@@ -240,7 +242,7 @@ export async function connectSync<S extends SchemaShape>(
     try {
       usable();
       if (status === "gap") return false;
-      const watermark = document.checkpoint().snapshot.serverSeq;
+      const watermark = readClientProgress(document).serverSeq;
       // Duplicates and commits a pass already received are ignored.
       const commits = decodeCommits(input).filter((commit) => commit.serverSeq > watermark);
       if (commits.length === 0) return true;
@@ -248,7 +250,7 @@ export async function connectSync<S extends SchemaShape>(
       apply(commits);
       await persist();
       // A scheduled retry keeps its backoff; otherwise acknowledged work may unblock the next batch.
-      if (status !== "retrying" && document.checkpoint().pendingBatches.length > 0) return await runSync();
+      if (status !== "retrying" && readClientProgress(document).nextPendingBatch !== undefined) return await runSync();
       return true;
     } catch (cause) {
       if (cause instanceof StoppedSignal) return false;
@@ -311,7 +313,7 @@ export async function connectSync<S extends SchemaShape>(
     const current = () => token === pushToken;
     setPush("connecting");
     usable();
-    const close = subscribe(document.checkpoint().snapshot.serverSeq, {
+    const close = subscribe(readClientProgress(document).serverSeq, {
       onOpen() {
         if (!current()) return;
         pushAttempt = 0;
@@ -352,7 +354,7 @@ export async function connectSync<S extends SchemaShape>(
     if (!(await catchUp())) { clearTimer(); setStatus("gap"); return false; }
     while (true) {
       usable();
-      const batch = document.checkpoint().pendingBatches[0];
+      const batch = readClientProgress(document).nextPendingBatch;
       // Work created before this check is sent by this pass; only later work needs a rerun.
       if (batch === undefined) { rerun = false; setStatus("idle"); return true; }
       // Batches before the conflicting one still replay; send them, then wait.
@@ -362,7 +364,7 @@ export async function connectSync<S extends SchemaShape>(
       await transport.submit(batch);
       usable();
       if (!(await catchUp())) { clearTimer(); setStatus("gap"); return false; }
-      if (document.checkpoint().pendingBatches[0]?.seq === batch.seq) {
+      if (readClientProgress(document).nextPendingBatch?.seq === batch.seq) {
         throw new SyncFailure("Submission completed without acknowledging the pending batch");
       }
     }
@@ -420,7 +422,7 @@ export async function connectSync<S extends SchemaShape>(
 
   async function rejectPending(): Promise<boolean> {
     usable();
-    const cutoff = document.checkpoint().lastLocalSeq;
+    const cutoff = readClientProgress(document).lastLocalSeq;
     clearTimer();
     return exclusive(async () => {
       try {
@@ -429,19 +431,19 @@ export async function connectSync<S extends SchemaShape>(
         if (!(await catchUp())) { setStatus("gap"); return false; }
         while (true) {
           usable();
-          const batch = document.checkpoint().pendingBatches[0];
+          const batch = readClientProgress(document).nextPendingBatch;
           if (batch === undefined || batch.seq > cutoff) break;
           await transport.reject(batch);
           usable();
           if (!(await catchUp())) { setStatus("gap"); return false; }
-          if (document.checkpoint().pendingBatches[0]?.seq === batch.seq) {
+          if (readClientProgress(document).nextPendingBatch?.seq === batch.seq) {
             throw new SyncFailure("Rejection completed without acknowledging the pending batch");
           }
         }
         setStatus(document.replayConflict === null ? "idle" : "blocked");
         usable();
         // Batches created after the cutoff are ordinary pending work.
-        if (document.checkpoint().pendingBatches.length > 0) rerun = true;
+        if (readClientProgress(document).nextPendingBatch !== undefined) rerun = true;
         else afterPass();
         return true;
       } catch (cause) {
@@ -464,7 +466,7 @@ export async function connectSync<S extends SchemaShape>(
     rejectPending,
     async restartFromSnapshot() {
       if (status !== "gap") throw new Error("restartFromSnapshot() requires a history gap");
-      if (document.checkpoint().pendingBatches.length > 0) {
+      if (readClientProgress(document).nextPendingBatch !== undefined) {
         throw new Error("restartFromSnapshot() would discard pending work; preserve the checkpoint instead");
       }
       const { checkpoint: _previous, ...rest } = options;
@@ -487,7 +489,7 @@ export async function connectSync<S extends SchemaShape>(
   };
 
   await persist();
-  if (document.checkpoint().pendingBatches.length > 0) onBatch();
+  if (readClientProgress(document).nextPendingBatch !== undefined) onBatch();
   else if (pollInterval > 0 || subscribe !== undefined) schedule(0);
   return client;
 }
