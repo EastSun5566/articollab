@@ -478,6 +478,7 @@ export class ClientDocument<S extends SchemaShape> {
 
   private nextSeq = 1;
   private lastServerSeq = 0;
+  private checkpointSnapshot: DocumentSnapshot<S> | undefined;
   private transactionDepth = 0;
   private operations: Operation[] = [];
   private transactionSnapshot: Map<string, CollectionState> | undefined;
@@ -618,7 +619,7 @@ export class ClientDocument<S extends SchemaShape> {
     ) as ClientCheckpoint<S>["lastBunchSeqs"]; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Only List/Text runtimes contribute their allocation counters.
     return Object.freeze({
       clientId: this.clientId,
-      snapshot: saveSnapshot<S>(this.authoritativeStates, this.lastServerSeq),
+      snapshot: this.checkpointSnapshot ??= saveSnapshot<S>(this.authoritativeStates, this.lastServerSeq),
       lastLocalSeq: this.nextSeq - 1,
       pendingBatches: Object.freeze([...this.pendingBatches]),
       lastBunchSeqs,
@@ -763,6 +764,7 @@ export class ClientDocument<S extends SchemaShape> {
       this.authoritativeStates = nextAuthoritativeStates;
       this.pendingBatches.shift();
       this.lastServerSeq = commit.serverSeq;
+      this.checkpointSnapshot = undefined;
       return discarded;
     }
 
@@ -834,6 +836,7 @@ export class ClientDocument<S extends SchemaShape> {
     this.authoritativeStates = nextAuthoritativeStates;
     if (isOwnCommit) this.pendingBatches.shift();
     this.lastServerSeq = commit.serverSeq;
+    this.checkpointSnapshot = undefined;
     this.currentReplayConflict = sameConflict ? previous : conflict;
 
     for (const [path, runtime] of this.collections) {

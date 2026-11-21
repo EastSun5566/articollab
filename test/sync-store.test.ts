@@ -7,6 +7,7 @@ import { describe, it, type TestContext } from "node:test";
 import { IDBFactory } from "fake-indexeddb";
 
 import { createServer, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, value, type ClientBatch } from "../src/index.ts";
+import { ListState } from "../src/list.ts";
 import {
   CheckpointLockedError, connectSync, openIndexedDbStore, type CheckpointStore, type SyncTransport,
 } from "../src/sync/index.ts";
@@ -209,18 +210,45 @@ describe("connectSync with a store", () => {
   it("saves every local edit even while a pass waits on the network", async (t) => {
     const h = harness(), db = idb(t);
     const store = await db.open();
-    const client = await connectSync(Board, { transport: h.transport(), pollInterval: 0, store });
+    const save = t.mock.method(ListState.prototype, "save");
+    const transport = h.transport();
+    const started = Promise.withResolvers<void>();
+    const submit = transport.submit.bind(transport);
+    t.mock.method(transport, "submit", async (batch: ClientBatch) => {
+      started.resolve();
+      await submit(batch);
+    });
+    const client = await connectSync(Board, { transport, pollInterval: 0, store });
     t.after(() => client.stop());
+    const initial = decodeClientCheckpoint(Board, await store.load());
+    const initialSaveCount = save.mock.callCount();
+    let write = Promise.withResolvers<void>();
+    const saveCheckpoint = store.save.bind(store);
+    t.mock.method(store, "save", async (checkpoint: unknown) => {
+      await saveCheckpoint(checkpoint);
+      write.resolve();
+    });
     const release = h.hold();
-    client.doc.state.items.push("first");
-    await tick(); await tick();
-    client.doc.state.items.push("second");
-    client.doc.state.count.value = 3;
-    await tick(); await tick();
-    const saved = decodeClientCheckpoint(Board, await store.load());
-    assert.equal(saved.lastLocalSeq, 3);
-    assert.equal(saved.pendingBatches.length, 3, "edits made during the stalled submission are stored");
-    release();
+    try {
+      for (const [index, edit] of [
+        () => client.doc.state.items.push("first"),
+        () => client.doc.state.items.push("second"),
+        () => { client.doc.state.count.value = 3; },
+      ].entries()) {
+        write = Promise.withResolvers<void>();
+        edit();
+        await write.promise;
+        await started.promise;
+        assert.deepEqual(h.submitted, [`${initial.clientId}:1`], "the first submission is stalled");
+        const saved = decodeClientCheckpoint(Board, await store.load());
+        assert.equal(saved.lastLocalSeq, index + 1);
+        assert.deepEqual(saved.pendingBatches.map(({ seq }) => seq), [1, 2, 3].slice(0, index + 1));
+        assert.deepEqual(saved.snapshot, initial.snapshot);
+      }
+      assert.equal(save.mock.callCount(), initialSaveCount);
+    } finally {
+      release();
+    }
     assert.equal(await client.sync(), true);
   });
 
