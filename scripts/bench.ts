@@ -8,6 +8,7 @@ import { arch, cpus, platform, release } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs, promisify } from "node:util";
+import { brotliCompressSync, brotliDecompressSync, constants, gunzipSync, gzipSync } from "node:zlib";
 
 import type {
   ClientBatch, ClientDocument, DocumentOperation, DocumentSnapshot, ServerCommit,
@@ -396,8 +397,8 @@ function reconciliationTrial(api: Api, kind: Kind, size: number,
   return elapsed / iterations;
 }
 
-function fragmentedFixture(api: Api, size: number) {
-  const schema = board(api), server = api.createServer(schema, { historyLimit: 0 });
+function fragmentedDocument(api: Api, size: number, historyLimit = 0, batchSize = size * 2) {
+  const schema = board(api), server = api.createServer(schema, { historyLimit });
   const doc = api.createClient(schema, { clientId: server.openClient(),
     onBatch(batch) { doc.receive(server.receive(batch).commit); } });
   const oracle: string[] = [];
@@ -407,40 +408,152 @@ function fragmentedFixture(api: Api, size: number) {
     return (seed >>> 0) % bound;
   };
   const deleted = Math.floor(size / 4);
-  doc.transact(() => {
-    for (let index = 0; index < size + deleted; index++) {
-      const position = choose(oracle.length + 1), value = (index + 1) % 11 === 0 ? "😀" : "x";
-      doc.state.body.insert(position, value);
-      oracle.splice(position, 0, value);
+  const edit = (count: number, operation: (index: number) => void) => {
+    for (let start = 0; start < count; start += batchSize) {
+      const end = Math.min(start + batchSize, count);
+      doc.transact(() => {
+        for (let index = start; index < end; index++) operation(index);
+      });
     }
+  };
+  edit(size + deleted, (index) => {
+    const position = choose(oracle.length + 1), value = (index + 1) % 11 === 0 ? "😀" : "x";
+    doc.state.body.insert(position, value);
+    oracle.splice(position, 0, value);
   });
-  doc.transact(() => {
-    for (let index = 0; index < deleted; index++) {
-      const position = choose(oracle.length);
-      doc.state.body.delete(position);
-      oracle.splice(position, 1);
-    }
+  edit(deleted, () => {
+    const position = choose(oracle.length);
+    doc.state.body.delete(position);
+    oracle.splice(position, 1);
   });
-  assert.equal(doc.state.body.toString(), oracle.join(""));
+  const value = oracle.join("");
+  assert.equal(doc.state.body.toString(), value);
   assert.equal(doc.state.body.length, size);
   assert.equal(doc.replayConflict, null);
   const checkpoint = doc.checkpoint(), snapshot = server.snapshot();
   assert.deepEqual(checkpoint.snapshot, snapshot);
   assert.equal(checkpoint.pendingBatches.length, 0);
-  const remoteId = server.openClient();
+  return { schema, server, checkpoint, snapshot, value, deleted };
+}
+
+function fragmentedStats(snapshot: DocumentSnapshot<Shape>, size: number, deleted: number, snapshotJson: string): FixtureStats {
   const ranges = snapshot.data.body.idList;
-  const tombstone = ranges.find((range) => range.isDeleted);
-  assert.ok(tombstone !== undefined);
-  const snapshotJson = JSON.stringify(snapshot), serverJson = JSON.stringify(server.checkpoint());
   const stats: FixtureStats = { seed: 42, visibleIds: size,
     deletedIds: ranges.filter((range) => range.isDeleted).reduce((sum, range) => sum + range.count, 0),
     savedRanges: ranges.length, bunches: new Set(ranges.map((range) => range.bunchId)).size,
     snapshotSha256: createHash("sha256").update(snapshotJson).digest("hex") };
   assert.equal(stats.deletedIds, deleted);
-  return { snapshotJson, serverJson, clientJson: JSON.stringify(checkpoint), value: oracle.join(""),
+  return stats;
+}
+
+function fragmentedFixture(api: Api, size: number) {
+  const { server, checkpoint, snapshot, value, deleted } = fragmentedDocument(api, size);
+  const remoteId = server.openClient();
+  const tombstone = snapshot.data.body.idList.find((range) => range.isDeleted);
+  assert.ok(tombstone !== undefined);
+  const snapshotJson = JSON.stringify(snapshot), serverJson = JSON.stringify(server.checkpoint());
+  const stats = fragmentedStats(snapshot, size, deleted, snapshotJson);
+  return { snapshotJson, serverJson, clientJson: JSON.stringify(checkpoint), value,
     watermark: snapshot.serverSeq, remoteId, stats,
     tombstone: { bunchId: tombstone.bunchId, counter: tombstone.startCounter },
     snapshotBytes: Buffer.byteLength(snapshotJson, "utf8"), checkpointBytes: Buffer.byteLength(serverJson, "utf8") };
+}
+
+const checkpointEncodings = ["json", "gzip", "brotli"] as const;
+const checkpointStages = ["checkpoint", "stringifyUtf8", "compress", "decompress", "parseUtf8",
+  "decode", "restore", "saveTotal", "restoreTotal"] as const;
+const gzipLevel = 6, brotliQuality = 4;
+
+function checkpointStorageSettings(smoke: boolean) {
+  const { sizes, samples, warmups, seed } = extendedSettings(smoke);
+  return { sizes, historyLimits: smoke ? [0, 2] : [0, 1000], samples, warmups, seed, batchSize: 32,
+    gzipLevel, brotliQuality };
+}
+
+function checkpointStorageTrial(api: Api, document: ReturnType<typeof fragmentedDocument>, historyLimit: number,
+  encoding: typeof checkpointEncodings[number]) {
+  const { server, schema } = document;
+  collect();
+  const start = performance.now();
+  const checkpoint = server.checkpoint();
+  const checkpointEnd = performance.now();
+  const raw = Buffer.from(JSON.stringify(checkpoint), "utf8");
+  const stringifyEnd = performance.now();
+  const stored = encoding === "gzip" ? gzipSync(raw, { level: gzipLevel })
+    : encoding === "brotli" ? brotliCompressSync(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: brotliQuality } })
+    : raw;
+  const compressEnd = performance.now();
+  const bytes = encoding === "gzip" ? gunzipSync(stored) : encoding === "brotli" ? brotliDecompressSync(stored) : stored;
+  const decompressEnd = performance.now();
+  const input: unknown = JSON.parse(bytes.toString("utf8"));
+  const parseEnd = performance.now();
+  const decoded = api.decodeServerCheckpoint(schema, input);
+  const decodeEnd = performance.now();
+  const restored = api.createServer(schema, { historyLimit, checkpoint: decoded });
+  const restoreEnd = performance.now();
+
+  assert.deepEqual(bytes, raw);
+  assert.deepEqual(restored.checkpoint(), checkpoint);
+  const replay = checkpoint.clients[0]?.replay;
+  assert.ok(replay);
+  assert.deepEqual(restored.receive(replay.batch), { replayed: true, commit: replay.commit });
+  const watermark = checkpoint.snapshot.serverSeq;
+  const retainedFrom = watermark - checkpoint.history.length;
+  assert.deepEqual(restored.commitsSince(retainedFrom), checkpoint.history);
+  if (retainedFrom > 0) assert.equal(restored.commitsSince(retainedFrom - 1), null);
+  const next = restored.receive({
+    clientId: replay.batch.clientId,
+    seq: replay.batch.seq + 1,
+    operations: [{ type: "value/set", path: "count", value: 1 }],
+  });
+  assert.equal(next.replayed, false);
+  assert.equal(next.commit.serverSeq, watermark + 1);
+  assert.deepEqual(next.commit.source, { clientId: replay.batch.clientId, seq: replay.batch.seq + 1 });
+  assert.equal(restored.snapshot().data.count, 1);
+
+  const durations = {
+    checkpoint: checkpointEnd - start,
+    stringifyUtf8: stringifyEnd - checkpointEnd,
+    compress: encoding === "json" ? 0 : compressEnd - stringifyEnd,
+    decompress: encoding === "json" ? 0 : decompressEnd - compressEnd,
+    parseUtf8: parseEnd - decompressEnd,
+    decode: decodeEnd - parseEnd,
+    restore: restoreEnd - decodeEnd,
+  };
+  return { rawBytes: raw.byteLength, encodedBytes: stored.byteLength, durations: {
+    ...durations,
+    saveTotal: durations.checkpoint + durations.stringifyUtf8 + durations.compress,
+    restoreTotal: durations.decompress + durations.parseUtf8 + durations.decode + durations.restore,
+  } };
+}
+
+async function checkpointStorageWorker(size: number, historyLimit: number, smoke: boolean) {
+  const loaded: unknown = await import(import.meta.resolve("articollab"));
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Built self-package has the API checked against source types.
+  const api = loaded as Api;
+  const config = checkpointStorageSettings(smoke), document = fragmentedDocument(api, size, historyLimit, config.batchSize);
+  const { server, snapshot, deleted } = document;
+  const snapshotJson = JSON.stringify(snapshot);
+  const stats = fragmentedStats(snapshot, size, deleted, snapshotJson);
+  const watermark = Math.ceil((size + deleted) / config.batchSize) + Math.ceil(deleted / config.batchSize);
+  const retainedCommits = Math.min(watermark, historyLimit);
+  assert.equal(snapshot.serverSeq, watermark);
+  assert.equal(server.checkpoint().history.length, retainedCommits);
+  return checkpointEncodings.map((encoding) => {
+    for (let index = 0; index < config.warmups; index++) checkpointStorageTrial(api, document, historyLimit, encoding);
+    const measurements = Array.from({ length: config.samples }, () => checkpointStorageTrial(api, document, historyLimit, encoding));
+    const { rawBytes, encodedBytes } = measurements[0]!;
+    assert.ok(measurements.every((sample) => sample.rawBytes === rawBytes && sample.encodedBytes === encodedBytes));
+    const timings = Object.fromEntries(checkpointStages.map((stage) => {
+      const samples = measurements.map((sample) => sample.durations[stage]);
+      assert.ok(samples.every((sample) => Number.isFinite(sample) && sample >= 0));
+      const sorted = samples.toSorted((left, right) => left - right), midpoint = Math.floor(sorted.length / 2);
+      const median = sorted.length % 2 === 0 ? (sorted[midpoint - 1]! + sorted[midpoint]!) / 2 : sorted[midpoint]!;
+      return [stage, { samples, median, min: sorted[0]!, max: sorted.at(-1)! }];
+    }));
+    return { size, historyLimit, retainedCommits, watermark, fixture: stats, encoding, snapshotBytes: Buffer.byteLength(snapshotJson),
+      rawBytes, encodedBytes, encodedToRawRatio: encodedBytes / rawBytes, timings };
+  });
 }
 
 function fragmentedTrial(api: Api, fragment: ReturnType<typeof fragmentedFixture>,
@@ -808,7 +921,46 @@ async function metadata() {
     gitSha: sha.stdout.trim(), dirty: status.stdout.length > 0 };
 }
 
+async function checkpointStorage(smoke: boolean, json: boolean) {
+  const config = checkpointStorageSettings(smoke), environment = await metadata();
+  const results: Awaited<ReturnType<typeof checkpointStorageWorker>> = [];
+  for (const size of config.sizes) {
+    for (const historyLimit of config.historyLimits) {
+      try {
+        const output = await execute(process.execPath, ["--expose-gc", filename, "--checkpoint-storage-worker",
+          String(size), String(historyLimit), smoke ? "smoke" : "full"],
+        { cwd: root, timeout: 120_000, maxBuffer: 1024 * 1024 });
+        assert.equal(output.stderr, "");
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Private worker builds this report; smoke tests verify the fields.
+        results.push(...JSON.parse(output.stdout) as Awaited<ReturnType<typeof checkpointStorageWorker>>);
+      } catch (cause) {
+        const stderr = cause instanceof Error && "stderr" in cause && typeof cause.stderr === "string" ? cause.stderr : "";
+        throw new Error(`checkpoint-storage/${size}/${historyLimit} worker failed\n${stderr}`, { cause });
+      }
+    }
+  }
+  if (json) {
+    console.log(JSON.stringify({ environment, config, results }, null, 2));
+    return;
+  }
+  console.log(`Checkpoint storage · Articollab ${environment.packageVersion} · ${environment.node} · ${environment.os}/${environment.architecture}`);
+  console.log("size\thistory limit\tretained\tencoding\tJSON B\tencoded B\tencoded/raw\tsave median ms\trestore median ms");
+  for (const row of results) {
+    console.log([row.size, row.historyLimit, row.retainedCommits, row.encoding, row.rawBytes, row.encodedBytes,
+      row.encodedToRawRatio.toFixed(3), row.timings.saveTotal!.median.toFixed(3), row.timings.restoreTotal!.median.toFixed(3)].join("\t"));
+  }
+  console.log("In-memory timings. Restore includes JSON parsing, checkpoint decode and constructor validation. Use --json for stage samples.");
+}
+
 async function main(args: string[]): Promise<void> {
+  if (args[0] === "--checkpoint-storage-worker") {
+    const size = Number(args[1]), historyLimit = Number(args[2]), smoke = args[3] === "smoke";
+    const config = checkpointStorageSettings(smoke);
+    assert.ok(args.length === 4 && (smoke || args[3] === "full") && config.sizes.includes(size) &&
+      config.historyLimits.includes(historyLimit), "Invalid checkpoint storage worker arguments");
+    console.log(JSON.stringify(await checkpointStorageWorker(size, historyLimit, smoke)));
+    return;
+  }
   if (args[0] === "--profile-worker") {
     const size = Number(args[1]), smoke = args[2] === "smoke";
     assert.ok(args.length === 4 && (smoke || args[2] === "full") &&
@@ -841,7 +993,13 @@ async function main(args: string[]): Promise<void> {
     return;
   }
   const { values } = parseArgs({ args, options: { json: { type: "boolean" }, smoke: { type: "boolean" },
-    extended: { type: "boolean" }, "profile-remote-replace": { type: "string" } } });
+    extended: { type: "boolean" }, "checkpoint-storage": { type: "boolean" }, "profile-remote-replace": { type: "string" } } });
+  if (values["checkpoint-storage"]) {
+    assert.ok(!values.extended && values["profile-remote-replace"] === undefined,
+      "--checkpoint-storage is separate from --extended and --profile-remote-replace");
+    await checkpointStorage(values.smoke === true, values.json === true);
+    return;
+  }
   if (values["profile-remote-replace"] !== undefined) {
     assert.ok(!values.extended, "Profiling and --extended are separate modes");
     assert.ok(values["profile-remote-replace"].length > 0, "Profile output directory must not be empty");

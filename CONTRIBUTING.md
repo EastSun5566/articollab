@@ -134,6 +134,19 @@ Each worker uses one warm-up and five samples. Bulk deletion, pending replay, re
 
 Fixture generation, trial setup, assertions, explicit GC and serialization are outside timing. Decode + restore includes the public decoder and constructor but excludes `JSON.parse`; it is not pure hydration. Local edits do not submit/ack, and receive-only scenarios exclude server submission. JSON byte counts describe the prepared snapshot/server checkpoint, not post-trial output or compression. Heap is the signed post-GC delta for a restored client above its already-parsed input, not peak memory or RSS. Keep raw full-run results outside the checkout and compare two runs before proposing storage or reconciliation changes.
 
+### Server checkpoint storage
+
+```sh
+pnpm bench --checkpoint-storage --smoke
+pnpm --silent bench --checkpoint-storage --json > /tmp/articollab-checkpoint-storage.json
+```
+
+This mode uses the fragmented Text editing pattern in transactions of up to 32 operations. It compares history capacities 0 and 1,000 at 10,000, 50,000 and 100,000 visible elements. Smoke uses size 32 and capacities 0 and 2. Each size and capacity runs in its own worker and compares UTF-8 JSON, gzip level 6 and Brotli quality 4.
+
+Save time covers checkpoint creation, JSON serialization and UTF-8 encoding, and compression where applicable. Restore time covers decompression where applicable, UTF-8 decoding and JSON parsing, public checkpoint decoding, and construction of a new server. The constructor validates the checkpoint again. Each trial verifies the restored checkpoint, retry, catch-up and the next submission after timing.
+
+The JSON report includes fixture fingerprints, retained history, encoded and raw bytes, and samples for each stage. Totals are calculated per sample before taking medians. Fixture setup, filesystem I/O, explicit GC and assertions are outside the timer. Compression results depend on the data and settings, and the fixture contains repetitive text. Run twice on the same machine before deciding whether to change storage. This mode runs separately from extended benchmarks and CPU profiling.
+
 ### Receive-only Text CPU profiles
 
 Use an existing directory outside the checkout. Each invocation creates a unique child directory without overwriting previous artifacts:
