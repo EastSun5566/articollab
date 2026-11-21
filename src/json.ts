@@ -161,3 +161,13 @@ export function jsonEquals(left: unknown, right: unknown): boolean {
   }
   return true;
 }
+
+/** A JSON string that is equal for exactly the values `jsonEquals` treats as equal. */
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, entry: unknown) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return entry;
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A non-null, non-array object; indexed values remain unknown.
+    const record = entry as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]]));
+  });
+}

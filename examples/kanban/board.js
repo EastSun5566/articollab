@@ -126,29 +126,59 @@ export function moveCard(doc, cardId, toColumn, toIndex) {
 }
 
 /**
- * Renames this writer will lose: a peer's commit deleted these cards while this writer's renames of
- * them are still pending, so the server will apply each rename after the delete and the policy will
- * drop it. Call it with each received peer commit and the writer's pending batches.
- * @param {import("../../dist/index.js").ServerCommit<import("../../dist/index.js").DocumentOperation<Shape>>} commit
- * @param {readonly import("../../dist/index.js").ClientBatch<import("../../dist/index.js").DocumentOperation<Shape>>[]} pendingBatches
- * @returns {Card[]} The last pending title per lost card, in commit order.
+ * The edits the server dropped from this writer's batch, by card: the policy drops a rename or a
+ * column change of a card that another writer deleted first. Call it with a `transform` event's
+ * `dropped` operations. Same-column moves of a deleted card are reported by `discard` instead.
+ * @param {readonly import("../../dist/index.js").DocumentOperation<Shape>[]} dropped
+ * @returns {{ kind: "rename" | "move", id: string, title?: string }[]} In batch order, at most one of each kind per card.
  */
-export function lostRenames(commit, pendingBatches) {
-  /** @type {Map<string, string>} */
-  const titles = new Map();
-  for (const batch of pendingBatches) {
-    for (const operation of batch.operations) {
-      if (operation.type === "map/set" && operation.path === "titles") titles.set(operation.key, operation.value);
+export function droppedEdits(dropped) {
+  /** @type {Map<string, { kind: "rename" | "move", id: string, title?: string }>} */
+  const edits = new Map();
+  for (const operation of dropped) {
+    if (operation.type !== "map/set") continue;
+    if (operation.path === "titles") edits.set(`rename:${operation.key}`, { kind: "rename", id: operation.key, title: operation.value });
+    else if (operation.path === "columns" && !edits.has(`move:${operation.key}`)) edits.set(`move:${operation.key}`, { kind: "move", id: operation.key });
+  }
+  return [...edits.values()];
+}
+
+/**
+ * Tells this writer, through `notify`, about its edits the server did not apply: renames and moves
+ * of cards another writer deleted first. A cross-column move of such a card is both transformed and
+ * discarded, but is reported once. Edits cancelled through `cancel()` are not reported.
+ * @param {BoardDocument} doc @param {(message: string) => void} notify
+ */
+export function watchDroppedEdits(doc, notify) {
+  let cancelling = false, movedNotice = -1;
+  /** @param {number} serverSeq */
+  const notMoved = (serverSeq) => {
+    if (movedNotice === serverSeq) return;
+    movedNotice = serverSeq;
+    notify("Not moved: another writer deleted that card.");
+  };
+  const stopTransform = doc.on("transform", ({ commit, dropped }) => {
+    if (cancelling) return;
+    for (const edit of droppedEdits(dropped)) {
+      if (edit.kind === "rename") notify(`Not saved: “${edit.title}”. Another writer deleted this card.`);
+      else notMoved(commit.serverSeq);
     }
-  }
-  /** @type {Card[]} */
-  const lost = [];
-  for (const operation of commit.operations) {
-    if (operation.type !== "map/delete" || operation.path !== "titles") continue;
-    const title = titles.get(operation.key);
-    if (title !== undefined) lost.push({ id: operation.key, title });
-  }
-  return lost;
+  });
+  // A List move of a deleted card changed nothing; the server reports it on acknowledgement.
+  const stopDiscard = doc.on("discard", ({ commit, operations }) => {
+    if (!cancelling && operations.some((operation) => operation.type === "list/move")) notMoved(commit.serverSeq);
+  });
+  return {
+    /**
+     * Runs the writer's own cancellation, such as `sync.rejectPending()`, without reporting it.
+     * @template T @param {() => Promise<T>} cancellation @returns {Promise<T>}
+     */
+    async cancel(cancellation) {
+      cancelling = true;
+      try { return await cancellation(); } finally { cancelling = false; }
+    },
+    stop() { stopTransform(); stopDiscard(); },
+  };
 }
 
 /**

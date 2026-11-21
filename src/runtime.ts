@@ -52,7 +52,7 @@ import {
   wrongCollectionKind,
   type CollectionState,
 } from "./state.ts";
-import { jsonEquals, validateJsonValue } from "./json.ts";
+import { canonicalJson, jsonEquals, validateJsonValue } from "./json.ts";
 
 export interface ValueSetOperation<
   Path extends string = string,
@@ -146,6 +146,18 @@ export interface ServerChangeEvent<TOperation extends Operation = Operation> {
 export interface DiscardEvent<TOperation extends Operation = Operation> {
   readonly commit: ServerCommit<TOperation>;
   readonly operations: readonly Extract<TOperation, { readonly type: "list/set" | "list/move" }>[];
+}
+
+/**
+ * An own acknowledged batch whose commit differs from what this writer sent: the server transformed
+ * or rejected it. `dropped` lists sent operations the commit lacks, in batch order, and `added` the
+ * commit's operations that were not sent, in commit order; both compare operations as JSON.
+ */
+export interface TransformEvent<TOperation extends Operation = Operation> {
+  readonly batch: ClientBatch<TOperation>;
+  readonly commit: ServerCommit<TOperation>;
+  readonly dropped: readonly TOperation[];
+  readonly added: readonly TOperation[];
 }
 
 export type ChangeEvent<TOperation extends Operation = Operation> =
@@ -307,6 +319,35 @@ function sameAnchor(left: Readonly<ElementId> | null, right: Readonly<ElementId>
   return left === right || (left !== null && right !== null && equalsId(left, right));
 }
 
+/** Matches sent and committed operations as a JSON multiset, keeping each side's order. */
+function transformEvent<TOperation extends Operation>(
+  batch: ClientBatch<TOperation>, commit: ServerCommit<TOperation>
+): TransformEvent<TOperation> {
+  const unmatched = new Map<string, number>();
+  const commitKeys = commit.operations.map((operation) => {
+    const key = canonicalJson(operation);
+    unmatched.set(key, (unmatched.get(key) ?? 0) + 1);
+    return key;
+  });
+  const sent = new Map<string, number>();
+  const dropped = batch.operations.filter((operation) => {
+    const key = canonicalJson(operation);
+    const count = unmatched.get(key) ?? 0;
+    if (count === 0) return true;
+    unmatched.set(key, count - 1);
+    sent.set(key, (sent.get(key) ?? 0) + 1);
+    return false;
+  });
+  const added = commit.operations.filter((_operation, index) => {
+    const key = commitKeys[index]!;
+    const count = sent.get(key) ?? 0;
+    if (count === 0) return true;
+    sent.set(key, count - 1);
+    return false;
+  });
+  return Object.freeze({ batch, commit, dropped: Object.freeze(dropped), added: Object.freeze(added) });
+}
+
 /** JSON equality would lose payload identity and signed-zero changes. */
 function sameOperations(
   left: readonly Operation[], right: readonly Operation[], allowValueChanges = false
@@ -454,6 +495,10 @@ type DiscardListener<S extends SchemaShape> = (
   event: DiscardEvent<DocumentOperation<S>>
 ) => void;
 
+type TransformListener<S extends SchemaShape> = (
+  event: TransformEvent<DocumentOperation<S>>
+) => void;
+
 interface ClientProgress<S extends SchemaShape> {
   readonly serverSeq: number;
   readonly lastLocalSeq: number;
@@ -471,6 +516,7 @@ export class ClientDocument<S extends SchemaShape> {
   private readonly onBatch: CreateClientOptions<S>["onBatch"];
   private readonly listeners = new Set<ChangeListener<S>>();
   private readonly discardListeners = new Set<DiscardListener<S>>();
+  private readonly transformListeners = new Set<TransformListener<S>>();
   private readonly collections = new Map<string, RuntimeCollection>();
   private authoritativeStates: Map<string, CollectionState>;
   private readonly pendingBatches: ClientBatch<DocumentOperation<S>>[] = [];
@@ -692,12 +738,18 @@ export class ClientDocument<S extends SchemaShape> {
   on(event: "change", listener: ChangeListener<S>): () => void;
   /** Own list sets and moves that the server applied after their target was deleted, once per acknowledged commit. */
   on(event: "discard", listener: DiscardListener<S>): () => void;
-  on(event: "change" | "discard", listener: ChangeListener<S> | DiscardListener<S>): () => void {
-    if (event !== "change" && event !== "discard") {
+  /** Own batches whose acknowledged commit differs from what was sent: transformed or rejected. */
+  on(event: "transform", listener: TransformListener<S>): () => void;
+  on(
+    event: "change" | "discard" | "transform",
+    listener: ChangeListener<S> | DiscardListener<S> | TransformListener<S>
+  ): () => void {
+    if (event !== "change" && event !== "discard" && event !== "transform") {
       throw new Error(`Unknown event: ${event as string}`);
     }
     // The overloads pair each event name with its listener type.
-    const listeners = (event === "change" ? this.listeners : this.discardListeners) as Set<typeof listener>;
+    const listeners = (event === "change" ? this.listeners
+      : event === "discard" ? this.discardListeners : this.transformListeners) as Set<typeof listener>;
     listeners.add(listener);
     return () => {
       listeners.delete(listener);
@@ -708,7 +760,10 @@ export class ClientDocument<S extends SchemaShape> {
   receive(commit: ServerCommit<DocumentOperation<S>>): void {
     this.notificationDepth++;
     try {
-      const discarded = this.receiveCommit(commit);
+      const { discarded, transform } = this.receiveCommit(commit);
+      if (transform !== undefined) {
+        for (const listener of [...this.transformListeners]) listener(transform);
+      }
       if (discarded.length !== 0) {
         const event = Object.freeze({ commit, operations: Object.freeze(discarded) });
         for (const listener of [...this.discardListeners]) listener(event);
@@ -719,10 +774,11 @@ export class ClientDocument<S extends SchemaShape> {
     this.flushObservers();
   }
 
-  /** Applies one commit and returns the own list sets and moves it discarded. */
-  private receiveCommit(
-    commit: ServerCommit<DocumentOperation<S>>
-  ): Extract<DocumentOperation<S>, { readonly type: "list/set" | "list/move" }>[] {
+  /** Applies one commit; returns the own list sets and moves it discarded and, if it differs from the own batch, how. */
+  private receiveCommit(commit: ServerCommit<DocumentOperation<S>>): {
+    readonly discarded: Extract<DocumentOperation<S>, { readonly type: "list/set" | "list/move" }>[];
+    readonly transform: TransformEvent<DocumentOperation<S>> | undefined;
+  } {
     if (this.transactionDepth !== 0) {
       throw new Error("Cannot receive a server commit during a transaction");
     }
@@ -765,7 +821,7 @@ export class ClientDocument<S extends SchemaShape> {
       this.pendingBatches.shift();
       this.lastServerSeq = commit.serverSeq;
       this.checkpointSnapshot = undefined;
-      return discarded;
+      return { discarded, transform: undefined };
     }
 
     const remainingBatches = isOwnCommit
@@ -852,7 +908,11 @@ export class ClientDocument<S extends SchemaShape> {
     if (changed) {
       this.emitChange(Object.freeze({ origin: "server", commit }));
     }
-    return discarded;
+    // Decoded commits carry copies of own payloads, so equality is by JSON value, not reference.
+    // Without transform listeners, skip the comparison.
+    const transform = ownBatch === undefined || this.transformListeners.size === 0 ||
+      jsonEquals(ownBatch.operations, commit.operations) ? undefined : transformEvent(ownBatch, commit);
+    return { discarded, transform };
   }
 
   private commit(): void {

@@ -237,6 +237,14 @@ writer.state.items.set(0, "edited");
 deliverAll();
 assert.deepEqual(discarded, ["edited"]);
 
+const transformServer = createServer(Board, { resolve: ({ batch }) => batch.operations.filter((operation) => operation.type !== "list/insert") });
+const transformed = [];
+const transformWriter = createClient(Board, { clientId: transformServer.openClient(), onBatch() {} });
+transformWriter.on("transform", (event) => transformed.push([event.dropped.map((operation) => operation.value), event.added.length]));
+transformWriter.state.items.push("dropped");
+transformWriter.receive(decodeServerCommit(Board, roundTrip(transformServer.receive(transformWriter.checkpoint().pendingBatches[0]).commit)));
+assert.deepEqual(transformed, [[["dropped"], 0]]);
+
 const syncServer = createServer(Board);
 const handle = createSyncHandler(Board, syncServer);
 const viaHandler = async (input, init) => handle(new Request(input, init));
@@ -337,7 +345,7 @@ import {
   type Cursor, type Value, type List, type Text, type TextChange, type TextChangeEvent, type DocumentOperation, type DocumentSnapshot,
   type ListChange, type ListChangeEvent,
   type ListSnapshotData, type ListSetOperation, type ListMoveOperation, type ListMoveEntry, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
-  type CreateServerOptions, type ClientBatch, type ServerCommit, type ServerClientSession, type DiscardEvent,
+  type CreateServerOptions, type ClientBatch, type ServerCommit, type ServerClientSession, type DiscardEvent, type TransformEvent,
 } from "articollab";
 import {
   connectSync, createSyncHandler, type SyncClient, type SyncHandler, type SyncPushState, type SyncStatus,
@@ -414,6 +422,15 @@ doc.on("discard", (event) => {
 });
 // @ts-expect-error Discard listeners receive discard events, not change events.
 doc.on("discard", (event: { origin: "local" }) => event);
+doc.on("transform", (event) => {
+  type Transform = Expect<Equal<typeof event, TransformEvent<Operation>>>;
+  type Dropped = Expect<Equal<(typeof event.dropped)[number], Operation>>;
+  type Batch = Expect<Equal<typeof event.batch, ClientBatch<Operation>>>;
+  // @ts-expect-error Dropped operations are readonly.
+  event.dropped.push(event.added[0]!);
+});
+// @ts-expect-error Transform listeners receive transform events, not change events.
+doc.on("transform", (event: { origin: "local" }) => event);
 type Connected = Expect<Equal<Awaited<ReturnType<typeof connectSync<Shape>>>, SyncClient<Shape>>>;
 type Status = Expect<Equal<SyncClient<Shape>["status"], SyncStatus>>;
 type Handler = Expect<Equal<ReturnType<typeof createSyncHandler<Shape>>, SyncHandler>>;
