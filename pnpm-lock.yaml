@@ -167,8 +167,8 @@ importers:
   .:
     dependencies:
       articulated:
-        specifier: ^1.3.1
-        version: 1.3.2
+        specifier: ^1.4.0
+        version: 1.4.0
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -767,8 +767,8 @@ packages:
     resolution: {integrity: sha512-VipTB0gXgGIFO2Rg9yEVN5wLt2AurJcZqDbgmYSwPwsykhLrQhs240/bfceev4w68lI8JshoOJIk9uW7tFzROw==}
     engines: {node: '>=22'}
 
-  articulated@1.3.2:
-    resolution: {integrity: sha512-5RqNrozqQxeGK4cyMWCS9EFJRZ6/CHAXmaXSIm7L8hkeIiyYbuk+tq3LCCZ7hrdNnImqyTQtmKhXZ2/ncnfUsg==}
+  articulated@1.4.0:
+    resolution: {integrity: sha512-DOzCTECXbuxvXJMdbB9eHQ+dM+PGjuKhg/pwaE15l6RZyLW7Ydsr5mkR1buDTUTnPe0+1VoK4aOyyJPmv0E27Q==}
 
   balanced-match@1.0.2:
     resolution: {integrity: sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw==}
@@ -1410,7 +1410,7 @@ snapshots:
 
   argue-cli@3.2.0: {}
 
-  articulated@1.3.2:
+  articulated@1.4.0:
     dependencies:
       sparse-array-rled: 2.0.1
 
