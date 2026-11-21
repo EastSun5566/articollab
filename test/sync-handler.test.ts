@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer as createHttpServer, type ServerResponse } from "node:http";
 import { describe, it, type TestContext } from "node:test";
 
 import {
@@ -9,6 +10,7 @@ import {
   type SyncAction, type SyncHandlerOptions,
 } from "../src/sync/index.ts";
 import { runSyncAdapterDemo, serveFetch } from "../examples/sync-adapter.ts";
+import { toNodeListener } from "../examples/fetch-bridge.ts";
 import { readServerSentEvents, type ServerSentEvent } from "../src/sync/sse.ts";
 
 const Board = defineDocument({ items: list<string>(), count: value(0) });
@@ -25,6 +27,12 @@ function setup(options: SyncHandlerOptions<Shape> = {}) {
 }
 const batch = (clientId: string, seq: number, count = seq) =>
   ({ clientId, seq, operations: [{ type: "value/set" as const, path: "count" as const, value: count }] });
+const insert = (clientId: string, item: string) => ({
+  clientId, seq: 1, operations: [{
+    type: "list/insert" as const, path: "items" as const, before: null,
+    id: { bunchId: JSON.stringify([clientId, "items", 1]), counter: 0 }, value: item,
+  }],
+});
 
 /** Serves a Fetch handler through the example's node:http bridge for real-socket tests. */
 async function serve(t: TestContext, handle: (request: Request) => Promise<Response>): Promise<string> {
@@ -183,6 +191,55 @@ function listen(response: Response) {
 const settle = async () => { for (let index = 0; index < 5; index++) await new Promise((resolve) => setImmediate(resolve)); };
 
 describe("createSyncHandler event streams", () => {
+  it("limits queued UTF-8 bytes and closes only the stream that falls behind", async (t) => {
+    // Keep clearInterval real so callbacks from previous HTTP tests can still clean up.
+    const heartbeat = t.mock.method(globalThis, "setInterval");
+    const saves: number[] = [];
+    const h = setup({ maxEventStreams: 2, heartbeatInterval: 60_000, bodyLimit: 5 * 1024 * 1024,
+      saveCheckpoint: (checkpoint) => { saves.push(checkpoint.snapshot.serverSeq); } });
+    const slow = await h.get("events?since=0");
+    assert.equal(slow.status, 200);
+    t.after(async () => { if (!slow.body?.locked) await slow.body?.cancel(); });
+    const abort = new AbortController();
+    const fast = listen(await h.handle(new Request(base + "events?since=0", { signal: abort.signal })));
+    t.after(async () => { abort.abort(); await fast.done; });
+
+    const writer = h.server.openClient();
+    const emptyFrame = `event: commits\nid: 1\ndata: ${JSON.stringify([{
+      serverSeq: 1, source: { clientId: writer, seq: 1 }, operations: insert(writer, "").operations,
+    }])}\n\n`;
+    const bytes = 4 * 1024 * 1024;
+    const payloadBytes = bytes - Buffer.byteLength(emptyFrame);
+    const payload = "😀".repeat(Math.floor(payloadBytes / 4)) + "x".repeat(payloadBytes % 4);
+    assert.equal((await h.post("batches", insert(writer, payload))).status, 204);
+    await settle();
+    assert.deepEqual(fast.sequences(), [1]);
+
+    assert.equal(heartbeat.mock.callCount(), 2);
+    for (const { arguments: [ping] } of heartbeat.mock.calls) ping();
+    const full = await h.get("events?since=1");
+    t.after(() => full.body?.cancel());
+    assert.equal(full.status, 503, "a skipped heartbeat does not release the slow reader's slot");
+
+    assert.equal((await h.post("batches", batch(writer, 2))).status, 204);
+    const resumed = await h.get("events?since=2");
+    t.after(() => resumed.body?.cancel());
+    assert.equal(resumed.status, 200, "overflow releases the slot before the slow reader drains");
+    const queued = await slow.text();
+    assert.equal(Buffer.byteLength(queued), bytes);
+    assert.ok(queued.startsWith("event: commits\nid: 1\n"));
+    assert.ok(queued.endsWith("\n\n"));
+    assert.ok(!queued.includes(": ping\n"));
+
+    assert.equal((await h.post("batches", batch(writer, 3))).status, 204);
+    await settle();
+    assert.deepEqual(fast.sequences(), [1, 2, 3]);
+    assert.deepEqual(saves, [1, 2, 3]);
+    const commits: unknown = await (await h.get("commits?since=1")).json();
+    assert.ok(Array.isArray(commits));
+    assert.deepEqual(commits.map((commit) => decodeServerCommit(Board, commit).serverSeq), [2, 3]);
+  });
+
   it("admits concurrent event streams one at a time within the capacity limit", async (t) => {
     const h = setup({ maxEventStreams: 1, heartbeatInterval: 0 });
     const before = h.server.checkpoint();
@@ -363,6 +420,51 @@ async function until(condition: () => boolean, what: string, timeout = 5000): Pr
 }
 
 describe("push over real HTTP", () => {
+  it("catches up over HTTP after an oversized initial push and resumes live delivery", async (t) => {
+    const h = setup({ heartbeatInterval: 0 });
+    const eventsSince: string[] = [], commitsSince: string[] = [];
+    const writer = h.server.openClient();
+    const large = "😀".repeat(1024 * 1024);
+    const url = await serve(t, (request) => {
+      const { pathname, searchParams } = new URL(request.url);
+      const since = searchParams.get("since") ?? "";
+      if (pathname.endsWith("/commits")) commitsSince.push(since);
+      if (pathname.endsWith("/events")) {
+        eventsSince.push(since);
+        if (eventsSince.length === 1) {
+          // A new saved commit lands between the first catch-up and the push subscription.
+          h.server.receive(insert(writer, large));
+          h.server.receive(batch(writer, 2, 20));
+        }
+      }
+      return h.handle(request);
+    });
+    const a = await connectSync(Board, {
+      transport: createHttpTransport({ url }), pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 },
+    });
+    t.after(() => a.stop());
+    const applied: number[] = [];
+    a.doc.on("change", (event) => {
+      if (event.origin === "server") applied.push(event.commit.serverSeq);
+    });
+    assert.equal(await a.sync(), true);
+    await until(() => a.push === "open" && eventsSince.at(-1) === "2", "catch-up and reconnection");
+    assert.deepEqual(eventsSince, ["0", "2"]);
+    assert.ok(commitsSince.filter((since) => since === "0").length >= 2);
+    assert.deepEqual(applied, [1, 2]);
+    assert.deepEqual(a.doc.state.items.toArray(), [large]);
+    assert.equal(a.doc.state.count.value, 20);
+
+    h.server.receive(batch(writer, 3, 30));
+    await h.handle.notify();
+    await until(() => a.doc.state.count.value === 30, "the next pushed commit");
+    assert.deepEqual(applied, [1, 2, 3]);
+    a.doc.state.count.value = 40;
+    assert.equal(await a.sync(), true);
+    assert.deepEqual(a.doc.checkpoint().pendingBatches, []);
+    assert.deepEqual(a.doc.checkpoint().snapshot, h.server.snapshot());
+  });
+
   it("delivers commits without polling and reconnects after the server restarts", async (t: TestContext) => {
     const server = createServer(Board);
     let host = await serveFetch(createSyncHandler(Board, server, { heartbeatInterval: 200 }));
@@ -394,4 +496,61 @@ describe("push over real HTTP", () => {
     await until(() => a.doc.state.items.length === 2, "the commit after restart");
     assert.deepEqual(a.doc.state.items.toArray(), b.doc.state.items.toArray());
   });
+});
+
+describe("Node Fetch bridge", () => {
+  for (const disconnect of [false, true]) {
+    it(`waits for ${disconnect ? "disconnect" : "drain"} before pulling again after a backed-up write`, async (t) => {
+      const blocked = Promise.withResolvers<ServerResponse>();
+      const cancelled = Promise.withResolvers<void>();
+      const encoder = new TextEncoder();
+      const chunks = ["first", "second"];
+      let pulls = 0;
+      const bridge = toNodeListener(async () => new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const chunk = chunks[pulls++];
+          assert.ok(chunk !== undefined);
+          controller.enqueue(encoder.encode(chunk));
+          if (pulls === chunks.length) controller.close();
+        },
+        cancel() { cancelled.resolve(); },
+      }, { highWaterMark: 0 })));
+      const server = createHttpServer((request, response) => {
+        const write = response.write.bind(response);
+        let writes = 0;
+        t.mock.method(response, "write", (chunk: Uint8Array) => {
+          const ready = write(chunk);
+          if (++writes === 1) { blocked.resolve(response); return false; }
+          return ready;
+        });
+        bridge(request, response);
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      t.after(() => new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      }));
+      const address = server.address();
+      assert.ok(address !== null && typeof address !== "string");
+      const response = await fetch(`http://127.0.0.1:${address.port}`);
+      t.after(async () => { if (!response.body?.locked) await response.body?.cancel().catch(() => {}); });
+      const outgoing = await blocked.promise;
+      await settle();
+      assert.equal(pulls, 1);
+      assert.equal(outgoing.listenerCount("drain"), 1);
+      if (disconnect) {
+        outgoing.destroy();
+        await cancelled.promise;
+        assert.equal(pulls, 1);
+      } else {
+        outgoing.emit("drain");
+        assert.equal(await response.text(), "firstsecond");
+        assert.equal(pulls, 2);
+      }
+      assert.equal(outgoing.listenerCount("drain"), 0);
+    });
+  }
 });

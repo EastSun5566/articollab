@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 
@@ -25,7 +26,7 @@ export function toNodeListener(handle: (request: Request) => Promise<Response>) 
       if (response.body === null) { outgoing.end(); return; }
       for await (const chunk of response.body) {
         if (outgoing.destroyed) break;
-        outgoing.write(chunk);
+        if (!outgoing.write(chunk)) await once(outgoing, "drain", { signal: disconnected.signal });
       }
       outgoing.end();
     }).catch(() => { outgoing.destroy(); });
