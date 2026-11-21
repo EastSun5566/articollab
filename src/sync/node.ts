@@ -42,8 +42,7 @@ export async function openFileStore(path: string, options: FileStoreOptions = {}
   const state = closable(await acquireLock(`articollab:file:${target}`, options.locks));
 
   return {
-    async load() {
-      state.assertOpen();
+    load: () => state.run(async () => {
       let text: string;
       try { text = await fs.readFile(target, "utf8"); }
       catch (error) {
@@ -52,9 +51,8 @@ export async function openFileStore(path: string, options: FileStoreOptions = {}
       }
       try { return JSON.parse(text) as unknown; }
       catch (cause) { throw new Error(`Checkpoint file is not valid JSON: ${target}`, { cause }); }
-    },
-    async save(checkpoint) {
-      state.assertOpen();
+    }),
+    save: (checkpoint) => state.run(async () => {
       const temporary = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`);
       try {
         const file = await fs.open(temporary, "wx");
@@ -69,11 +67,8 @@ export async function openFileStore(path: string, options: FileStoreOptions = {}
         await fs.rm(temporary, { force: true }).catch(() => {});
         throw error;
       }
-    },
-    async clear() {
-      state.assertOpen();
-      await fs.rm(target, { force: true });
-    },
+    }),
+    clear: () => state.run(async () => { await fs.rm(target, { force: true }); }),
     close: () => state.close(),
   };
 }

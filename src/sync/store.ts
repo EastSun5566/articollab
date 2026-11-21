@@ -10,7 +10,10 @@ export interface CheckpointStore {
   save(checkpoint: unknown): Promise<void>;
   /** Removes the saved checkpoint. */
   clear(): Promise<void>;
-  /** Releases the lock and any connection. Further calls are no-ops; other methods then throw. */
+  /**
+   * Releases the lock and any connection once operations already started have finished. Further
+   * calls are no-ops; other methods then reject.
+   */
   close(): void;
 }
 
@@ -39,10 +42,13 @@ const releasing = new Map<string, Promise<unknown>>();
 
 /**
  * Takes an exclusive lock without waiting for another holder, and returns the function that releases
- * it. A lock this realm just released is awaited first, so close-then-reopen works immediately.
+ * it once `after` settles. A lock this realm is releasing is awaited first, so close-then-reopen
+ * works immediately and never overlaps the closing store's last operations.
  * @internal Shared by the IndexedDB and file stores.
  */
-export async function acquireLock(name: string, locks: LockManagerLike = defaultLocks()): Promise<() => void> {
+export async function acquireLock(
+  name: string, locks: LockManagerLike = defaultLocks()
+): Promise<(after?: Promise<unknown>) => void> {
   await releasing.get(name);
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
@@ -56,24 +62,34 @@ export async function acquireLock(name: string, locks: LockManagerLike = default
     finished.catch(reject);
   });
   if (!granted) throw new CheckpointLockedError(`Checkpoint store is in use elsewhere: ${name}`);
-  return () => {
-    const done = finished.catch(() => {}).finally(() => { if (releasing.get(name) === done) releasing.delete(name); });
+  return (after = Promise.resolve()) => {
+    const done = after.catch(() => {}).then(() => { release(); return finished; }).catch(() => {})
+      .finally(() => { if (releasing.get(name) === done) releasing.delete(name); });
     releasing.set(name, done);
-    release();
   };
 }
 
-/** @internal Shared state for stores that hold a lock until `close()`. */
-export function closable(release: () => void, onClose: () => void = () => {}) {
+/**
+ * Shared state for stores that hold a lock until `close()`. Operations started before `close()`
+ * finish first; then `onClose` runs and the lock is released.
+ * @internal
+ */
+export function closable(release: (after: Promise<unknown>) => void, onClose: () => void = () => {}) {
   let closed = false;
+  const running = new Set<Promise<unknown>>();
   return {
-    assertOpen(): void {
-      if (closed) throw new Error("Checkpoint store is closed");
+    run<T>(operation: () => Promise<T>): Promise<T> {
+      if (closed) return Promise.reject(new Error("Checkpoint store is closed"));
+      const promise = operation();
+      running.add(promise);
+      const settled = () => { running.delete(promise); };
+      promise.then(settled, settled);
+      return promise;
     },
     close(): void {
       if (closed) return;
       closed = true;
-      try { onClose(); } finally { release(); }
+      release(Promise.allSettled([...running]).then(() => { onClose(); }));
     },
   };
 }
@@ -166,22 +182,22 @@ export async function openIndexedDbStore(options: IndexedDbStoreOptions): Promis
   }
   const state = closable(release, () => db.close());
 
-  async function write(change: (store: IdbObjectStore) => void): Promise<void> {
-    state.assertOpen();
-    const transaction = db.transaction(OBJECT_STORE, "readwrite");
-    const done = completion(transaction);
-    change(transaction.objectStore(OBJECT_STORE));
-    await done;
+  function write(change: (store: IdbObjectStore) => void): Promise<void> {
+    return state.run(async () => {
+      const transaction = db.transaction(OBJECT_STORE, "readwrite");
+      const done = completion(transaction);
+      change(transaction.objectStore(OBJECT_STORE));
+      await done;
+    });
   }
 
   return {
-    async load() {
-      state.assertOpen();
+    load: () => state.run(async () => {
       const stored = await settle(db.transaction(OBJECT_STORE, "readonly").objectStore(OBJECT_STORE).get(key));
       if (stored === undefined) return undefined;
       if (typeof stored !== "string") throw new Error(`Stored checkpoint is not a JSON string: ${key}`);
       return JSON.parse(stored) as unknown;
-    },
+    }),
     save: (checkpoint) => write((store) => { store.put(JSON.stringify(checkpoint), key); }),
     clear: () => write((store) => { store.delete(key); }),
     close: () => state.close(),

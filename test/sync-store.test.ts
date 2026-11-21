@@ -135,6 +135,40 @@ describe("File checkpoint store", () => {
     assert.deepEqual(await fs.readdir(dir), ["writer.json"], "the temporary file was removed");
   });
 
+  it("finishes a save that was running at close before a reopened store can write", async (t) => {
+    const dir = await directory(t);
+    const path = join(dir, "writer.json");
+    let releaseRename = () => {};
+    const renameGate = new Promise<void>((resolve) => { releaseRename = resolve; });
+    let slowRename = true;
+    const slow: FileStoreFileSystem = {
+      readFile: (file, encoding) => fs.readFile(file, encoding),
+      open: (file, flags) => fs.open(file, flags),
+      rm: (file, options) => fs.rm(file, options),
+      async rename(from, to) {
+        if (slowRename) { slowRename = false; await renameGate; }
+        await fs.rename(from, to);
+      },
+    };
+    const first = await openFileStore(path, { fs: slow });
+    const stale = first.save({ seq: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 20)); // The old save now waits inside rename.
+    first.close(); // For example a client stopping while its save is still running.
+    await assert.rejects(first.save({ seq: 9 }), /closed/);
+    // Reopen and save at once; the stalled old save is released only afterwards.
+    const racing = (async () => {
+      const second = await openFileStore(path); // Waits for the running save instead of overlapping it.
+      await second.save({ seq: 2 });
+      return second;
+    })();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    releaseRename();
+    const second = await racing;
+    t.after(() => second.close());
+    await stale;
+    assert.deepEqual(await second.load(), { seq: 2 }, "the older save never lands after the newer one");
+  });
+
   it("reports a corrupt file instead of treating it as empty, and refuses a second open in this process", async (t) => {
     const dir = await directory(t);
     const path = join(dir, "writer.json");
