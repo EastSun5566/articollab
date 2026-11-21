@@ -1,40 +1,17 @@
 # Articollab
 
-Build collaborative state with typed collection methods. A client displays edits immediately; a server decides their shared order and authoritative result.
+Build collaborative state in TypeScript. Clients show local edits immediately, then reconcile with commits in the order the server assigns.
 
 ## When to use it
 
-Use Articollab when you want a server to control shared state while clients remain responsive. Your application can accept, transform or reject a batch without changing the collection API.
+Use Articollab when the server needs to accept, transform or reject edits. For example, a shared task board can show a move immediately while the server decides whether to keep it.
 
-Articollab is **not a CRDT**. Clients need ordered server commits to reconcile their work. It uses [articulated](https://github.com/mweidner037/articulated) for stable List/Text identities.
+Choose [collections](collections.md) for whole JSON values, ordered items, plain text or keyed values. Each client uses the same document schema.
 
-Start with the [Counter quick start](quick-start.md). It runs in memory so you can follow an edit from local state to server confirmation before adding networking.
+## Connect your application
 
-## What you build with
+Use the [HTTP sync adapter](sync.md) to deliver commits and resume after a disconnect, or provide your own transport.
 
-- **Value** replaces an immutable JSON payload.
-- **List** inserts, updates and deletes elements with stable identities.
-- **Text** edits plain text using Unicode code-point indices.
-- **Map** sets and deletes values under string keys, each key decided by server order.
-- **Transactions** group edits into one batch.
-- **Policy, decoders and checkpoints** help you control submissions and recover unconfirmed work.
-
-The [concepts guide](concepts.md) explains how these pieces work together. The [reference](reference.md) defines their exact contracts.
-
-## What your application supplies
-
-You choose the transport, storage, authentication and recovery workflow, or use the [sync adapter](sync.md) for HTTP with push and polling and for IndexedDB or file checkpoint stores. You also coordinate one writer per client ID and ensure restored checkpoints belong to the same document.
-
-Articollab provides the collaboration core, not an editor, database or production networking adapter. Read [FAQ and limitations](faq.md) before choosing an integration.
-
-## Install
-
-The library is available on npm:
-
-```sh
-pnpm add articollab
-```
-
-Use an ESM project; the runnable Node.js examples require Node 24+. You do not need a repository checkout to use the package. For an existing document, follow the [upgrade guidance](recovery.md#upgrading-from-02-to-03) before exchanging new operations between runtimes.
+Your application authenticates writers, stores server checkpoints and binds each writer to the right document. For saved documents, read the [upgrade guide](recovery.md#upgrading-from-07-to-08) before using new operations.
 
 [Next: Counter quick start](quick-start.md)

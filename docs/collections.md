@@ -79,6 +79,8 @@ Delete + insert inside a transaction still creates a new element identity. If tw
 
 ## Map: keyed values
 
+Map requires Articollab 0.8 or later. When adding Map to a shared document, [upgrade its readers first](recovery.md#upgrading-from-07-to-08).
+
 A Map holds JSON values under string keys at one schema path. It starts empty:
 
 ```ts

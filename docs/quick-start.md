@@ -1,10 +1,10 @@
 # Counter quick start
 
-Use this example to see exactly when a local edit becomes authoritative. It buffers one batch, submits it manually, then delivers the commit to the writer and a peer.
+Follow one batch from an optimistic edit to a commit shared by two clients.
 
 ## Before you start
 
-Use Node.js 24+ and an ESM project (`"type": "module"`). The package is public; no repository checkout is required. For existing applications, read the [upgrade guidance](recovery.md#upgrading-from-01) before mixing servers or checkpoints.
+Use Node.js 24 or later and an ESM project (`"type": "module"`).
 
 ## Install and run
 
@@ -14,7 +14,7 @@ Install from npm:
 pnpm add articollab
 ```
 
-Save the following complete snippet as `counter.ts` in your project and run `node counter.ts`. Node runs this TypeScript example directly; no build step is needed. The import resolves the installed package's production ESM entrypoint.
+Save this example as `counter.ts` and run `node counter.ts`.
 
 <!-- checked-counter:start -->
 ```ts
@@ -66,10 +66,10 @@ Pending: 0
 
 ## Follow the data
 
-`openClient()` issues one writer identity and reserves its server session. The two assignments take effect immediately and become **one batch with two operations**. `onBatch` only buffers that batch; it does not provide a built-in transport.
+`openClient()` opens a writer session. The two assignments take effect immediately and produce one batch. This example queues the batch in `onBatch`.
 
-`server.receive(batch)` creates a receipt containing the authoritative commit. Deliver **the commit**, not the receipt, to every relevant client in global sequence order. At the writer, that commit also acknowledges its pending batch. The final value remains 3, so the own ack need not produce another change event.
+`server.receive(batch)` returns a receipt. Deliver its `commit` to each client in server order. At the writer, receiving the commit clears its pending batch. The visible count stays at `3`.
 
-This synchronous example has no listener-generated edits. When integrating multiple writers, finish delivering each commit before handling a listener's new submission. See [ordered delivery](server-wire.md#deliver-in-order).
+When listeners submit new work, [finish delivering the current commit first](server-wire.md#deliver-in-order).
 
 [Previous: Overview](README.md) · [Next: Concepts](concepts.md)

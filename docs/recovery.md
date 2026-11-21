@@ -141,6 +141,14 @@ The repository's browser recovery demo uses document-ID envelopes/headers and se
 
 `List.move()` adds the `list/move` operation and, once a visible element has moved, an optional `moves` field in List snapshots. Snapshots without moved elements keep the old format, and new runtimes accept existing snapshots and checkpoints without conversion. Older runtimes reject both the operation and the field, so upgrade the server, every client and every other snapshot/checkpoint reader before any writer moves an element, following the same coordinated steps as the [0.4 upgrade](#upgrading-from-03-to-04). Once a saved snapshot or pending batch contains a move, a package downgrade is not enough: preserve the data and use compatible readers. Do not strip `moves` or rewrite moves as delete + insert to make old readers load it; that changes element identities.
 
+## Upgrading from 0.7 to 0.8
+
+Version 0.8 adds [Map collections](collections.md) and optional [Sync Client checkpoint stores](sync.md#persist-checkpoints). Existing 0.7.2 snapshots and checkpoints for Value, List and Text can be restored with the same schema, document lineage and open writer sessions. Back up both sides, stop the old writers, then restore and catch up before resuming edits. Pending batches keep their original sequence numbers.
+
+Upgrade every client, server and checkpoint reader that handles a document before using Map in it. A 0.7 reader cannot process `map/set` or `map/delete`, including operations stored in pending batches, retry records or history. Adding a Map path or replacing an existing collection with Map changes the schema. Plan a data migration separately and keep the original checkpoints available for rolling back.
+
+If you already pass a `save` callback to `connectSync`, it can now run after a local edit while a network request is still pending. Saves remain serialized. To switch to a built-in store, put the existing client checkpoint in the store for the same document and writer, then pass `store` without `checkpoint` or `save`.
+
 ## Upgrading from 0.3 to 0.4
 
 Version 0.4 adds opt-in `Text.observe()` notifications and the optional Text snapshot boundary field. Neither changes batch/commit operations or checkpoint envelopes.
