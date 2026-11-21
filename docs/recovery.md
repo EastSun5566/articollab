@@ -137,6 +137,14 @@ Your storage and subscription handoff are application responsibilities. Same URL
 
 The repository's browser recovery demo uses document-ID envelopes/headers and session storage. Those are application examples, not core wire fields or authentication. Neither ordinary checkpoint containers nor these examples promise power-loss durability or cross-file transactions.
 
+## Upgrading from 0.7 to 0.8
+
+Version 0.8 adds [Map collections](collections.md) and optional [Sync Client checkpoint stores](sync.md#persist-checkpoints). Existing 0.7.2 snapshots and checkpoints for Value, List and Text can be restored with the same schema, document lineage and open writer sessions. Back up both sides, stop the old writers, then restore and catch up before resuming edits. Pending batches keep their original sequence numbers.
+
+Upgrade every client, server and checkpoint reader that handles a document before using Map in it. A 0.7 reader cannot process `map/set` or `map/delete`, including operations stored in pending batches, retry records or history. Adding a Map path or replacing an existing collection with Map changes the schema. Plan a data migration separately and keep the original checkpoints available for rolling back.
+
+If you already pass a `save` callback to `connectSync`, it can now run after a local edit while a network request is still pending. Saves remain serialized. To switch to a built-in store, put the existing client checkpoint in the store for the same document and writer, then pass `store` without `checkpoint` or `save`.
+
 ## Upgrading from 0.3 to 0.4
 
 Version 0.4 adds opt-in `Text.observe()` notifications and the optional Text snapshot boundary field. Neither changes batch/commit operations or checkpoint envelopes.

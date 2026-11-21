@@ -1,28 +1,25 @@
-name: CI
+# npm Trusted Publishing is configured for this filename.
+name: Release
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  checks:
+  validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       dist-tag: ${{ steps.release.outputs.dist-tag }}
     steps:
-      - name: Check out source
+      - name: Check out tag and main history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -36,7 +33,6 @@ jobs:
 
       - name: Validate release tag
         id: release
-        if: startsWith(github.ref, 'refs/tags/')
         run: |
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           node --input-type=module <<'NODE'
@@ -53,152 +49,20 @@ jobs:
           appendFileSync(process.env.GITHUB_OUTPUT, "dist-tag=" + distTag + "\n");
           NODE
 
-      - name: Set up pnpm from packageManager
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          run_install: false
-          cache: false
-
-      - name: Report Node.js version
-        run: node --version
-
-      - name: Report pnpm version
-        run: pnpm --version
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Typecheck
-        run: pnpm check
-
-      - name: Test
-        run: pnpm test
-
-      - name: Build
-        run: pnpm build
-
-      # Browser JS imports the built entrypoint; type-aware lint needs its declarations.
-      # Run root checks before installing example dependencies, matching a fresh checkout.
-      - name: Lint
-        run: pnpm lint
-
-      - name: Check unused code and dependencies
-        run: pnpm knip
-
-      - name: Install text editor example dependencies
-        run: pnpm --dir examples/text-editor install --frozen-lockfile --ignore-scripts
-
-      - name: Typecheck text editor example
-        run: pnpm --dir examples/text-editor check
-
-      - name: Lint text editor example
-        run: pnpm --dir examples/text-editor lint
-
-      - name: Check unused text editor code and dependencies
-        run: pnpm --dir examples/text-editor knip
-
-      - name: Test text editor example
-        run: pnpm --dir examples/text-editor test
-
-      - name: Typecheck kanban example
-        run: pnpm --dir examples/kanban check
-
-      - name: Lint kanban example
-        run: pnpm --dir examples/kanban lint
-
-      - name: Check unused kanban code
-        run: pnpm --dir examples/kanban knip
-
-      - name: Test kanban example
-        run: pnpm --dir examples/kanban test
-
-      - name: Check browser smoke JSDoc
-        run: pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js examples/http-sync-controller.js examples/browser-http-smoke/smoke.js examples/browser-reload-recovery/recovery.js
-
-      - name: Test installed package consumer
-        run: pnpm test:package
-
-      - name: Stage documentation
-        run: pnpm docs:build
-
-      - name: Check documentation
-        run: pnpm docs:check
-
-      - name: Upload documentation artifact
-        if: vars.PAGES_ENABLED == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: .docs-site/
-          include-hidden-files: true # The validated allowlist includes only .nojekyll as a hidden file.
-
-  # The package supports Node.js 24 (engines >=24); development and release use .nvmrc.
-  compat-node24:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js 24
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          package-manager-cache: false
-
-      - name: Set up pnpm from packageManager
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          run_install: false
-          cache: false
-
-      - name: Report Node.js version
-        run: node --version
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Typecheck
-        run: pnpm check
-
-      - name: Test
-        run: pnpm test
-
-      - name: Test installed package consumer
-        run: pnpm test:package
-
-  deploy-docs:
-    needs: checks
-    if: vars.PAGES_ENABLED == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Configure Pages without enabling it
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-        with:
-          enablement: false
-
-      - name: Deploy validated documentation
-        id: deployment
-        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+  verify:
+    needs: validate
+    uses: ./.github/workflows/checks.yml
 
   publish:
-    needs: checks
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && needs.checks.outputs.dist-tag != ''
+    needs: [validate, verify]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && needs.validate.outputs.dist-tag != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
     env:
-      NPM_DIST_TAG: ${{ needs.checks.outputs.dist-tag }}
+      NPM_DIST_TAG: ${{ needs.validate.outputs.dist-tag }}
     steps:
       - name: Check out validated source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

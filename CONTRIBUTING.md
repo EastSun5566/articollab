@@ -188,19 +188,16 @@ Text observers keep a separate persistent-state baseline per subscriber. For loc
 
 ## CI and documentation deployment
 
-The `CI` workflow checks main pushes, `v*` tag pushes, PRs to main and manual runs. It uses a frozen install, pinned actions and the declared pnpm, then runs checks including browser JSDoc, package consumers and docs staging. Local success does not prove remote success.
+| Workflow | When it runs |
+| --- | --- |
+| [CI](.github/workflows/verify.yml) | Pushes to `main`, PRs targeting `main` and manual runs. |
+| [Validation](.github/workflows/checks.yml) | CI and Release call this to run the same tests, package and docs checks, and Node 24 compatibility suite. |
+| [Deploy documentation](.github/workflows/docs.yml) | CI calls this after validation on a `main` push or manual run on `main` when `PAGES_ENABLED=true`. |
+| [Release](.github/workflows/ci.yml) | Pushes of `v*` tags. Keep the filename because npm trusts `ci.yml`. |
 
-Repository visibility, contribution settings and Pages deployment are separate decisions. Before making a repository public, review its full Git history, author metadata, pull requests, workflow logs and artifacts for information that should not be exposed.
+[Review fork changes before approving their workflows](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/approve-runs-from-forks). Validation uses read-only permissions. The Pages and npm publishing jobs receive their own deployment credentials.
 
-When accepting public contributions, check these repository settings:
-
-- Protect `main` with required CI checks, and block force pushes and branch deletion. Review changes before merging, especially workflow and release changes.
-- Require workflow approval for all outside collaborators. [Inspect the proposed code before approving a fork workflow](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/approve-runs-from-forks), not just before merging it.
-- Keep default workflow permissions read-only and automatic PR approval disabled. Do not give fork checks secrets or publishing/deployment credentials.
-
-Pages upload/deployment requires successful checks, a main push/manual event and `PAGES_ENABLED=true`. Only validated `.docs-site/` is uploaded. The deploy job alone receives Pages write/OIDC permissions; `enablement: false` does not enable Pages automatically. PRs and tag runs do not deploy docs.
-
-Before enabling Pages, review the staged assets, select GitHub Actions as the repository's [Pages publishing source](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site), then set `PAGES_ENABLED=true`. After deployment, verify its commit, URL and rendered behavior; changing repository visibility alone does not deploy the site.
+For Pages, select [GitHub Actions as the publishing source](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site) and set `PAGES_ENABLED=true`. CI uploads the validated `.docs-site/` directory and the deploy workflow uses that artifact from the same run.
 
 ## Prepare and publish a release
 
@@ -210,7 +207,7 @@ Fetch main and tags, then confirm a clean `main` synchronized with `origin/main`
 
 Choose an explicit unpublished target version. In the commands below, replace `<target-version>` and `<release-tag>`; they are placeholders, not literal shell arguments. Beta tags are `vX.Y.Z-beta.N`; stable tags are `vX.Y.Z`.
 
-Review the [Recovery upgrade guides](docs/recovery.md#upgrading-from-03-to-04) for coordinated runtime upgrades and checkpoint compatibility before choosing a release target. Include all snapshot/checkpoint readers, not just batch/commit participants, when a release extends the saved format.
+Review the [upgrade guides](docs/recovery.md#upgrading-from-07-to-08) before choosing a release target. When the saved format changes, include every snapshot and checkpoint reader in the upgrade.
 
 ```sh
 pnpm release --release-as <target-version> --dry-run
@@ -264,11 +261,11 @@ Ignore the tool's manual publish suggestion. Do not use `--follow-tags`. Prepara
 
 ### Trusted publishing
 
-Tags must match the manifest version and point to main history. CI rejects unsupported prereleases, build metadata and leading-zero components. Beta tags publish to `beta`; stable tags publish to `latest`.
+Tags must match the manifest version and point to `main` history. Release rejects unsupported prereleases, build metadata and leading-zero components. Beta tags publish to `beta`. Stable tags publish to `latest`.
 
 Keep npm's publisher settings aligned with GitHub owner `EastSun5566`, repo `articollab`, workflow `ci.yml`, empty environment, and direct `npm publish` permission. No extra dist-tag management permission is required. The manifest repository URL must match. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
 
-The publish job receives publishing OIDC permission; the checks job does not. It uses the workflow's pinned npm on a GitHub-hosted runner, not npm tokens or login. Main/PR/manual runs never publish.
+The publish job uses OIDC and pinned npm on a GitHub-hosted runner. It runs after release tag validation and both validation suites pass.
 
 After checks, the publish job builds and packs one tarball outside the checkout, dry-runs it, then publishes that file with explicit registry, public access, channel and disabled lifecycle scripts. Tag runs are not automatically cancelled.
 
