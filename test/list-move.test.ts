@@ -162,6 +162,30 @@ describe("List move", () => {
     }
   });
 
+  it("treats a visible move position as an unknown target, so it cannot detach a moved element", () => {
+    const { a, b, server, submit, deliver } = seeded();
+    a.doc.state.items.move(0, 2);
+    const [move] = a.batches[0]!.operations;
+    assert.ok(move?.type === "list/move");
+    deliver(submit(a), a.doc, b.doc);
+    const clientId = b.doc.checkpoint().clientId;
+    const fresh = { bunchId: JSON.stringify([clientId, "items", 99]), counter: 0 };
+    for (const operation of [
+      { type: "list/set", path: "items", id: move.position, value: "X" },
+      { type: "list/delete", path: "items", id: move.position },
+      { type: "list/move", path: "items", id: move.position, before: null, position: fresh },
+    ] as const) {
+      assert.throws(() => server.receive({ clientId, seq: 1, operations: [operation] }), /Unknown list element id/, operation.type);
+    }
+    const { data } = server.snapshot();
+    assert.deepEqual([data.items.values, data.items.moves], [["b", "c", "a", "d"], [{ id: move.id, position: move.position }]]);
+    // Once the element moves on, its old position is a known tombstone: naming it is a no-op.
+    a.doc.state.items.move(2, 0);
+    deliver(submit(a), a.doc, b.doc);
+    server.receive({ clientId, seq: 1, operations: [{ type: "list/set", path: "items", id: move.position, value: "X" }] });
+    assert.deepEqual(server.snapshot().data.items.values, ["a", "b", "c", "d"]);
+  });
+
   it("follows server transformation and rejection of a move", () => {
     let mode: "accept" | "reject" | "drop" = "accept";
     const { a, b, submit, deliver } = seeded((batch) => mode === "reject" ? [] :

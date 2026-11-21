@@ -357,9 +357,7 @@ export class ListState<T extends JsonValue> {
   }
 
   delete(operation: ListDeleteOperation): ListState<T> {
-    if (!this.idList.isKnown(operation.id)) {
-      throw new CollectionConflictError(`Unknown list element id: ${idKey(operation.id)}`);
-    }
+    this.requireTarget(operation.id);
     const position = this.positionFor(operation.id);
     if (!this.idList.has(position)) return this;
 
@@ -371,9 +369,7 @@ export class ListState<T extends JsonValue> {
   }
 
   set(operation: ListSetOperation<string, T>): ListState<T> {
-    if (!this.idList.isKnown(operation.id)) {
-      throw new CollectionConflictError(`Unknown list element id: ${idKey(operation.id)}`);
-    }
+    this.requireTarget(operation.id);
     if (!this.has(operation.id) || Object.is(this.valueFor(operation.id), operation.value)) return this;
 
     return new ListState(this.idList, this.valuesById.set(idKey(operation.id), operation.value),
@@ -391,9 +387,7 @@ export class ListState<T extends JsonValue> {
     if (this.idList.isKnown(operation.position)) {
       throw new CollectionConflictError(`Duplicate list element id: ${idKey(operation.position)}`);
     }
-    if (!this.idList.isKnown(operation.id)) {
-      throw new CollectionConflictError(`Unknown list element id: ${idKey(operation.id)}`);
-    }
+    this.requireTarget(operation.id);
     const inserted = this.idList.insertAfter(operation.before, operation.position);
     if (!this.has(operation.id)) {
       return new ListState(inserted.delete(operation.position), this.valuesById, this.positionOf, this.logicalOf);
@@ -600,6 +594,17 @@ export class ListState<T extends JsonValue> {
       if (id !== undefined) moves.push(Object.freeze({ id, position: ownId(position) }));
     }
     return Object.freeze({ idList, values, moves: Object.freeze(moves) });
+  }
+
+  /**
+   * Set, delete and move name an element by its permanent ID. A visible move position is not one:
+   * targeting it would detach the moved element from its value, so it is as unknown as any other ID.
+   * A retired position is a known tombstone, so naming it is a harmless no-op.
+   */
+  private requireTarget(id: Readonly<ElementId>): void {
+    if (!this.idList.isKnown(id) || (this.logicalOf.size !== 0 && this.logicalOf.get(idKey(id)) !== undefined)) {
+      throw new CollectionConflictError(`Unknown list element id: ${idKey(id)}`);
+    }
   }
 
   // Lists that never moved an element skip the lookups, and their key strings, entirely.
