@@ -1,5 +1,6 @@
 import { ListState, type ListSetOperation, type ListSnapshotData } from "./list.ts";
 import { TextState, type TextSnapshotData } from "./text.ts";
+import { MapState, type MapSnapshotData } from "./map.ts";
 import type { DocumentSchema, JsonValue, SchemaShape } from "./schema.ts";
 import type {
   ClientBatch,
@@ -11,10 +12,17 @@ import type {
 import { CollectionConflictError, PendingReplayError } from "./conflict.ts";
 import { validateJsonValue } from "./json.ts";
 
-export type CollectionState = JsonValue | ListState<JsonValue> | TextState;
+/** Collection states that are not plain Value payloads. */
+export type StructuredState = ListState<JsonValue> | TextState | MapState<JsonValue>;
+
+export type CollectionState = JsonValue | StructuredState;
+
+export function isStructuredState(state: CollectionState): state is StructuredState {
+  return state instanceof ListState || state instanceof TextState || state instanceof MapState;
+}
 
 // Only decoder-owned, frozen snapshots enter this cache; states remain persistent.
-export const decodedCollectionStates = new WeakMap<object, ListState<JsonValue> | TextState>();
+export const decodedCollectionStates = new WeakMap<object, StructuredState>();
 
 export function wrongCollectionKind(path: string): Error {
   return new Error(`Operation type does not match document path: ${path}`);
@@ -40,7 +48,7 @@ export function applyOperations(
 
     switch (operation.type) {
       case "value/set":
-        if (current instanceof ListState || current instanceof TextState) {
+        if (isStructuredState(current)) {
           throw wrongCollectionKind(operation.path);
         }
         states.set(operation.path, operation.value);
@@ -73,6 +81,18 @@ export function applyOperations(
         break;
       case "text/delete":
         if (!(current instanceof TextState)) {
+          throw wrongCollectionKind(operation.path);
+        }
+        states.set(operation.path, current.delete(operation));
+        break;
+      case "map/set":
+        if (!(current instanceof MapState)) {
+          throw wrongCollectionKind(operation.path);
+        }
+        states.set(operation.path, current.set(operation));
+        break;
+      case "map/delete":
+        if (!(current instanceof MapState)) {
           throw wrongCollectionKind(operation.path);
         }
         states.set(operation.path, current.delete(operation));
@@ -186,6 +206,16 @@ export function initialStates<S extends SchemaShape>(
             // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Typed snapshot boundary supplies the matching payload; collection loaders retain their runtime checks.
             : ListState.load(payload as ListSnapshotData)
       );
+    } else if (descriptor.kind === "map") {
+      states.set(
+        path,
+        snapshotData === undefined
+          ? MapState.empty()
+          : decoded instanceof MapState
+            ? decoded
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Typed snapshot boundary supplies the matching payload; collection loaders retain their runtime checks.
+            : MapState.load(payload as MapSnapshotData)
+      );
     } else {
       states.set(
         path,
@@ -210,9 +240,7 @@ export function saveSnapshot<S extends SchemaShape>(
     Object.fromEntries(
       [...states].map(([path, state]) => [
         path,
-        state instanceof ListState || state instanceof TextState
-          ? state.save()
-          : state,
+        isStructuredState(state) ? state.save() : state,
       ])
     )
   ) as DocumentSnapshotData<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Each state was created for the corresponding schema descriptor before serialization.

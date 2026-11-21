@@ -1,6 +1,6 @@
-# Value, List and Text
+# Value, List, Text and Map
 
-Choose a Value for whole immutable JSON replacements, a List for stable elements, and Text for plain-text range edits. Schema property keys are fixed wire paths.
+Choose a Value for whole immutable JSON replacements, a List for stable elements, Text for plain-text range edits, and a Map for values under string keys. Schema property keys are fixed wire paths.
 
 ```ts
 const Board = defineDocument({
@@ -61,7 +61,38 @@ const stop = doc.on("discard", ({ operations }) => {
 
 To update a view without calling `toArray()` after every change, subscribe with `doc.state.items.observe()`; it reports `set()` as an in-place `set` change. See [Update a list view incrementally](transactions.md#update-a-list-view-incrementally).
 
-Delete + insert inside a transaction remains available when you mean to create a new element identity. If two writers concurrently do this for the same old element, both new insertions can remain: the second deletion targets an already-deleted ID. It is not equivalent to `set()`. There is no move method. The [Kanban board example](https://github.com/EastSun5566/articollab/blob/main/examples/README.md#kanban-board) moves cards this way and uses a server `resolve` policy, keyed by an application card ID, so that concurrent moves keep one copy and a rename follows a moved card.
+Delete + insert inside a transaction remains available when you mean to create a new element identity. If two writers concurrently do this for the same old element, both new insertions can remain: the second deletion targets an already-deleted ID. It is not equivalent to `set()`. There is no move method. The [Kanban board example](https://github.com/EastSun5566/articollab/blob/main/examples/README.md#kanban-board) moves cards this way: its columns are Lists of card IDs, the card data lives in a [Map](#map-keyed-values) so a move never touches it, and a server `resolve` policy keeps one copy when two writers move the same card.
+
+## Map: keyed values
+
+A Map holds JSON values under string keys at one schema path. It starts empty:
+
+```ts
+import { defineDocument, map } from "articollab";
+
+const Settings = defineDocument({ settings: map<string | number>() });
+```
+
+With a client `doc` created from this schema:
+
+```ts
+const settings = doc.state.settings;
+settings.set("theme", "dark");
+settings.set("fontSize", 14);
+console.log(settings.get("theme")); // "dark"
+console.log([...settings.keys()]); // ["fontSize", "theme"]
+console.log(settings.delete("theme")); // true: it was present here
+console.log(settings.toObject()); // { fontSize: 14 }
+```
+
+Each key is decided on its own, by server order: the last `set` or `delete` the server applies wins. Two writers changing different keys never conflict. A `set` after a delete creates the key again; there are no tombstones, and no Map operation can block pending replay. `set()` replaces the key's whole value, like List `set()`, so give each independently edited field its own key, for example `"card-1/title"` and `"card-1/done"`, rather than one object per record.
+
+- `delete(key)` returns whether the key was present here, but records the delete even when it was not: the server may hold a value this writer has not received yet.
+- `clear()` deletes every key visible here, in one batch. A key another writer sets concurrently survives it. An empty Map records nothing.
+- Keys may be any string, including `""` and `"__proto__"`. Iteration (`keys()`, `values()`, `entries()`, `for...of`) is sorted by UTF-16 code unit, so every replica lists keys in the same order whatever order they were written in.
+- A Map snapshot is a JSON object from key to value, so a server `resolve` policy can read `snapshot.data.settings["theme"]` directly.
+
+Map updates have no `discard` event: a `set` is never a no-op, because it recreates a deleted key. If an application should not recreate a key, for example a deleted record's field, its server policy must drop that `set`. To follow changes, subscribe with `observe()`; see [Update a view from a Map](transactions.md#update-a-view-from-a-map).
 
 ## Text: Unicode code points
 

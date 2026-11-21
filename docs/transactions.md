@@ -130,6 +130,37 @@ stop();
 
 All indices refer to the pre-event view and changes arrive by descending index, with a set before a splice at the same index, so apply them in the supplied order. A set means the same element changed value; there is no move event, so a delete-and-reinsert move arrives as two splices and the moved row gets a new key. Payloads keep `Object.is` identity: an acknowledgement that replaces an object with an equal decoded copy is reported as a set, which a view may skip after its own equality check.
 
+## Update a view from a Map
+
+`Map.observe()` follows the same delivery rules. Each event lists the changed keys in key order; a change is a `set`, with the new `value`, or a `delete`. Both carry `previous`, the value before the event, which is `undefined` when a `set` adds the key:
+
+```ts
+import { createClient, createServer, defineDocument, map } from "articollab";
+
+const Settings = defineDocument({ settings: map<string>() });
+const server = createServer(Settings);
+const doc = createClient(Settings, {
+  clientId: server.openClient(),
+  onBatch() {}, // This example keeps edits local.
+});
+
+const view = new Map(doc.state.settings);
+const stop = doc.state.settings.observe(({ changes }) => {
+  for (const change of changes) {
+    if (change.type === "set") view.set(change.key, change.value);
+    else view.delete(change.key);
+    console.log(change.type, change.key, change.previous);
+  }
+});
+
+doc.state.settings.set("theme", "dark"); // set theme undefined
+doc.state.settings.set("theme", "light"); // set theme dark
+doc.state.settings.delete("theme"); // delete theme light
+stop();
+```
+
+Writing the value a key already holds (by `Object.is`), deleting an absent key, or changes that cancel out within one batch emit nothing. Like a List, an acknowledgement that replaces an object with an equal decoded copy is reported as a `set`.
+
 ## Callback failure is not rollback
 
 If `onBatch` throws, its batch is already pending; the local change is not emitted. If a listener throws, completed state/sequence advances remain and later listeners may not run. A server listener throws after receive has advanced state and watermark.

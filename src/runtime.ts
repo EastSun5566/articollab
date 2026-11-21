@@ -19,10 +19,20 @@ import {
   type TextInsertOperation,
   type TextOperation,
 } from "./text.ts";
+import {
+  freezeMapOperation,
+  MapState,
+  RuntimeMap,
+  type MapCollection,
+  type MapDeleteOperation,
+  type MapOperation,
+  type MapSetOperation,
+} from "./map.ts";
 import type {
   DocumentSchema,
   JsonValue,
   ListSchema,
+  MapSchema,
   SchemaShape,
   SnapshotType,
   TextSchema,
@@ -34,6 +44,7 @@ import { assertClientBatchNamespace } from "./namespace.ts";
 import {
   applyOperations,
   initialStates,
+  isStructuredState,
   replayPending,
   saveSnapshot,
   unknownOperationType,
@@ -57,7 +68,9 @@ export type Operation =
   | ListDeleteOperation
   | ListSetOperation
   | TextInsertOperation
-  | TextDeleteOperation;
+  | TextDeleteOperation
+  | MapSetOperation
+  | MapDeleteOperation;
 
 type OperationFor<D, Path extends string> =
   D extends ValueSchema<infer T extends JsonValue>
@@ -66,7 +79,9 @@ type OperationFor<D, Path extends string> =
       ? ListOperation<Path, T>
       : D extends TextSchema
         ? TextOperation<Path>
-        : never;
+        : D extends MapSchema<infer T extends JsonValue>
+          ? MapOperation<Path, T>
+          : never;
 
 export type DocumentOperation<S extends SchemaShape> = {
   [K in Extract<keyof S, string>]: OperationFor<S[K], K>;
@@ -166,7 +181,7 @@ export interface ClientCheckpoint<S extends SchemaShape = SchemaShape> {
   readonly pendingBatches: readonly ClientBatch<DocumentOperation<S>>[];
   /** Last allocated bunch per List/Text path, including rolled-back allocations. */
   readonly lastBunchSeqs: Readonly<{
-    [K in keyof S as S[K] extends ValueSchema ? never : K]: number;
+    [K in keyof S as S[K] extends ListSchema | TextSchema ? K : never]: number;
   }>;
 }
 
@@ -258,7 +273,8 @@ class RuntimeValue<T extends JsonValue> implements Value<T> {
 type RuntimeCollection =
   | RuntimeValue<JsonValue>
   | RuntimeList<JsonValue>
-  | RuntimeText;
+  | RuntimeText
+  | RuntimeMap<JsonValue>;
 
 function restoreServerCheckpoint<S extends SchemaShape>(
   schema: DocumentSchema<S>,
@@ -317,6 +333,11 @@ function sameOperations(
             const otherRange = other.ranges[rangeIndex]!;
             return range.count === otherRange.count && equalsId(range.start, otherRange.start);
           });
+      case "map/set":
+        return other.type === "map/set" && operation.key === other.key &&
+          (allowValueChanges || Object.is(operation.value, other.value));
+      case "map/delete":
+        return other.type === "map/delete" && operation.key === other.key;
       default:
         return false;
     }
@@ -330,7 +351,8 @@ function runtimeVisibleEquals(
   skipComparison: boolean,
   ownTextUnchanged: boolean,
   listComparisonIds?: readonly Readonly<ElementId>[],
-  textComparisonOperations?: readonly TextOperation[]
+  textComparisonOperations?: readonly TextOperation[],
+  mapComparisonKeys?: readonly string[]
 ): boolean {
   if (runtime instanceof RuntimeList) {
     if (!(state instanceof ListState)) throw wrongCollectionKind(path);
@@ -342,7 +364,12 @@ function runtimeVisibleEquals(
     return skipComparison || ownTextUnchanged || (textComparisonOperations === undefined ? runtime.visibleEquals(state) :
       runtime.state.visibleEqualsAt(state, textComparisonOperations));
   }
-  if (state instanceof ListState || state instanceof TextState) {
+  if (runtime instanceof RuntimeMap) {
+    if (!(state instanceof MapState)) throw wrongCollectionKind(path);
+    return skipComparison || (mapComparisonKeys === undefined ? runtime.visibleEquals(state) :
+      mapComparisonKeys.every((key) => runtime.state.visibleKeyEquals(state, key)));
+  }
+  if (isStructuredState(state)) {
     throw wrongCollectionKind(path);
   }
   return skipComparison || runtime.visibleEquals(state);
@@ -359,8 +386,11 @@ function restoreRuntime(
   } else if (runtime instanceof RuntimeText) {
     if (!(state instanceof TextState)) throw wrongCollectionKind(path);
     runtime.restore(state);
+  } else if (runtime instanceof RuntimeMap) {
+    if (!(state instanceof MapState)) throw wrongCollectionKind(path);
+    runtime.restore(state);
   } else {
-    if (state instanceof ListState || state instanceof TextState) {
+    if (isStructuredState(state)) {
       throw wrongCollectionKind(path);
     }
     runtime.restore(state);
@@ -378,6 +408,9 @@ function freezeOperation(operation: Operation): Operation {
     case "text/insert":
     case "text/delete":
       return freezeTextOperation(operation);
+    case "map/set":
+    case "map/delete":
+      return freezeMapOperation(operation);
     default:
       throw unknownOperationType(operation);
   }
@@ -399,7 +432,9 @@ type DocumentCollection<D> =
       ? List<T>
       : D extends TextSchema
         ? Text
-        : never;
+        : D extends MapSchema<infer T extends JsonValue>
+          ? MapCollection<T>
+          : never;
 
 export type DocumentState<S extends SchemaShape> = Readonly<{
   [K in keyof S]: DocumentCollection<S[K]>;
@@ -490,7 +525,7 @@ export class ClientDocument<S extends SchemaShape> {
     const beforeMutation = () => this.assertCanMutate();
 
     const publicState: Partial<
-      Record<keyof S, Value<JsonValue> | List<JsonValue> | Text>
+      Record<keyof S, Value<JsonValue> | List<JsonValue> | Text | MapCollection<JsonValue>>
     > = {};
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The fixed schema’s own keys are the document paths.
     for (const path of Object.keys(schema.definition) as Array<
@@ -504,10 +539,7 @@ export class ClientDocument<S extends SchemaShape> {
 
       let runtime: RuntimeCollection;
       if (descriptor.kind === "value") {
-        if (
-          collectionState instanceof ListState ||
-          collectionState instanceof TextState
-        ) {
+        if (isStructuredState(collectionState)) {
           throw wrongCollectionKind(path);
         }
         runtime = new RuntimeValue(
@@ -528,6 +560,18 @@ export class ClientDocument<S extends SchemaShape> {
           beforeMutation,
           lastBunchSeqs?.[path] ?? 0,
           () => this.registerObserver("List")
+        );
+      } else if (descriptor.kind === "map") {
+        if (!(collectionState instanceof MapState)) {
+          throw wrongCollectionKind(path);
+        }
+        runtime = new RuntimeMap(
+          (operation) => this.mutate(operation),
+          path,
+          collectionState,
+          beforeMutation,
+          (callback) => { this.transact(callback); },
+          () => this.registerObserver("Map")
         );
       } else {
         if (!(collectionState instanceof TextState)) {
@@ -745,6 +789,8 @@ export class ClientDocument<S extends SchemaShape> {
       ? new Map<string, Readonly<ElementId>[]>() : undefined;
     const textComparisonOperations = compareRemoteTargets
       ? new Map<string, TextOperation[]>() : undefined;
+    // Map operations touch only their own key; own acks compare the keys whose payload may differ.
+    const mapComparisonKeys = listComparisonIds === undefined ? undefined : new Map<string, string[]>();
     if (listComparisonIds !== undefined) {
       for (const operation of commit.operations) {
         if (operation.type === "list/insert" || operation.type === "list/set" ||
@@ -752,6 +798,10 @@ export class ClientDocument<S extends SchemaShape> {
           const ids = listComparisonIds.get(operation.path) ?? [];
           ids.push(operation.id);
           listComparisonIds.set(operation.path, ids);
+        } else if (operation.type === "map/set" || (compareRemoteTargets && operation.type === "map/delete")) {
+          const keys = mapComparisonKeys!.get(operation.path) ?? [];
+          keys.push(operation.key);
+          mapComparisonKeys!.set(operation.path, keys);
         } else if (textComparisonOperations !== undefined &&
           (operation.type === "text/insert" || operation.type === "text/delete")) {
           const operations = textComparisonOperations.get(operation.path) ?? [];
@@ -768,7 +818,8 @@ export class ClientDocument<S extends SchemaShape> {
       }
       const ids = listComparisonIds === undefined ? undefined : listComparisonIds.get(path) ?? [];
       const textOperations = textComparisonOperations === undefined ? undefined : textComparisonOperations.get(path) ?? [];
-      if (!runtimeVisibleEquals(runtime, nextState, path, changed, compareOwnPayloads, ids, textOperations)) changed = true;
+      const keys = mapComparisonKeys === undefined ? undefined : mapComparisonKeys.get(path) ?? [];
+      if (!runtimeVisibleEquals(runtime, nextState, path, changed, compareOwnPayloads, ids, textOperations, keys)) changed = true;
     }
 
     this.authoritativeStates = nextAuthoritativeStates;
@@ -778,7 +829,7 @@ export class ClientDocument<S extends SchemaShape> {
 
     for (const [path, runtime] of this.collections) {
       restoreRuntime(runtime, nextOptimisticStates.get(path)!, path);
-      if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList) &&
+      if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList || runtime instanceof RuntimeMap) &&
         (previous !== null || conflict !== null || (isOwnCommit && !compareOwnPayloads))) {
         runtime.requireFullComparison();
       }
@@ -816,7 +867,7 @@ export class ClientDocument<S extends SchemaShape> {
     this.flushObservers();
   }
 
-  private registerObserver(kind: "List" | "Text"): () => void {
+  private registerObserver(kind: "List" | "Text" | "Map"): () => void {
     if (this.transactionDepth !== 0) throw new Error(`Cannot observe ${kind} during a transaction`);
     this.observerCount++;
     return () => { this.observerCount--; };
@@ -833,6 +884,9 @@ export class ClientDocument<S extends SchemaShape> {
         case "list/insert": case "list/delete": case "list/set":
           if (runtime instanceof RuntimeList) runtime.track(operation);
           break;
+        case "map/set": case "map/delete":
+          if (runtime instanceof RuntimeMap) runtime.track(operation);
+          break;
         default:
           break;
       }
@@ -847,12 +901,12 @@ export class ClientDocument<S extends SchemaShape> {
       do {
         pending = false;
         for (const runtime of this.collections.values()) {
-          if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList) && runtime.hasPendingObservers) {
+          if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList || runtime instanceof RuntimeMap) && runtime.hasPendingObservers) {
             runtime.flushObservers();
           }
         }
         for (const runtime of this.collections.values()) {
-          if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList) && runtime.hasPendingObservers) {
+          if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList || runtime instanceof RuntimeMap) && runtime.hasPendingObservers) {
             pending = true;
           }
         }

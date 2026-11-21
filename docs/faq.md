@@ -12,7 +12,7 @@ No. Install `articollab` from npm and follow the [Counter quick start](quick-sta
 
 ## Why do nested object edits not synchronize?
 
-Value/List payloads are immutable JSON. Accessors intercept whole replacements, not arbitrary nested writes. Replace `{ done: false }` with `{ done: true }`; do not mutate the shared object in place. See [Value](collections.md#value-replace-the-whole-payload).
+Value/List/Map payloads are immutable JSON. Accessors intercept whole replacements, not arbitrary nested writes. Replace `{ done: false }` with `{ done: true }`; do not mutate the shared object in place. See [Value](collections.md#value-replace-the-whole-payload). To let writers edit fields independently, keep each field under its own [Map](collections.md#map-keyed-values) key.
 
 ## Does a change event mean my edit was saved?
 
