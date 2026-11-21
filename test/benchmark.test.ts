@@ -149,6 +149,86 @@ describe("collection benchmark", () => {
     assert.deepEqual(fingerprints[0], fingerprints[1]);
   });
 
+  it("measures checkpoint storage stages with repeatable fixtures and history eviction", async () => {
+    const args = ["--expose-gc", script, "--checkpoint-storage", "--smoke"];
+    const saveStages = ["checkpoint", "stringifyUtf8", "compress"];
+    const restoreStages = ["decompress", "parseUtf8", "decode", "restore"];
+    const fingerprints: unknown[][] = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const output = await run([...args, "--json"]);
+      assert.equal(output.stderr, "");
+      const report = record(JSON.parse(output.stdout));
+      assert.equal(record(report.environment).node, process.version);
+      assert.deepEqual(report.config, { sizes: [32], historyLimits: [0, 2], samples: 2, warmups: 1,
+        seed: 42, batchSize: 32, gzipLevel: 6, brotliQuality: 4 });
+      assert.ok(Array.isArray(report.results));
+      const rows = report.results.map(record);
+      assert.deepEqual(rows.map((row) => [row.historyLimit, row.encoding]), [
+        [0, "json"], [0, "gzip"], [0, "brotli"], [2, "json"], [2, "gzip"], [2, "brotli"],
+      ]);
+      const firstFixture = rows[0]?.fixture;
+      for (const row of rows) {
+        assert.equal(row.size, 32);
+        assert.equal(row.watermark, 3);
+        assert.equal(row.retainedCommits, row.historyLimit);
+        assert.deepEqual(row.fixture, firstFixture);
+        const fixture = record(row.fixture);
+        assert.equal(fixture.visibleIds, 32);
+        assert.equal(fixture.deletedIds, 8);
+        assert.match(String(fixture.snapshotSha256), /^[a-f0-9]{64}$/);
+        assert.ok(typeof row.snapshotBytes === "number" && row.snapshotBytes > 0);
+        assert.ok(typeof row.rawBytes === "number" && Number.isSafeInteger(row.rawBytes) && row.rawBytes > row.snapshotBytes);
+        assert.equal(row.rawBytes, rows.find((item) => item.historyLimit === row.historyLimit && item.encoding === "json")?.rawBytes);
+        assert.ok(typeof row.encodedBytes === "number" && Number.isSafeInteger(row.encodedBytes) && row.encodedBytes > 0);
+        assert.equal(row.encodedToRawRatio, row.encodedBytes / row.rawBytes);
+        if (row.encoding === "json") assert.equal(row.rawBytes, row.encodedBytes);
+
+        const timings = record(row.timings);
+        assert.deepEqual(Object.keys(timings).sort(), [...saveStages, ...restoreStages, "saveTotal", "restoreTotal"].sort());
+        const samplesByStage = new Map(Object.entries(timings).map(([name, input]) => {
+          const stats = record(input);
+          assert.ok(Array.isArray(stats.samples));
+          assert.equal(stats.samples.length, 2);
+          const samples = stats.samples.map((sample: unknown) => {
+            assert.ok(typeof sample === "number" && Number.isFinite(sample) && sample >= 0);
+            return sample;
+          });
+          assert.equal(stats.median, (samples[0]! + samples[1]!) / 2);
+          assert.equal(stats.min, Math.min(...samples));
+          assert.equal(stats.max, Math.max(...samples));
+          return [name, samples] as const;
+        }));
+        if (row.encoding === "json") {
+          assert.deepEqual(samplesByStage.get("compress"), [0, 0]);
+          assert.deepEqual(samplesByStage.get("decompress"), [0, 0]);
+        }
+        for (const [name, stages] of [["saveTotal", saveStages], ["restoreTotal", restoreStages]] as const) {
+          assert.deepEqual(samplesByStage.get(name), [0, 1].map((index) =>
+            stages.reduce((total, stage) => total + samplesByStage.get(stage)![index]!, 0)));
+        }
+      }
+      assert.ok(Number(rows[0]?.rawBytes) < Number(rows[3]?.rawBytes));
+      fingerprints.push(rows.map(({ timings: _timings, ...row }) => row));
+    }
+    assert.deepEqual(fingerprints[0], fingerprints[1]);
+    const output = await run(args);
+    assert.equal(output.stdout.split("\n").filter((line) => /^32\t/.test(line)).length, 6);
+    assert.match(output.stdout, /Restore includes JSON parsing, checkpoint decode and constructor validation/);
+  });
+
+  it("rejects conflicting checkpoint storage modes and invalid worker arguments", async () => {
+    for (const otherMode of [["--extended"], ["--profile-remote-replace", "missing-directory"]]) {
+      await assert.rejects(run([script, "--checkpoint-storage", ...otherMode]), (error: unknown) => {
+        assert.ok(error instanceof Error && "stderr" in error && typeof error.stderr === "string");
+        assert.match(error.stderr, /--checkpoint-storage is separate from --extended and --profile-remote-replace/);
+        assert.doesNotMatch(error.stderr, /worker failed|ENOENT/);
+        return true;
+      });
+    }
+    await assert.rejects(run([script, "--checkpoint-storage-worker", "32", "1000", "smoke"]),
+      /Invalid checkpoint storage worker arguments/);
+  });
+
   it("prints extended units and measurement boundaries without mixing in original workloads", async () => {
     const output = await run(["--expose-gc", script, "--extended", "--smoke"]);
     assert.equal(output.stderr, "");
