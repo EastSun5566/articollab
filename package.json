@@ -42,6 +42,10 @@
     "./sync": {
       "types": "./dist/sync/index.d.ts",
       "import": "./dist/sync/index.js"
+    },
+    "./sync/node": {
+      "types": "./dist/sync/node.d.ts",
+      "import": "./dist/sync/node.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -70,6 +74,7 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "commit-and-tag-version": "^13.2.1",
+    "fake-indexeddb": "^6.2.7",
     "knip": "^6.39.0",
     "oxlint": "^1.87.0",
     "oxlint-tsgolint": "^7.0.2003",

@@ -23,7 +23,7 @@ The [concepts guide](concepts.md) explains how these pieces work together. The [
 
 ## What your application supplies
 
-You choose the transport, storage, authentication and recovery workflow, or use the [sync adapter](sync.md) for HTTP with polling. You also coordinate one writer per client ID and ensure restored checkpoints belong to the same document.
+You choose the transport, storage, authentication and recovery workflow, or use the [sync adapter](sync.md) for HTTP with push and polling and for IndexedDB or file checkpoint stores. You also coordinate one writer per client ID and ensure restored checkpoints belong to the same document.
 
 Articollab provides the collaboration core, not an editor, database or production networking adapter. Read [FAQ and limitations](faq.md) before choosing an integration.
 

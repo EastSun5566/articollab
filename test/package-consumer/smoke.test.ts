@@ -50,7 +50,8 @@ import {
   createClient, createServer, defineDocument, list, map, text, value,
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeCursor,
 } from "articollab";
-import { connectSync, createHttpTransport, createSyncHandler } from "articollab/sync";
+import { CheckpointLockedError, connectSync, createHttpTransport, createSyncHandler, openIndexedDbStore } from "articollab/sync";
+import { openFileStore, CheckpointLockedError as NodeLockedError } from "articollab/sync/node";
 
 const Board = defineDocument({ count: value(0), items: list(), body: text() });
 const roundTrip = (input) => JSON.parse(JSON.stringify(input));
@@ -259,6 +260,20 @@ for (let tries = 0; syncA.doc.state.items.length < 2; tries++) {
 assert.deepEqual(syncA.doc.state.items.toArray(), ["synced", "pushed"]);
 syncA.stop(); syncB.stop();
 
+assert.equal(NodeLockedError, CheckpointLockedError, "both entrypoints share one error class");
+assert.equal(typeof openIndexedDbStore, "function");
+const fileStore = await openFileStore("checkpoint.json");
+await assert.rejects(openFileStore("checkpoint.json"), CheckpointLockedError);
+const stored = await connectSync(Board, { transport: createHttpTransport({ url: "http://sync.local/api/", fetch: viaHandler }), pollInterval: 0, push: false, store: fileStore });
+stored.doc.state.items.push("persisted");
+await stored.sync();
+stored.stop();
+const reopened = await openFileStore("checkpoint.json");
+const resumed = await connectSync(Board, { transport: createHttpTransport({ url: "http://sync.local/api/", fetch: viaHandler }), pollInterval: 0, push: false, store: reopened });
+assert.equal(resumed.doc.checkpoint().clientId, stored.doc.checkpoint().clientId, "the same writer resumes");
+assert.equal(resumed.doc.state.items.toArray().at(-1), "persisted");
+resumed.stop();
+
 const sessionServer = createServer(Board);
 const sessionId = sessionServer.openClient();
 assert.deepEqual(sessionServer.listClients(), [{ clientId: sessionId, lastSeq: 0, lastServerSeq: null }]);
@@ -310,8 +325,15 @@ import {
 } from "articollab";
 import {
   connectSync, createSyncHandler, type SyncClient, type SyncHandler, type SyncPushState, type SyncStatus,
-  type SyncSubscription, type SyncTransport,
+  type SyncSubscription, type SyncTransport, type CheckpointStore, type ConnectSyncOptions, openIndexedDbStore,
 } from "articollab/sync";
+import { openFileStore, type FileStoreOptions } from "articollab/sync/node";
+type StoreOption = Expect<Equal<ConnectSyncOptions<Shape>["store"], CheckpointStore | undefined>>;
+type OpenedIdb = Expect<Equal<Awaited<ReturnType<typeof openIndexedDbStore>>, CheckpointStore>>;
+type OpenedFile = Expect<Equal<Awaited<ReturnType<typeof openFileStore>>, CheckpointStore>>;
+type FileLocks = Expect<Equal<keyof FileStoreOptions, "locks" | "fs">>;
+// @ts-expect-error A store needs a database and key.
+void openIndexedDbStore({ database: "d" });
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Expect<T extends true> = T;
