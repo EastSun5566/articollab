@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.8.0](https://github.com/EastSun5566/articollab/compare/v0.7.2...v0.8.0) (2026-11-22)
+
+### Features
+
+* add a keyed Map collection ([2e26a3e](https://github.com/EastSun5566/articollab/commit/2e26a3e9eba622a47eccc301f5f5638ceac9c2c2))
+* **sync:** persist checkpoints in IndexedDB or a file, saving after every local edit ([8588428](https://github.com/EastSun5566/articollab/commit/8588428a5dc3a751bbde9665cfa4caa59aae9763))
+
+### Bug Fixes
+
+* **sync:** finish a closing store's operations before releasing its lock ([834aa14](https://github.com/EastSun5566/articollab/commit/834aa14a966fffbc45f7b5326b73d9c883bf3827))
+
+### Performance Improvements
+
+* **text:** reuse saved ID ranges when building snapshots ([a010d09](https://github.com/EastSun5566/articollab/commit/a010d09abcc966c2b1854c4b171438cdd1de6e4b))
+
+### Benchmarks
+
+* measure checkpoint save and restore costs for JSON, gzip and Brotli ([9efc26a](https://github.com/EastSun5566/articollab/commit/9efc26aaf837834c67e5675ef11307aff8dd1e2a))
+
+### Upgrade
+
+Existing 0.7.2 checkpoints restore with the same schema, document lineage and writer sessions. Upgrade all readers before enabling Map for a shared document. The Node.js file store uses the default lock manager from Node.js 24.5. See the [upgrade guide](docs/recovery.md#upgrading-from-07-to-08).
+
 ## [0.7.2](https://github.com/EastSun5566/articollab/compare/v0.7.1...v0.7.2) (2026-11-22)
 
 ### Bug Fixes
