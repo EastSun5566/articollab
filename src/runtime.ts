@@ -319,7 +319,6 @@ function sameAnchor(left: Readonly<ElementId> | null, right: Readonly<ElementId>
   return left === right || (left !== null && right !== null && equalsId(left, right));
 }
 
-/** JSON equality would lose payload identity and signed-zero changes. */
 /** Matches sent and committed operations as a JSON multiset, keeping each side's order. */
 function transformEvent<TOperation extends Operation>(
   batch: ClientBatch<TOperation>, commit: ServerCommit<TOperation>
@@ -349,6 +348,7 @@ function transformEvent<TOperation extends Operation>(
   return Object.freeze({ batch, commit, dropped: Object.freeze(dropped), added: Object.freeze(added) });
 }
 
+/** JSON equality would lose payload identity and signed-zero changes. */
 function sameOperations(
   left: readonly Operation[], right: readonly Operation[], allowValueChanges = false
 ): boolean {
