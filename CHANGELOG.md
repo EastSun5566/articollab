@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.7.1](https://github.com/EastSun5566/articollab/compare/v0.7.0...v0.7.1) (2026-11-21)
+
+### Bug Fixes
+
+* **sync:** preserve terminal states and cancellation boundaries ([581f1ea](https://github.com/EastSun5566/articollab/commit/581f1ea04f19c7db26f938c143d4e9d3162f4feb))
+* **sync:** serialize stream admission and clean up aborted requests ([a6ef353](https://github.com/EastSun5566/articollab/commit/a6ef353977017ec2b00b92bf0c0e007e9726419e))
+
 ## [0.7.0](https://github.com/EastSun5566/articollab/compare/v0.6.0...v0.7.0) (2026-11-09)
 
 ### Features
