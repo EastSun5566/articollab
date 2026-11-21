@@ -1,5 +1,6 @@
 import {
   createClient,
+  decodeClientCheckpoint,
   decodeServerCommit,
   decodeSnapshot,
   type ClientBatch,
@@ -11,6 +12,7 @@ import {
   type ServerCommit,
 } from "../index.ts";
 import { readClientProgress } from "../runtime.ts";
+import type { CheckpointStore } from "./store.ts";
 
 /**
  * The network operations a sync client needs. Each method resolves when the request completed;
@@ -61,8 +63,16 @@ export interface ConnectSyncOptions<S extends SchemaShape> {
   readonly transport: SyncTransport;
   /** Resume this writer. Without it, a new session is registered. */
   readonly checkpoint?: ClientCheckpoint<S>;
-  /** Persists the checkpoint before pending work is sent and after commits are received. */
+  /**
+   * Persists the checkpoint after every local edit, before pending work is sent and after commits
+   * are received. Saves run one at a time and always save the latest checkpoint.
+   */
   readonly save?: (checkpoint: ClientCheckpoint<S>) => void | Promise<void>;
+  /**
+   * Loads, saves and closes this writer's checkpoint: a saved checkpoint is restored, otherwise a
+   * session is registered. The client closes the store when it stops. Not with `checkpoint` or `save`.
+   */
+  readonly store?: CheckpointStore;
   /** Milliseconds between catch-up polls while idle or blocked. Default 1000; 0 disables polling. */
   readonly pollInterval?: number;
   readonly retry?: SyncRetryOptions;
@@ -112,15 +122,30 @@ function nonNegativeInteger(value: number, name: string): number {
  * Creates or restores a document and keeps it synchronized through `transport`.
  * The client owns the document's `onBatch`: local edits are scheduled for submission automatically.
  */
-export async function connectSync<S extends SchemaShape>(
+export function connectSync<S extends SchemaShape>(
   schema: DocumentSchema<S>,
   options: ConnectSyncOptions<S>
 ): Promise<SyncClient<S>> {
+  return start(schema, options, false);
+}
+
+/** `restarting` registers a new session even when the store holds a checkpoint. */
+async function start<S extends SchemaShape>(
+  schema: DocumentSchema<S>,
+  options: ConnectSyncOptions<S>,
+  restarting: boolean
+): Promise<SyncClient<S>> {
+  const { store } = options;
+  if (store !== undefined && (options.checkpoint !== undefined || options.save !== undefined)) {
+    throw new TypeError("store cannot be combined with checkpoint or save");
+  }
   const pollInterval = nonNegativeInteger(options.pollInterval ?? 1000, "pollInterval");
   const initialDelay = nonNegativeInteger(options.retry?.initialDelay ?? 500, "retry.initialDelay");
   const maxDelay = nonNegativeInteger(options.retry?.maxDelay ?? 30_000, "retry.maxDelay");
   const pushTimeout = nonNegativeInteger(options.pushTimeout ?? 45_000, "pushTimeout");
-  const { transport, save } = options;
+  const { transport } = options;
+  const save = store === undefined ? options.save : (checkpoint: ClientCheckpoint<S>) => store.save(checkpoint);
+  let ownsStore = store !== undefined;
   const subscribe = options.push === false ? undefined : transport.subscribe?.bind(transport);
 
   let doc: ClientDocument<S> | undefined;
@@ -132,6 +157,7 @@ export async function connectSync<S extends SchemaShape>(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let attempt = 0;
   let savedVersion = "";
+  let saving: Promise<void> = Promise.resolve();
   const listeners = new Set<(status: SyncStatus) => void>();
   let push: SyncPushState = "off";
   let closePush: (() => void) | undefined;
@@ -146,11 +172,19 @@ export async function connectSync<S extends SchemaShape>(
     scheduled = true;
     queueMicrotask(() => {
       scheduled = false;
-      if (status !== "stopped" && status !== "failed" && status !== "gap") void sync().catch(() => {});
+      if (status === "stopped" || status === "failed") return;
+      // Save local edits now rather than when a pass gets to them: a pass may be waiting on the network.
+      void persist().catch(() => {});
+      if (status !== "gap") void sync().catch(() => {});
     });
   };
-  if (options.checkpoint !== undefined) {
-    doc = createClient(schema, { clientId: options.checkpoint.clientId, checkpoint: options.checkpoint, onBatch });
+  let restored = options.checkpoint;
+  if (store !== undefined && !restarting) {
+    const saved = await store.load();
+    if (saved !== undefined) restored = decodeClientCheckpoint(schema, saved);
+  }
+  if (restored !== undefined) {
+    doc = createClient(schema, { clientId: restored.clientId, checkpoint: restored, onBatch });
   } else {
     const registration = await transport.register();
     doc = createClient(schema, {
@@ -191,18 +225,26 @@ export async function connectSync<S extends SchemaShape>(
     timer = setTimeout(() => { timer = undefined; void sync().catch(() => {}); }, delay);
   }
 
-  /** Saves when pending work or the watermark changed since the last save. */
-  async function persist(): Promise<void> {
-    usable();
-    if (save === undefined) return;
-    const { lastLocalSeq, serverSeq } = readClientProgress(document);
-    const version = `${lastLocalSeq}:${serverSeq}`;
-    if (version === savedVersion) return;
-    const checkpoint = document.checkpoint();
-    try { await save(checkpoint); }
-    catch (cause) { fail(cause); }
-    usable();
-    savedVersion = version;
+  /**
+   * Saves when pending work or the watermark changed since the last save. Saves run one at a time and
+   * each reads the checkpoint when it starts, so an older checkpoint never overwrites a newer one.
+   */
+  function persist(): Promise<void> {
+    try { usable(); } catch (cause) { return Promise.reject(cause); }
+    if (save === undefined) return Promise.resolve();
+    const next = saving.then(async () => {
+      usable();
+      const { lastLocalSeq, serverSeq } = readClientProgress(document);
+      const version = `${lastLocalSeq}:${serverSeq}`;
+      if (version === savedVersion) return;
+      const checkpoint = document.checkpoint();
+      try { await save(checkpoint); }
+      catch (cause) { fail(cause); }
+      usable();
+      savedVersion = version;
+    });
+    saving = next.catch(() => {});
+    return next;
   }
 
   /** Applies every missing commit in order; false when history no longer covers the watermark. */
@@ -470,7 +512,9 @@ export async function connectSync<S extends SchemaShape>(
         throw new Error("restartFromSnapshot() would discard pending work; preserve the checkpoint instead");
       }
       const { checkpoint: _previous, ...rest } = options;
-      const next = await connectSync(schema, rest);
+      // The new client takes over the store; its first save replaces this session's checkpoint.
+      const next = await start(schema, rest, true);
+      ownsStore = false;
       client.stop();
       return next;
     },
@@ -482,6 +526,7 @@ export async function connectSync<S extends SchemaShape>(
       return () => { set.delete(listener); };
     },
     stop() {
+      if (ownsStore) { ownsStore = false; store?.close(); }
       if (status === "stopped") return;
       clearTimer();
       if (status !== "failed") setStatus("stopped");

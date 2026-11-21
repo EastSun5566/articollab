@@ -189,11 +189,12 @@ Runtime errors have readable messages, not a stable error-code hierarchy. `WireD
 
 ## Sync adapter
 
-Import from `"articollab/sync"`. It depends only on the core entrypoint and on `fetch`, `Request` and `Response`. See the [guide](sync.md).
+Import from `"articollab/sync"`. It depends only on the core entrypoint and on `fetch`, `Request` and `Response`; the IndexedDB store also uses `indexedDB` and `navigator.locks`. The file store is in `"articollab/sync/node"`, which uses `node:fs`. See the [guide](sync.md).
 
 | API | Purpose |
 | --- | --- |
-| `connectSync(schema, { transport, checkpoint?, save?, pollInterval?, retry?, push?, pushTimeout? })` | Creates or restores a `ClientDocument` that owns its `onBatch` and returns a `SyncClient`. Without `checkpoint` it registers a session. |
+| `connectSync(schema, { transport, checkpoint?, save?, store?, pollInterval?, retry?, push?, pushTimeout? })` | Creates or restores a `ClientDocument` that owns its `onBatch` and returns a `SyncClient`. Without `checkpoint`, or a checkpoint in `store`, it registers a session. |
+| `openIndexedDbStore({ database, key, indexedDB?, locks? })`, `openFileStore(path, { locks?, fs? })` | Open a `CheckpointStore` after taking an exclusive lock; a lock held elsewhere throws `CheckpointLockedError`. |
 | `client.doc`, `client.status`, `client.error`, `client.push` | The document, the current `SyncStatus`, the failure while `status` is `"failed"`, and the push channel's `SyncPushState`. |
 | `client.sync()`, `client.rejectPending()` | Run a pass now, or confirm cancellation of the pending batches that exist when called. Both resolve `true` on success. |
 | `client.restartFromSnapshot()`, `client.on("status" \| "push", listener)`, `client.stop()` | Recover from a gap without pending work, observe status or push-channel changes, stop polling, retries and push. |
@@ -202,7 +203,11 @@ Import from `"articollab/sync"`. It depends only on the core entrypoint and on `
 | `handler.notify()` | Pushes commits applied without the handler to open event streams. |
 | `SyncHttpError` | An unexpected HTTP status with `status` and `retryable`. |
 
-Types: `SyncClient`, `SyncStatus`, `SyncPushState`, `SyncTransport`, `SyncSubscription`, `ConnectSyncOptions`, `SyncRetryOptions`, `HttpTransportOptions`, `SyncHandler`, `SyncHandlerOptions`, `SyncAction`.
+Types: `SyncClient`, `SyncStatus`, `SyncPushState`, `SyncTransport`, `SyncSubscription`, `ConnectSyncOptions`, `SyncRetryOptions`, `HttpTransportOptions`, `SyncHandler`, `SyncHandlerOptions`, `SyncAction`, `CheckpointStore`, `IndexedDbStoreOptions`, `IdbFactoryLike`, `LockManagerLike`; from `"articollab/sync/node"` also `FileStoreOptions` and `FileStoreFileSystem`.
+
+Saves run one at a time, and each reads the checkpoint when it starts and is skipped if neither the last local sequence nor the watermark changed since the last save, so an older checkpoint never replaces a newer one. A save is queued after every local edit (one per microtask), at the start of each pass, before each submission and after commits are applied. `store` replaces `checkpoint` and `save`, which must then be omitted (`TypeError`): `connectSync` loads the store, decodes a saved value with `decodeClientCheckpoint` (an invalid value rejects the call rather than starting over), saves through it and closes it in `stop()`. If `connectSync` rejects, the caller still owns the store. `restartFromSnapshot()` hands the store to the new client, which registers a session without loading and replaces the saved checkpoint with its first save.
+
+`openIndexedDbStore` takes the Web Lock `articollab:<database>:<key>` with `ifAvailable`, so a second tab fails at once with `CheckpointLockedError`, then keeps each checkpoint as a JSON string under `key` in the `checkpoints` object store. `openFileStore` locks `articollab:file:<absolute path>` within the process only, writes each checkpoint to a temporary file in the same directory, flushes it and renames it over the target, and treats unparsable contents as an error rather than an empty store. Closing rejects later operations, lets operations already started finish, then releases the lock; reopening the same store in this realm waits for that instead of failing, so a closing store's last save never lands after a newer one.
 
 A pass saves the checkpoint if it changed, catches up, then repeatedly saves, submits the earliest pending batch and catches up until that batch is acknowledged. Catch-up decodes every commit and requires consecutive server sequences before applying any. Passes never overlap; calls made during a pass share its promise, and work created after its final pending check starts another pass. A `null` catch-up result sets `"gap"` and keeps pending work; a replay conflict sets `"blocked"` once the batches before the conflicting one are acknowledged, and nothing more is submitted until it clears or `rejectPending()` confirms the cancellation, which covers the batches up to the local sequence at the time of the call. Transport errors are retried with delays from `initialDelay` doubling to `maxDelay`, each scaled by a random factor between 0.5 and 1, and reset after a successful pass. Errors with `retryable: false`, invalid or out-of-order commits, an unacknowledged submission, a failing `save` and a throwing status listener set `"failed"` permanently. Document listeners and observers run inside catch-up; a throw from them also fails the client after the commit is applied.
 
@@ -218,6 +223,6 @@ Each event stream has a 4 MiB queue measured in encoded UTF-8 bytes. If a commit
 
 The server uses explicit writer sessions. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
 
-The [sync adapter](sync.md) provides HTTP transport with push, polling and retries; there is no storage adapter, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing or move. Cursors are positions only: there is no presence channel, selection type or remote-caret rendering. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
+The [sync adapter](sync.md) provides HTTP transport with push, polling and retries, plus IndexedDB and file checkpoint stores; there is no server-side storage adapter, multi-tab sharing of one writer, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing or move. Cursors are positions only: there is no presence channel, selection type or remote-caret rendering. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
 
 [Previous: Sync adapter](sync.md) · [Next: FAQ and limitations](faq.md)

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer as createHttpServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createClient, createServer, type ServerDocument } from "../../dist/index.js";
@@ -31,6 +32,7 @@ export function createBoardServer(cards = SEED_CARDS): ServerDocument<Shape> {
 /** Example-only localhost host: the packaged sync handler under /sync/ and fixed ESM assets. */
 export async function startKanbanServer(server = createBoardServer()) {
   const directory = import.meta.dirname;
+  const documentId = randomUUID();
   const assets = createBrowserAssetHandler(new Map([
     ["/", { file: join(directory, "index.html"), type: "text/html; charset=utf-8" }],
     ["/sync-ui.js", { file: join(directory, "../sync-ui.js"), type: "text/javascript; charset=utf-8" }],
@@ -43,6 +45,13 @@ export async function startKanbanServer(server = createBoardServer()) {
   const http = createHttpServer((request, response) => {
     const path = (request.url ?? "/").split("?", 1)[0]!;
     if (path.startsWith("/sync/")) { sync(request, response); return; }
+    // A new ID per start: pages key saved checkpoints by it, so they never restore one into a new document.
+    if (path === "/document" && request.method === "GET") {
+      request.resume();
+      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      response.end(JSON.stringify({ documentId }));
+      return;
+    }
     if (assets(request, response)) return;
     request.resume();
     response.writeHead(404, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });

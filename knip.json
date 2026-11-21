@@ -3,6 +3,7 @@
   "entry": [
     "src/index.ts",
     "src/sync/index.ts",
+    "src/sync/node.ts",
     "test/**/*.test.ts",
     "examples/browser-smoke/smoke.js",
     "examples/browser-http-smoke/smoke.js",

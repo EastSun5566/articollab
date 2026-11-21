@@ -10,6 +10,15 @@ export {
 } from "./client.ts";
 
 export {
+  CheckpointLockedError,
+  openIndexedDbStore,
+  type CheckpointStore,
+  type IdbFactoryLike,
+  type IndexedDbStoreOptions,
+  type LockManagerLike,
+} from "./store.ts";
+
+export {
   createHttpTransport,
   SyncHttpError,
   type HttpTransportOptions,

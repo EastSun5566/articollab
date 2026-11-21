@@ -59,6 +59,35 @@ sync.on("status", (status) => console.log(status));
 
 Decode a stored checkpoint with `decodeClientCheckpoint` before passing it as `checkpoint`. Use one `SyncClient` per writer and client ID, as with any checkpoint.
 
+## Persist checkpoints
+
+A writer's pending edits live in its checkpoint. Give `connectSync` a `store` and it restores the saved checkpoint, or registers a session when there is none, then saves after every change:
+
+```ts
+import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "articollab/sync";
+
+let store;
+try {
+  store = await openIndexedDbStore({ database: "my-app", key: `${documentId}:writer` });
+} catch (error) {
+  if (error instanceof CheckpointLockedError) showMessage("This document is open in another tab.");
+  throw error;
+}
+const sync = await connectSync(Board, { transport, store });
+```
+
+After a reload, the same writer resumes with its unsent edits and sends them. The store takes a [Web Lock](https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API), so a second tab opening the same `key` gets `CheckpointLockedError` instead of a second writer with the same client ID; `sync.stop()` releases it. Include the document's identity in `key`: a checkpoint belongs to one document lineage, and restoring it against a different server document fails.
+
+In Node.js, use a file:
+
+```ts
+import { openFileStore } from "articollab/sync/node";
+
+const sync = await connectSync(Board, { transport, store: await openFileStore("writer.checkpoint.json") });
+```
+
+Each save writes a temporary file and renames it over the checkpoint, so the file always holds a complete checkpoint. The lock covers one process only; give each process its own file. A stored value that cannot be decoded rejects `connectSync` instead of starting over, so the pending work is not lost silently: inspect it, then `store.clear()` if you decide to discard it. To write your own store, implement `CheckpointStore`: `load`, `save`, `clear` and `close`.
+
 ## Live updates
 
 With `createHttpTransport`, the client opens `GET events?since=n` after its first pass and keeps it open. The handler first sends the saved commits after `n`, then every new commit as soon as its checkpoint is saved, as `event: commits` with the commits as JSON and the last server sequence as the event `id`. A `: ping` comment every `heartbeatInterval` milliseconds (default 15000) keeps proxies from closing an idle stream.
@@ -99,12 +128,12 @@ The transport throws an error with `retryable: false` for failures that retrying
 
 **Stopping.** `stop()` is terminal, as is `failed`. Queued work cannot restart either state. Work called before stopping but still waiting or running resolves `false` when interrupted by stop; new `sync()`/`rejectPending()` calls after stop reject. Queued work interrupted by failure rejects with the same `sync.error`. Requests or saves already started may still complete, but the client ignores their late results and starts no further work. Completed mutations are not rolled back, pending work is not purged, and stopping after failure keeps the original failure visible.
 
-**Saving.** With `save`, the checkpoint is saved after connecting, before any pending batch is sent, and after commits are received, including acknowledgements that change nothing visible. Keep `save` fast; it runs inside each pass.
+**Saving.** With `save` or `store`, the checkpoint is saved after connecting, after every local edit, before any pending batch is sent, and after commits are received, including acknowledgements that change nothing visible. Saves run one at a time and always save the latest checkpoint, so a slow save never lets an older one overwrite a newer one. A save after a local edit does not wait for a pass that is waiting on the network. Keep saving fast; a pass waits for it.
 
 **History gaps.** Never replace pending work with a snapshot. If nothing is pending, `restartFromSnapshot()` registers a new session, stops the old client and returns a new one; update your references and close the old session on the server if you track it. With pending work, preserve the checkpoint and recover it by hand, for example by raising the server's `historyLimit` and restoring.
 
 ## Limits
 
-There is no authentication, storage adapter, cross-tab coordination or offline detection: call `sync()` when your app comes back online. The handler serves one document; route requests for different documents to different handlers. See the [core reference](reference.md#sync-adapter) for the complete contract.
+There is no authentication, server-side storage adapter or offline detection: call `sync()` when your app comes back online. Checkpoint stores keep one writer per tab or process; they do not share a writer between tabs. The handler serves one document; route requests for different documents to different handlers. See the [core reference](reference.md#sync-adapter) for the complete contract.
 
 [Previous: Recovery](recovery.md) · [Next: Core reference](reference.md)

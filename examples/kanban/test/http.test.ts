@@ -3,7 +3,8 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, it, type TestContext } from "node:test";
 import { promisify } from "node:util";
-import { connectSync, createHttpTransport } from "../../../dist/sync/index.js";
+import { IDBFactory } from "fake-indexeddb";
+import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../../dist/sync/index.js";
 import { createOfflineSwitch } from "../../sync-ui.js";
 import { addCard, Board, COLUMNS, deleteCard, findCard, lostRenames, moveCard, renameCard } from "../board.js";
 import { createBoardServer, SEED_CARDS, startKanbanServer } from "../server.ts";
@@ -15,6 +16,15 @@ async function until(condition: () => boolean, what: string, timeout = 5000): Pr
     if (Date.now() > deadline) assert.fail(`Timed out waiting for ${what}`);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+async function documentIdOf(url: string): Promise<string> {
+  const response = await fetch(url + "/document");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  const body: unknown = await response.json();
+  assert.ok(typeof body === "object" && body !== null && "documentId" in body && typeof body.documentId === "string");
+  return body.documentId;
 }
 
 async function fixture(t: TestContext) {
@@ -90,6 +100,41 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
       assert.equal(writer.sync.doc.state.cards.has("seed-sketch"), false);
       assert.deepEqual(writer.board(), f.serverBoard());
     }
+  });
+
+  it("keeps a writer's unsent edits across a reload and sends them once it is back online", async (t) => {
+    const f = await fixture(t), b = await f.connect();
+    const documentId = await documentIdOf(f.host.url);
+    assert.equal(await documentIdOf(f.host.url), documentId, "stable while the server runs");
+    const other = await startKanbanServer();
+    const otherId = await documentIdOf(other.url);
+    await other.close();
+    assert.notEqual(otherId, documentId, "each server start is a new document");
+
+    // The same browser profile across the reload: one IndexedDB, one lock manager.
+    const indexedDB = new IDBFactory();
+    const open = () => openIndexedDbStore({ database: "articollab-kanban", key: `${documentId}:A`, indexedDB });
+    const network = createOfflineSwitch();
+    const transport = () => createHttpTransport({ url: f.host.url + "/sync/", fetch: network.fetch });
+    const before = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 }, store: await open(), transport: transport() });
+    await before.sync();
+    await assert.rejects(open(), CheckpointLockedError, "a second tab cannot open the same writer");
+    network.set(true);
+    addCard(before.doc, "todo", "Typed offline", "offline-card");
+    renameCard(before.doc, "seed-ship", "Renamed offline");
+    await until(() => before.status === "retrying", "the offline writer to retry");
+    before.stop(); // The page unloads.
+
+    network.set(false);
+    const after = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 }, store: await open(), transport: transport() });
+    t.after(() => after.stop());
+    assert.equal(after.doc.checkpoint().clientId, before.doc.checkpoint().clientId, "the same writer resumes");
+    assert.equal(after.doc.checkpoint().pendingBatches.length, 2, "both offline edits were restored");
+    assert.equal(findCard(after.doc, "offline-card")?.card.title, "Typed offline");
+    assert.equal(await after.sync(), true);
+    await until(() => b.settled() && findCard(b.sync.doc, "offline-card") !== undefined, "B to receive the restored edits");
+    assert.equal(findCard(b.sync.doc, "seed-ship")?.card.title, "Renamed offline");
+    assert.deepEqual(b.board(), f.serverBoard());
   });
 
   it("serves fixed ESM assets and the sync routes, and closes idempotently", async (t) => {
