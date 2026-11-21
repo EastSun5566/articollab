@@ -2,26 +2,24 @@
 // Shared by the page, the server and the tests: no DOM and no network.
 import { defineDocument, list, map } from "../../dist/index.js";
 
-/** What the `cards` Map stores under a card ID. @typedef {{ title: string }} CardData */
-/** A card as the page shows it: its ID, which never changes, and its data. @typedef {{ id: string, title: string }} Card */
+/** A card as the page shows it: its ID, which never changes, and its title. @typedef {{ id: string, title: string }} Card */
 
 export const COLUMNS = /** @type {const} */ (["todo", "doing", "done"]);
 /** @typedef {(typeof COLUMNS)[number]} Column */
 
 /**
- * Position and data are kept apart: each column is a List of card IDs, and the `cards` Map holds
- * each card's data under its ID. A move changes only the Lists and a rename only the Map, so the
- * two never conflict.
+ * One List orders every card, a Map records each card's column and another its title. Each column
+ * shows the cards of that column in `order`. Moving a card is a List move plus, between columns, a
+ * column change; renaming touches only `titles`. Each part is decided by server order on its own,
+ * so concurrent moves, column changes and renames never conflict or duplicate a card.
  */
 export const Board = defineDocument({
   // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- Pins the element type for tsc --checkJs.
-  todo: /** @type {import("../../dist/index.js").ListSchema<string>} */ (list()),
+  order: /** @type {import("../../dist/index.js").ListSchema<string>} */ (list()),
   // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- As above.
-  doing: /** @type {import("../../dist/index.js").ListSchema<string>} */ (list()),
+  columns: /** @type {import("../../dist/index.js").MapSchema<Column>} */ (map()),
   // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- As above.
-  done: /** @type {import("../../dist/index.js").ListSchema<string>} */ (list()),
-  // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- As above.
-  cards: /** @type {import("../../dist/index.js").MapSchema<CardData>} */ (map()),
+  titles: /** @type {import("../../dist/index.js").MapSchema<string>} */ (map()),
 });
 /** @typedef {typeof Board.definition} Shape */
 /** @typedef {import("../../dist/index.js").ClientDocument<Shape>} BoardDocument */
@@ -40,75 +38,89 @@ export function normalizeTitle(title) {
 /** The card shown for an ID; the title is empty if its data has not arrived.
  * @param {BoardDocument} doc @param {string} cardId @returns {Card} */
 export function cardFor(doc, cardId) {
-  return { id: cardId, title: doc.state.cards.get(cardId)?.title ?? "" };
+  return { id: cardId, title: doc.state.titles.get(cardId) ?? "" };
 }
 
-/** Where a card is now, by its ID. O(cards).
+/** The card IDs a column shows, in board order. @param {BoardDocument} doc @param {Column} column */
+export function cardsIn(doc, column) {
+  return doc.state.order.toArray().filter((id) => doc.state.columns.get(id) === column);
+}
+
+/** Where a card is now: its column, its index there and its index in `order`. O(cards).
  * @param {BoardDocument} doc @param {string} cardId
- * @returns {{column: Column, index: number, card: Card} | undefined} */
+ * @returns {{column: Column, index: number, position: number, card: Card} | undefined} */
 export function findCard(doc, cardId) {
-  for (const column of COLUMNS) {
-    let index = 0;
-    for (const id of doc.state[column]) {
-      if (id === cardId) return { column, index, card: cardFor(doc, cardId) };
-      index++;
-    }
+  const column = doc.state.columns.get(cardId);
+  if (column === undefined) return undefined;
+  let index = 0, position = 0;
+  for (const id of doc.state.order) {
+    if (id === cardId) return { column, index, position, card: cardFor(doc, cardId) };
+    if (doc.state.columns.get(id) === column) index++;
+    position++;
   }
   return undefined;
 }
 
-/** Writes the card's data and its position in one batch.
+/** Writes the card's position, column and title in one batch.
  * @param {BoardDocument} doc @param {Column} column @param {string} title @param {string} [id] */
 export function addCard(doc, column, title, id = crypto.randomUUID()) {
   const card = { id, title: normalizeTitle(title) };
   doc.transact(() => {
-    doc.state.cards.set(id, { title: card.title });
-    doc.state[column].push(id);
+    doc.state.titles.set(id, card.title);
+    doc.state.columns.set(id, column);
+    doc.state.order.push(id);
   });
   return card;
 }
 
-/** Writes only the `cards` Map, so a concurrent move cannot affect it. Returns false if the card is gone.
+/** Writes only `titles`, so a concurrent move cannot affect it. Returns false if the card is gone.
  * @param {BoardDocument} doc @param {string} cardId @param {string} title */
 export function renameCard(doc, cardId, title) {
   const next = normalizeTitle(title);
   if (findCard(doc, cardId) === undefined) return false;
-  if (doc.state.cards.get(cardId)?.title !== next) doc.state.cards.set(cardId, { title: next });
+  if (doc.state.titles.get(cardId) !== next) doc.state.titles.set(cardId, next);
   return true;
 }
 
-/** Removes the card's position and its data in one batch.
+/** Removes the card's position, column and title in one batch.
  * @param {BoardDocument} doc @param {string} cardId */
 export function deleteCard(doc, cardId) {
   const found = findCard(doc, cardId);
   if (found === undefined) return false;
   doc.transact(() => {
-    doc.state[found.column].delete(found.index);
-    doc.state.cards.delete(cardId);
+    doc.state.order.delete(found.position);
+    doc.state.columns.delete(cardId);
+    doc.state.titles.delete(cardId);
   });
   return true;
 }
 
 /**
- * Moves a card to gap `toIndex` of `toColumn`, counted in the view before the move. There is no List
- * move: one batch deletes the card ID's element and inserts the ID again, as a new element. The
- * server policy relies on a move batch being exactly that delete followed by that insert.
+ * Moves a card to gap `toIndex` of `toColumn`, counted in that column's view before the move. The
+ * card keeps its List element: one List move places it before the card now at that gap (or after
+ * the column's last card), and a column change follows if it changes column.
  * Returns false if the card is gone or would not move.
  * @param {BoardDocument} doc @param {string} cardId @param {Column} toColumn @param {number} toIndex
  */
 export function moveCard(doc, cardId, toColumn, toIndex) {
   const found = findCard(doc, cardId);
   if (found === undefined) return false;
-  const target = doc.state[toColumn];
+  const target = cardsIn(doc, toColumn);
   if (!Number.isSafeInteger(toIndex) || toIndex < 0 || toIndex > target.length) {
     throw new RangeError(`Gap ${toIndex} is outside ${toColumn}`);
   }
   const sameColumn = found.column === toColumn;
   if (sameColumn && (toIndex === found.index || toIndex === found.index + 1)) return false;
-  const insertAt = sameColumn && toIndex > found.index ? toIndex - 1 : toIndex;
+  // Positions in `order` once the card is taken out of it.
+  const rest = doc.state.order.toArray().filter((id) => id !== cardId);
+  const remaining = target.filter((id) => id !== cardId);
+  const slot = sameColumn && toIndex > found.index ? toIndex - 1 : toIndex;
+  const anchor = remaining[slot], last = remaining.at(-1);
+  // Before the card now at the gap, else after the column's last card, else at the end.
+  const to = anchor !== undefined ? rest.indexOf(anchor) : last !== undefined ? rest.indexOf(last) + 1 : rest.length;
   doc.transact(() => {
-    doc.state[found.column].delete(found.index);
-    target.insert(insertAt, cardId);
+    if (to !== found.position) doc.state.order.move(found.position, to);
+    if (!sameColumn) doc.state.columns.set(cardId, toColumn);
   });
   return true;
 }
@@ -126,13 +138,13 @@ export function lostRenames(commit, pendingBatches) {
   const titles = new Map();
   for (const batch of pendingBatches) {
     for (const operation of batch.operations) {
-      if (operation.type === "map/set" && operation.path === "cards") titles.set(operation.key, operation.value.title);
+      if (operation.type === "map/set" && operation.path === "titles") titles.set(operation.key, operation.value);
     }
   }
   /** @type {Card[]} */
   const lost = [];
   for (const operation of commit.operations) {
-    if (operation.type !== "map/delete" || operation.path !== "cards") continue;
+    if (operation.type !== "map/delete" || operation.path !== "titles") continue;
     const title = titles.get(operation.key);
     if (title !== undefined) lost.push({ id: operation.key, title });
   }
@@ -140,38 +152,40 @@ export function lostRenames(commit, pendingBatches) {
 }
 
 /**
- * The writer's selected card. It follows the card by ID, including after a move; once the card
- * is deleted, a cursor bound to its old position selects the card that took its place.
+ * The writer's selected card. It follows the card by ID, including after a move; once the card is
+ * deleted, a cursor bound to its old place in `order` selects the nearest card of the same column.
  * @param {BoardDocument} doc
  */
 export function createSelection(doc) {
   /** @type {{cardId: string, column: Column, cursor: import("../../dist/index.js").Cursor} | undefined} */
   let selected;
-  /** @param {Column} column @param {number} index */
-  function remember(column, index) {
-    const ids = doc.state[column];
-    const cardId = ids.get(index);
-    selected = { cardId, column, cursor: ids.cursorAt(index, "right") };
-    return { column, index, card: cardFor(doc, cardId) };
+  /** @param {string} cardId */
+  function remember(cardId) {
+    const found = findCard(doc, cardId);
+    if (found === undefined) return undefined;
+    selected = { cardId, column: found.column, cursor: doc.state.order.cursorAt(found.position, "right") };
+    return { column: found.column, index: found.index, card: found.card };
   }
   return {
     get cardId() { return selected?.cardId; },
     /** @param {string} cardId */
-    select(cardId) {
-      const found = findCard(doc, cardId);
-      if (found === undefined) return undefined;
-      return remember(found.column, found.index);
-    },
+    select(cardId) { return remember(cardId); },
     clear() { selected = undefined; },
     /** Re-reads the selection after any change. */
     resolve() {
       if (selected === undefined) return undefined;
-      const found = findCard(doc, selected.cardId);
-      if (found !== undefined) return remember(found.column, found.index);
-      const ids = doc.state[selected.column];
-      const gap = ids.cursorIndex(selected.cursor);
-      if (gap === undefined || ids.length === 0) { selected = undefined; return undefined; }
-      return remember(selected.column, Math.min(gap, ids.length - 1));
+      const current = remember(selected.cardId);
+      if (current !== undefined) return current;
+      const order = doc.state.order.toArray();
+      const gap = doc.state.order.cursorIndex(selected.cursor);
+      const column = selected.column;
+      selected = undefined;
+      if (gap === undefined) return undefined;
+      // The next card of the same column, otherwise the previous one.
+      const after = order.slice(gap).find((id) => doc.state.columns.get(id) === column);
+      const before = order.slice(0, gap).findLast((id) => doc.state.columns.get(id) === column);
+      const next = after ?? before;
+      return next === undefined ? undefined : remember(next);
     },
   };
 }

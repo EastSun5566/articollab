@@ -36,7 +36,7 @@ export async function startKanbanServer(server = createBoardServer()) {
   const assets = createBrowserAssetHandler(new Map([
     ["/", { file: join(directory, "index.html"), type: "text/html; charset=utf-8" }],
     ["/sync-ui.js", { file: join(directory, "../sync-ui.js"), type: "text/javascript; charset=utf-8" }],
-    ...["page", "view", "board"].map((name) => [`/kanban/${name}.js`,
+    ...["page", "board"].map((name) => [`/kanban/${name}.js`,
       { file: join(directory, `${name}.js`), type: "text/javascript; charset=utf-8" }] as const),
   ]));
   // Rejections let a writer discard pending work that the server can no longer apply.

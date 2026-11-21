@@ -20,7 +20,7 @@ All commands and snippet imports below are relative to the **repository root**, 
 | [Browser HTTP smoke](#browser-http-smoke-example) | Browser clients through the shared HTTP sync controller |
 | [Browser reload recovery](#browser-reload-recovery-example) | Session storage, server restart and document lineage protection |
 | [Text editor prototype](#text-editor-prototype) | Two CodeMirror editors kept live by `articollab/sync`, with offline editing and shared cursors |
-| [Kanban board](#kanban-board) | Card positions in Lists and card data in a Map, both rendered with `observe`; moves settled by a server policy; unsent edits kept across reloads in IndexedDB |
+| [Kanban board](#kanban-board) | One List of cards with native moves plus column and title Maps, rendered with `observe`; unsent edits kept across reloads in IndexedDB |
 
 Use one writer per client ID/document lineage and one writer per checkpoint file. None of these helpers adds authentication, automatic history-gap recovery, rebase or power-loss durability. If a helper returns `false` or throws, preserve the checkpoint; replacing pending work with a fresh snapshot can lose edits.
 
@@ -65,29 +65,28 @@ pnpm build
 pnpm --dir examples/kanban start
 ```
 
-Position and data are kept apart. Each column is a `List<string>` of card IDs, and the `cards` [Map](../docs/collections.md#map-keyed-values) holds `{ title }` under each ID. The ID comes from `crypto.randomUUID()` and never changes. Add a card at the top of a column (one batch writes its data and its position), drag cards with the mouse, or use each card's ← ↑ ↓ → ✕ buttons. Select a card to rename it: a rename writes only the Map. Edits are sent as you make them and the other writer receives them over its push channel. The status badge, the pending count, **Offline** and **Discard blocked edits** work as in the text editor, from the shared `examples/sync-ui.js`.
+One `order` List holds every card ID, a `columns` [Map](../docs/collections.md#map-keyed-values) records each card's column and a `titles` Map its title; a column shows its cards in `order`. The ID comes from `crypto.randomUUID()` and never changes. Add a card at the top of a column (one batch writes its position, column and title), drag cards with the mouse, or use each card's ← ↑ ↓ → ✕ buttons. Select a card to rename it: a rename writes only `titles`. Edits are sent as you make them and the other writer receives them over its push channel. The status badge, the pending count, **Offline** and **Discard blocked edits** work as in the text editor, from the shared `examples/sync-ui.js`.
 
-Columns render once and then follow `List.observe()`; a move arrives as a removal and an insertion and re-creates that card's row. Titles follow `cards.observe()` and update the card's row in place wherever it is, so a focused button survives. An unchanged title is skipped: the acknowledgement of this writer's own rename adopts a decoded copy, which `observe` reports as a set.
+A move is a [List move](../docs/collections.md#move-an-element) in `order` plus, between columns, a `columns` change, in one transaction; when the card's place in `order` already fits, only the column changes. Observers of `order` and `columns` schedule one render per microtask, which places each card's row in its column and reuses existing rows, so a moved card keeps its row; `titles.observe()` updates titles in place. An unchanged title is skipped: the acknowledgement of this writer's own rename adopts a decoded copy, which `observe` reports as a set.
 
-There is no List move, so `moveCard` deletes the card ID's element and inserts the ID again in one transaction. Because the title is in the Map, a move never touches it, and renaming a card someone else moved just works. Two races remain, and the host's server `resolve` policy (`examples/kanban/policy.ts`) settles them:
+Each part is decided by server order on its own, so the races need almost no policy:
 
-| Race | Without a policy | With this policy |
-| --- | --- | --- |
-| Two writers move the same card | Both insertions remain: the card is duplicated | The later move's source is already gone, so its insertion is dropped. The first move wins |
-| A writer renames a card another writer moved | Works: the rename and the move touch different collections | Unchanged |
-| A writer renames a card another writer deleted | The Map `set` recreates the card's data, with no position | The `set` is dropped: a `cards` set for a card that no longer exists is kept only if the same batch adds the card |
+| Race | Result |
+| --- | --- |
+| Two writers move the same card | One copy: the later List move and column change win |
+| A writer renames a card another writer moved | The rename and the move touch different collections; both apply |
+| A writer moves a card another writer deleted | The List move changes nothing and the mover's `discard` event reports it; the page shows a notice |
+| A writer renames a card another writer deleted | The host's `resolve` policy drops the set |
 
-A move whose source was deleted also loses its insertion, so a move never brings back a deleted card. The policy relies on the page's conventions: a move batch is exactly that delete followed by that insert, and a new card's data and position travel in one batch. It reads the pre-batch snapshot, which costs O(cards) per batch; it is not authorization or payload validation.
+The only policy (`examples/kanban/policy.ts`) protects card data: `columns` and `titles` are last-writer-wins, so a set that arrives after the card was deleted would recreate data with no position. A set for a card that is no longer in `order` is dropped unless the same batch adds the card. It reads the pre-batch snapshot, which costs O(cards) per batch; it is not authorization or payload validation.
 
-A dropped rename produces no `discard` event, which reports only List `set()`s. The page detects it instead with `lostRenames()` from `board.js`: when a peer's commit deletes a card while this writer still has a rename of it pending, the server will apply that rename after the delete, so the policy will drop it, and the writer shows a notice. Removing a card from its column is a visible change, so the document's `change` event always fires for that commit.
-
-The writer whose move was dropped replays it over the winning move until its own commit arrives, so for that moment it shows the card twice. If it moved the card again after its dropped move, that move targets an element the server never inserted: the writer is **Blocked** until **Discard blocked edits** rejects it.
+A dropped rename produces no `discard` event, which reports only List sets and moves. The page detects it instead with `lostRenames()` from `board.js`: when a peer's commit deletes a card while this writer still has a rename of it pending, the server will apply that rename after the delete, so the policy will drop it, and the writer shows a notice. Removing a card from `order` is a visible change, so the document's `change` event always fires for that commit.
 
 Each writer keeps its checkpoint in IndexedDB through `openIndexedDbStore` and `connectSync({ store })`, so a reload resumes the same writer with its unsent edits: go **Offline**, edit, reload, and the writer shows how many edits it restored and sends them when it is back online. Edits are saved as they are made, not only when they are sent. The store key includes a document ID that the host generates at each start (`GET /document`), so after a server restart the page starts fresh instead of restoring a checkpoint into a different document; checkpoints of earlier documents stay in the browser until **Clear saved edits and reload** or clearing site data. A second tab cannot open a writer the first tab holds: the store's Web Lock refuses it and that writer's pane says it is open in another tab.
 
-The selected card is remembered by card ID and, as a fallback, by a [cursor](../docs/collections.md#stable-positions-with-cursors) bound right to its element. A move keeps the selection on the card; when the card is deleted, the cursor moves to the gap where it was and the card now at that gap is selected. Use **Offline** on one writer to try each race: rename or move there, change the same card in the other writer, then go back online.
+The selected card is remembered by card ID and, as a fallback, by a [cursor](../docs/collections.md#stable-positions-with-cursors) bound right to its place in `order`. A move keeps the selection on the card; when the card is deleted, the selection moves to the next card of the same column at that place, or the previous one. Use **Offline** on one writer to try each race: rename or move there, change the same card in the other writer, then go back online.
 
-Node tests cover the policy against the core server and client with explicit delivery, the board helpers, observed columns and titles, `lostRenames()`, and both writers over real HTTP, including offline renames of a card that was moved or deleted meanwhile. Drag and drop, focus and layout need a browser check. The host keeps the document in memory and has no authentication.
+Node tests cover the races against the core server and client with explicit delivery, the board helpers, the selection, `lostRenames()`, and both writers over real HTTP, including offline renames of a card that was moved or deleted meanwhile. Drag and drop, focus and layout need a browser check. The host keeps the document in memory and has no authentication.
 
 ## In-memory broadcast walkthrough
 
