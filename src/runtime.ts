@@ -413,6 +413,15 @@ type DiscardListener<S extends SchemaShape> = (
   event: DiscardEvent<DocumentOperation<S>>
 ) => void;
 
+interface ClientProgress<S extends SchemaShape> {
+  readonly serverSeq: number;
+  readonly lastLocalSeq: number;
+  readonly nextPendingBatch: ClientBatch<DocumentOperation<S>> | undefined;
+}
+
+/** Internal access for the sync adapter. Initialized by ClientDocument. */
+export let readClientProgress: <S extends SchemaShape>(document: ClientDocument<S>) => ClientProgress<S>;
+
 /** A client-side optimistic document with server reconciliation. */
 export class ClientDocument<S extends SchemaShape> {
   readonly state: DocumentState<S>;
@@ -434,6 +443,17 @@ export class ClientDocument<S extends SchemaShape> {
   private notificationDepth = 0;
   private drainingObservers = false;
   private observerCount = 0;
+
+  static {
+    readClientProgress = <Shape extends SchemaShape>(document: ClientDocument<Shape>): ClientProgress<Shape> => {
+      document.assertOutsideTransactionForCheckpoint();
+      return {
+        serverSeq: document.lastServerSeq,
+        lastLocalSeq: document.nextSeq - 1,
+        nextPendingBatch: document.pendingBatches[0],
+      };
+    };
+  }
 
   constructor(schema: DocumentSchema<S>, options: CreateClientOptions<S>) {
     if (options.clientId.length === 0) {
@@ -536,9 +556,7 @@ export class ClientDocument<S extends SchemaShape> {
 
   /** Saves authoritative state and the pending work needed to rebuild this client. */
   checkpoint(): ClientCheckpoint<S> {
-    if (this.transactionDepth !== 0) {
-      throw new Error("Cannot checkpoint during a transaction");
-    }
+    this.assertOutsideTransactionForCheckpoint();
     const lastBunchSeqs = Object.freeze(
       Object.fromEntries(
         [...this.collections].flatMap(([path, runtime]) =>
@@ -555,6 +573,12 @@ export class ClientDocument<S extends SchemaShape> {
       pendingBatches: Object.freeze([...this.pendingBatches]),
       lastBunchSeqs,
     });
+  }
+
+  private assertOutsideTransactionForCheckpoint(): void {
+    if (this.transactionDepth !== 0) {
+      throw new Error("Cannot checkpoint during a transaction");
+    }
   }
 
   private assertCanMutate(): void {
