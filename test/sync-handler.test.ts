@@ -183,6 +183,97 @@ function listen(response: Response) {
 const settle = async () => { for (let index = 0; index < 5; index++) await new Promise((resolve) => setImmediate(resolve)); };
 
 describe("createSyncHandler event streams", () => {
+  it("admits concurrent event streams one at a time within the capacity limit", async (t) => {
+    const h = setup({ maxEventStreams: 1, heartbeatInterval: 0 });
+    const before = h.server.checkpoint();
+    const responses = await Promise.all([h.get("events?since=0"), h.get("events?since=0")]);
+    t.after(async () => { for (const response of responses) await response.body?.cancel(); });
+    assert.deepEqual(responses.map((response) => response.status), [200, 503]);
+    assert.deepEqual(h.server.checkpoint(), before);
+    await responses[0].body?.cancel();
+    const replacement = await h.get("events?since=0");
+    t.after(() => replacement.body?.cancel());
+    assert.equal(replacement.status, 200, "closing the admitted stream releases its slot");
+  });
+
+  it("keeps event streams disabled when their capacity is zero", async (t) => {
+    const heartbeat = t.mock.method(globalThis, "setInterval");
+    const h = setup({ maxEventStreams: 0 });
+    const responses = await Promise.all([h.get("events?since=0"), h.get("events?since=0")]);
+    assert.deepEqual(responses.map((response) => response.status), [503, 503]);
+    for (const response of responses) await response.body?.cancel();
+    assert.equal(heartbeat.mock.callCount(), 0);
+  });
+
+  for (const stage of ["before", "authorization", "queued-save"] as const) it(`does not retain an event stream aborted ${stage}`, async (t) => {
+    const heartbeat = t.mock.method(globalThis, "setInterval");
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const abort = new AbortController();
+    let authorizeFirst = true;
+    const h = setup({ maxEventStreams: 1, heartbeatInterval: 1000,
+      async authorize(_request, context) {
+        if (stage === "authorization" && context.action === "catchUp" && authorizeFirst) {
+          authorizeFirst = false; entered.resolve(); await gate.promise;
+        }
+        return true;
+      },
+      async saveCheckpoint() {
+        if (stage === "queued-save") { entered.resolve(); await gate.promise; }
+      },
+    });
+    t.after(() => { abort.abort(); gate.resolve(); });
+    let submitted: Promise<Response> | undefined;
+    if (stage === "queued-save") {
+      submitted = h.post("batches", batch(h.server.openClient(), 1));
+      await entered.promise;
+    }
+    if (stage === "before") abort.abort();
+    const pending = h.handle(new Request(base + "events?since=0", { signal: abort.signal }));
+    if (stage === "authorization") await entered.promise;
+    if (stage === "queued-save") {
+      let answered = false;
+      void pending.then(() => { answered = true; });
+      await settle();
+      assert.equal(answered, false, "stream creation waits for the pending save");
+    }
+    abort.abort(); gate.resolve();
+    if (submitted !== undefined) assert.equal((await submitted).status, 204);
+    const response = await pending;
+    t.after(() => response.body?.cancel());
+    assert.equal(response.status, 200);
+    assert.equal(heartbeat.mock.callCount(), 0, "an aborted request starts no heartbeat");
+    const replacement = await h.get("events?since=0");
+    t.after(() => replacement.body?.cancel());
+    assert.equal(replacement.status, 200, "the aborted request occupies no stream slot");
+    const reader = response.body!.getReader();
+    try { assert.deepEqual(await reader.read(), { done: true, value: undefined }); }
+    finally { reader.releaseLock(); }
+    assert.equal(heartbeat.mock.callCount(), 1, "only the live replacement starts a heartbeat");
+  });
+
+  it("releases a cancelled reader's slot and ignores its later abort", async (t) => {
+    t.mock.timers.enable({ apis: ["setInterval"] });
+    const h = setup({ maxEventStreams: 1, heartbeatInterval: 1000 });
+    const abort = new AbortController();
+    const first = await h.handle(new Request(base + "events?since=0", { signal: abort.signal }));
+    await first.body?.cancel();
+    abort.abort();
+    const replacement = await h.get("events?since=0");
+    t.after(() => replacement.body?.cancel());
+    assert.equal(replacement.status, 200);
+    const excess = await h.get("events?since=0");
+    assert.equal(excess.status, 503, "late cleanup does not free another stream's slot");
+    await excess.body?.cancel();
+    t.mock.timers.tick(1000);
+    const reader = replacement.body!.getReader();
+    try {
+      const chunk = await reader.read();
+      assert.equal(new TextDecoder().decode(chunk.value), ": ping\n\n");
+      await reader.cancel();
+    } finally { reader.releaseLock(); }
+    t.mock.timers.tick(10_000);
+  });
+
   it("sends saved commits after the watermark, then each new commit only once it is saved", async () => {
     let release: (() => void) | undefined;
     const h = setup({ async saveCheckpoint(checkpoint) {

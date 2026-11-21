@@ -160,6 +160,8 @@ export function createSyncHandler<S extends SchemaShape>(
         stream = { sent: watermark, send, close };
         streams.add(stream);
         request.signal.addEventListener("abort", close);
+        // Abort may have happened before authorization or while waiting in the queue.
+        if (request.signal.aborted) { close(); return; }
         if (heartbeatInterval > 0) heartbeat = setInterval(() => { send(": ping\n\n"); }, heartbeatInterval);
       },
       cancel() { stream?.close(); },
@@ -190,9 +192,10 @@ export function createSyncHandler<S extends SchemaShape>(
       if (route === "events" && resumed !== null && WATERMARK.test(resumed)) watermark = Math.max(watermark, Number(resumed));
       if (!Number.isSafeInteger(watermark)) return error(400, "Invalid catch-up watermark");
       if (!(await allowed(request, "catchUp"))) return error(403, "Forbidden");
-      if (route === "events" && streams.size >= maxEventStreams) return error(503, "Too many event streams");
       return serialize(() => {
         if (failed) return error(503, "Checkpoint storage failed; restart this host");
+        // Admission and stream creation share this queue, so concurrent requests cannot exceed the limit.
+        if (route === "events" && streams.size >= maxEventStreams) return error(503, "Too many event streams");
         // Read inside the queue: a write that is still saving cannot have its commit served.
         let commits: ReturnType<typeof server.commitsSince>;
         try { commits = server.commitsSince(watermark); } catch { return error(400, "Invalid catch-up watermark"); }

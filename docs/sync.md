@@ -63,6 +63,8 @@ Decode a stored checkpoint with `decodeClientCheckpoint` before passing it as `c
 
 With `createHttpTransport`, the client opens `GET events?since=n` after its first pass and keeps it open. The handler first sends the saved commits after `n`, then every new commit as soon as its checkpoint is saved, as `event: commits` with the commits as JSON and the last server sequence as the event `id`. A `: ping` comment every `heartbeatInterval` milliseconds (default 15000) keeps proxies from closing an idle stream.
 
+The handler limits open streams with `maxEventStreams`, including concurrent requests. Aborted requests and cancelled readers release their slots and heartbeat timers; a request that aborts before its stream opens starts no heartbeat.
+
 Pushed commits go through the same checks as catch-up. A delivery that continues the client's watermark is applied directly, with no extra request; duplicates are ignored, and anything that skips ahead triggers a normal catch-up. While the channel is open the client does not poll. If the stream ends normally, has a retryable error or carries no traffic for `pushTimeout` milliseconds (default 45000), the client catches up at once, polls, and reconnects with the same backoff as other retries.
 
 A push error marked `retryable: false`, including a 403/404 response or malformed JSON, fails the whole connection instead of silently switching to polling. Its first error remains in `sync.error`; polling and reconnect timers stop. If the server does not support SSE, explicitly use `push: false`.
