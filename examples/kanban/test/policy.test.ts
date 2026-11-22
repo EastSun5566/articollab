@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createClient, type DocumentOperation, type ServerCommit, type ServerDocument } from "../../../dist/index.js";
+import { createClient, createUndoManager, type DocumentOperation, type ServerCommit, type ServerDocument } from "../../../dist/index.js";
 import {
   addCard, Board, cardsIn, COLUMNS, deleteCard, droppedEdits, findCard, moveCard, renameCard, watchDroppedEdits, type Shape,
 } from "../board.js";
@@ -28,6 +28,10 @@ function network(server: ServerDocument<Shape> = createBoardServer()) {
         const { commit } = server.receive(batch);
         log.push(commit);
         return commit;
+      },
+      /** Sends every unsent pending batch. */
+      sendAll() {
+        while (doc.checkpoint().pendingBatches.some(({ seq }) => seq > sent)) this.send();
       },
       /** Receives every commit it has not seen yet, in order. */
       receive() {
@@ -141,6 +145,55 @@ describe("Kanban board under concurrent edits", () => {
     deleteCard(doc, "seed-sketch");
     assert.equal(batches.length, 5);
     for (const batch of batches) assert.equal(resolveBoard({ batch, snapshot }), batch.operations);
+  });
+});
+
+describe("Undo on the board", () => {
+  it("undoes and redoes adding, moving, renaming and deleting cards through the policy", () => {
+    const n = network(), a = n.writer(), b = n.writer();
+    const history = createUndoManager(a.doc, { captureTimeout: 0 });
+    const views = [a.columns()];
+    const edits = [
+      () => addCard(a.doc, "todo", "New card", "new-card"),
+      () => moveCard(a.doc, "new-card", "done", 0),
+      () => renameCard(a.doc, "new-card", "Renamed"),
+      () => moveCard(a.doc, "seed-tests", "todo", 0),
+      () => deleteCard(a.doc, "seed-drag"),
+    ];
+    for (const edit of edits) { edit(); views.push(a.columns()); }
+    const titles = () => [findCard(a.doc, "new-card")?.card.title, findCard(a.doc, "seed-drag")?.card.title];
+    assert.deepEqual(titles(), ["Renamed", undefined]);
+    const sync = () => { a.sendAll(); a.receive(); b.receive(); };
+    sync();
+    for (let index = views.length - 1; index > 0; index--) {
+      assert.equal(history.undo(), true);
+      sync();
+      assert.deepEqual(a.columns(), views[index - 1], `undo to ${index - 1}`);
+      assert.deepEqual(b.board(), a.board());
+    }
+    assert.equal(findCard(a.doc, "seed-drag")?.card.title, "Drag cards between columns", "the deleted card and its title are back");
+    assert.equal(findCard(a.doc, "new-card"), undefined);
+    for (let index = 1; index < views.length; index++) {
+      assert.equal(history.redo(), true);
+      sync();
+      assert.deepEqual(a.columns(), views[index], `redo to ${index}`);
+    }
+    assert.deepEqual(titles(), ["Renamed", undefined]);
+    assert.deepEqual(a.board(), serverBoard(n.server));
+  });
+
+  it("leaves another writer's later rename and a deleted card alone", () => {
+    const n = network(), a = n.writer(), b = n.writer();
+    const history = createUndoManager(a.doc, { captureTimeout: 0 });
+    renameCard(a.doc, "seed-tests", "Mine");
+    renameCard(a.doc, "seed-ship", "Mine too");
+    a.sendAll(); b.receive();
+    renameCard(b.doc, "seed-ship", "Theirs");
+    deleteCard(b.doc, "seed-tests");
+    b.sendAll(); a.receive();
+    assert.equal(history.undo(), false, "both renames were superseded");
+    assert.equal(findCard(a.doc, "seed-ship")?.card.title, "Theirs");
+    assert.equal(a.doc.state.titles.has("seed-tests"), false, "no orphan title");
   });
 });
 
