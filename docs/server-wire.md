@@ -34,7 +34,7 @@ const server = createServer(Counter, {
 
 A pending `set(12)` displays 12 locally, then becomes 10 after receiving its transformed commit. Once the authoritative count is 10, this policy rejects later batches.
 
-To tell the writer, listen for `transform` on its client. It fires when the server's commit of that writer's batch differs from what it sent, with the operations it `dropped` and `added`:
+The `transform` event requires [Articollab 0.9 or later](reference.md#compatibility). Listen on the writer's client to learn which operations the server dropped or added when it acknowledged the batch:
 
 ```ts
 const stop = doc.on("transform", ({ commit, added }) => {

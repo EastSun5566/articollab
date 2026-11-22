@@ -95,6 +95,8 @@ If `onBatch` or an existing change listener throws, observers do not run for tha
 
 ## Update a list view incrementally
 
+This example uses List moves, which require [Articollab 0.9 or later](reference.md#compatibility).
+
 `List.observe()` works like `Text.observe()`, but a change is a splice, an in-place set or a move. Handle `set` and `move` separately so a row keeps its own key when only its value or position changes:
 
 ```ts
