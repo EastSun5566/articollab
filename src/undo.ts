@@ -79,6 +79,8 @@ function joinsSurrogates(left: string, right: string): boolean {
 export function createUndoManager<S extends SchemaShape>(
   doc: ClientDocument<S>, options: UndoManagerOptions = {}
 ): UndoManager {
+  // Mid-transaction, earlier edits of the open batch already happened and would be recorded wrongly.
+  if (isTransacting(doc)) throw new Error("Cannot create an undo manager inside a transaction");
   const captureTimeout = options.captureTimeout ?? 500;
   if (typeof captureTimeout !== "number" || !(captureTimeout >= 0)) {
     throw new RangeError("captureTimeout must be a non-negative number");

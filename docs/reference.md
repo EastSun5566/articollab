@@ -117,7 +117,7 @@ An `onBatch`/existing-listener throw defers Text, List and Map notifications unt
 
 ### Undo and redo
 
-`createUndoManager(doc, { captureTimeout?, paths? })` returns `{ undo(), redo(), canUndo, canRedo, stopCapturing(), clear(), on("change", listener), destroy() }`. A document has at most one manager at a time; creating a second throws until the first is destroyed. `paths` limits recording to those collections (default: all); an unknown path throws. `captureTimeout` is a non-negative number of milliseconds (default 500).
+`createUndoManager(doc, { captureTimeout?, paths? })` returns `{ undo(), redo(), canUndo, canRedo, stopCapturing(), clear(), on("change", listener), destroy() }`. A document has at most one manager at a time; creating a second throws until the first is destroyed, and so does creating one inside a transaction. `paths` limits recording to those collections (default: all); an unknown path throws. `captureTimeout` is a non-negative number of milliseconds (default 500).
 
 It records each local batch that touches a recorded path as a step: the touched collections' states before and after it, and the elements or keys its operations named. Peers' commits, acknowledgements and untracked paths are not recorded. A batch is merged into the latest step when it follows the previous recorded local batch by less than `captureTimeout` by `Date.now()`, unless `stopCapturing()`, `undo()` or `redo()` came in between. A batch whose effects cancel out, such as inserting and deleting one element, is not a step. A new step clears the redo steps; a batch on untracked paths does not.
 
@@ -135,7 +135,7 @@ It records each local batch that touches a recorded path as a step: the touched 
 
 All writes of one undo form one transaction, so one batch. A reinserted element or text gets new IDs; the manager maps the old IDs to the new ones, so earlier and later steps keep following it, but cursors and application references to the old IDs do not. When a step has nothing left to revert, because other writers changed or deleted all of it or the server never applied it, it is dropped and `undo()` tries the next one. It returns whether it changed anything. `redo()` is the same for undone steps: each undo records a redo step, and each redo an undo step. Both throw, leaving the steps, while pending replay is blocked or inside a transaction.
 
-Steps are not part of checkpoints: a restored writer starts with none. They keep references to earlier collection states, which share structure with later ones; `clear()` or `destroy()` releases them. `on("change", listener)` reports each change of the steps, for example to update buttons. After `destroy()` the manager stops recording and its methods throw, except `destroy()`.
+Steps are not part of checkpoints: a restored writer starts with none. They keep references to earlier collection states, which share structure with later ones; `clear()` or `destroy()` releases them. `on("change", listener)` reports each change of the steps, for example to update buttons. After `destroy()` the manager stops recording and holds no steps; `undo()` and `redo()` throw, and a second `destroy()` does nothing.
 
 ### Ordered reconciliation and blocked pending
 

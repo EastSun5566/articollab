@@ -171,6 +171,7 @@ describe("Undo manager", () => {
     assert.equal(a.history.undo(), false, "the value is no longer what this writer set");
     assert.equal(a.doc.state.count.value, 10);
     assert.throws(() => createUndoManager(a.doc), /already has an undo manager/);
+    assert.throws(() => b.doc.transact(() => createUndoManager(b.doc)), /inside a transaction/);
     assert.throws(() => createUndoManager(b.doc, { paths: ["nope"] }), /Unknown document path: nope/);
   });
 
