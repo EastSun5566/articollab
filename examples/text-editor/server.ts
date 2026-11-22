@@ -8,14 +8,14 @@ import { createSyncHandler } from "../../src/sync/index.ts";
 import { Board } from "../resume.ts";
 import { createBrowserAssetHandler } from "../browser-smoke/server.ts";
 import { toNodeListener } from "../fetch-bridge.ts";
-import { createPresenceRelay } from "./presence-relay.ts";
+import { selectionSchema } from "./presence.js";
 
 /**
- * Example-only localhost host: the packaged sync handler under /sync/, the in-memory presence relay
- * and fixed ESM assets. CodeMirror is local to this example; only these exact files are served.
+ * Example-only localhost host: the packaged sync handler, with presence, under /sync/ and fixed ESM
+ * assets. CodeMirror is local to this example; only these exact files are served.
  */
 export async function startTextEditorServer(
-  server: ServerDocument<typeof Board.definition> = createServer(Board), presence = createPresenceRelay()
+  server: ServerDocument<typeof Board.definition> = createServer(Board), presenceTtl = 30_000
 ) {
   const directory = import.meta.dirname;
   const state = fileURLToPath(import.meta.resolve("@codemirror/state"));
@@ -40,13 +40,16 @@ export async function startTextEditorServer(
   }
   for (const [name, file] of modules) entries.set(`/codemirror/${name}.js`, { file, type: "text/javascript; charset=utf-8" });
   const assets = createBrowserAssetHandler(entries);
-  // Rejections let a writer discard pending work that the server's policy blocked.
-  const sync = toNodeListener(createSyncHandler(Board, server, { allowRejections: true }));
+  // Rejections let a writer discard pending work that the server's policy blocked. Presence carries
+  // each writer's selection as cursors over the same event stream, checked against selectionSchema.
+  const sync = toNodeListener(createSyncHandler(Board, server, {
+    allowRejections: true, presence: { schema: selectionSchema, ttl: presenceTtl },
+  }));
 
   const http = createHttpServer((request, response) => {
     const path = (request.url ?? "/").split("?", 1)[0]!;
     if (path.startsWith("/sync/")) { sync(request, response); return; }
-    if (presence.handle(request, response) || assets(request, response)) return;
+    if (assets(request, response)) return;
     request.resume();
     response.writeHead(404, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
     response.end(JSON.stringify({ error: "Unknown route" }));

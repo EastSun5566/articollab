@@ -1,6 +1,7 @@
 export {
   connectSync,
   type ConnectSyncOptions,
+  type PresenceSyncClient,
   type SyncClient,
   type SyncPushState,
   type SyncRetryOptions,
@@ -8,6 +9,8 @@ export {
   type SyncSubscription,
   type SyncTransport,
 } from "./client.ts";
+
+export { type PresenceOptions, type SyncPresence } from "./presence.ts";
 
 export {
   CheckpointLockedError,
@@ -29,4 +32,5 @@ export {
   type SyncAction,
   type SyncHandler,
   type SyncHandlerOptions,
+  type SyncHandlerPresenceOptions,
 } from "./http-handler.ts";

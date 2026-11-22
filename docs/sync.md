@@ -87,6 +87,25 @@ If you use `EventSource` directly, fetch and apply `GET /commits` from the last 
 
 When committing outside the handler, save the checkpoint before calling `await handleSync.notify()`.
 
+## Share presence
+
+Presence is what each writer wants the others to see right now, such as a name and a selection, but that is not part of the document. Enable it on the handler and the client, and it travels over the same push channel:
+
+```ts
+const handleSync = createSyncHandler(Counter, server, { presence: {} });
+const transport = createHttpTransport({ url: "https://example.test/sync/" });
+const sync = await connectSync(Counter, { transport, presence: {} });
+
+sync.presence.set({ name: "Ann", editing: "count" });
+sync.presence.on("change", (peers) => {
+  for (const [clientId, state] of peers) console.log(clientId, state);
+});
+```
+
+`peers` holds every other writer's latest state, never your own. A state is any JSON value; pass a `schema` to either side to validate it, as with [payloads](collections.md#validate-payloads). The client sends its state again every 10 seconds, and the handler drops a state it has not received for 30 seconds, so a closed tab disappears on its own; `set(null)` or `sync.stop()` removes it at once. To share a text selection, send [cursors](collections.md#stable-positions-with-cursors) and resolve them with `decodeCursor()` and `cursorIndex()` on arrival.
+
+Presence lives only in the handler's memory: it is not saved, not part of checkpoints or history, and not shared between server instances. Delivery is best-effort, and while the push channel is down `peers` is empty.
+
 ## Status and failures
 
 | Status | Meaning | What happens next |

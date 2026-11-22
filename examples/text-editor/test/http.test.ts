@@ -9,7 +9,7 @@ import { connectSync, createHttpTransport } from "../../../src/sync/index.ts";
 import { Board } from "../../resume.ts";
 import { createTextBinding, remoteRanges } from "../binding.js";
 import { createOfflineSwitch, describeSync } from "../../sync-ui.js";
-import { createPresenceChannel } from "../presence.js";
+import { selectionOf, selectionSchema } from "../presence.js";
 import { startTextEditorServer } from "../server.ts";
 
 /** Waits for `condition` with real timers: writers synchronize on their own. */
@@ -21,13 +21,14 @@ async function until(condition: () => boolean, what: string, timeout = 5000): Pr
   }
 }
 
-async function fixture(t: TestContext, server = createServer(Board)) {
-  const host = await startTextEditorServer(server);
+async function fixture(t: TestContext, server = createServer(Board), presenceTtl?: number) {
+  const host = await startTextEditorServer(server, presenceTtl);
   const cleanups: (() => void)[] = [];
   t.after(async () => { for (const cleanup of cleanups) cleanup(); await host.close(); });
   async function connect(options: { fetch?: typeof fetch } = {}) {
     const network = createOfflineSwitch(options.fetch);
     const sync = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 },
+      presence: { schema: selectionSchema },
       transport: createHttpTransport({ url: host.url + "/sync/", fetch: network.fetch }) });
     let rendered: EditorState | undefined;
     const errors: unknown[] = [];
@@ -173,34 +174,68 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
     assert.throws(() => a.edit({ changes: { from: 0, insert: "more" } }));
   });
 
-  it("relays cursor presence that outruns commits, then resolves it once the text arrives", async (t) => {
-    const f = await fixture(t), a = await f.connect(), b = await f.connect();
-    const channel = (writer: typeof a) => createPresenceChannel({ url: f.host.url, clientId: writer.sync.doc.checkpoint().clientId });
-    const presenceA = channel(a), presenceB = channel(b);
-    async function showB(): Promise<unknown> {
-      const entries = await presenceA.poll();
-      return a.binding.setRemote(entries.flatMap(({ selection }) => selection === null ? [] : [{ label: "B", selection }]));
-    }
+  it("shares cursor presence that outruns commits, then resolves it once the text arrives", async (t) => {
+    const f = await fixture(t), a = await f.connect();
+    // B's batches can be held back while its presence and push channel keep working.
+    let holdBatches = false;
+    const b = await f.connect({ fetch: (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      return holdBatches && url.endsWith("/batches") ? Promise.reject(new TypeError("batch held")) : fetch(input, init);
+    } });
+    await until(() => a.sync.push === "open" && b.sync.push === "open", "both push channels");
+    const showB = () => a.binding.setRemote([...a.sync.presence.peers.values()].flatMap((state) => {
+      const selection = selectionOf(state);
+      return selection === null ? [] : [{ label: "B", selection }];
+    }));
     const shown = () => a.binding.state.field(remoteRanges).map(({ from, to }) => a.binding.state.doc.sliceString(from, to) + "@" + to);
+    const peerSelection = () => JSON.stringify([...a.sync.presence.peers.values()].map(selectionOf));
     a.edit({ changes: { from: 0, insert: "Hello 😀 world" } });
     await until(() => b.text() === "Hello 😀 world", "B to receive the text");
 
     b.edit({ selection: EditorSelection.range(9, 14) });
-    await presenceB.publish(b.binding.selectionCursors());
-    assert.deepEqual(await showB(), [{ label: "B", resolved: true, from: 8, to: 13 }]);
+    b.sync.presence.set({ selection: b.binding.selectionCursors() });
+    await until(() => a.sync.presence.peers.size === 1, "A to receive B's selection over the push channel");
+    assert.deepEqual(showB(), [{ label: "B", resolved: true, from: 8, to: 13 }]);
     assert.deepEqual(shown(), ["world@14"]);
 
-    b.network.set(true); // Keep B's next edit unsent while its presence, on its own channel, is shared.
+    holdBatches = true;
     b.edit({ changes: { from: 14, insert: "!!" }, selection: EditorSelection.cursor(16) });
-    await presenceB.publish(b.binding.selectionCursors());
-    assert.deepEqual(await showB(), [{ label: "B", resolved: false }], "B's caret is in text A has not received");
+    const ahead = b.binding.selectionCursors();
+    b.sync.presence.set({ selection: ahead });
+    await until(() => peerSelection() === JSON.stringify([ahead]), "B's caret, ahead of B's edit");
+    assert.equal(a.text(), "Hello 😀 world", "B's edit is still held");
+    assert.deepEqual(showB(), [{ label: "B", resolved: false }], "B's caret is in text A has not received");
     assert.deepEqual(shown(), []);
-    b.network.set(false);
+    holdBatches = false;
     await b.sync.sync();
-    await until(() => shown().length === 1, "the caret to resolve");
-    assert.deepEqual(shown(), ["@16"], "receiving the commit re-resolves the caret without another poll");
-    a.check(); b.check();
+    await until(() => (showB(), shown().length === 1), "the caret to resolve");
+    assert.deepEqual(shown(), ["@16"]);
+
+    b.sync.stop();
+    await until(() => a.sync.presence.peers.size === 0, "B's caret to go when B stops");
+    a.check();
     assert.deepEqual([a.errors, b.errors], [[], []]);
+  });
+
+  it("drops the caret of a writer that stops sending presence once its TTL passes", async (t) => {
+    const f = await fixture(t, createServer(Board), 200), a = await f.connect(), b = await f.connect();
+    await until(() => a.sync.push === "open" && b.sync.push === "open", "both push channels");
+    b.sync.presence.set({ selection: null });
+    b.sync.presence.set({ selection: b.binding.selectionCursors() });
+    await until(() => a.sync.presence.peers.size === 1, "B's caret");
+    // B's page goes away without leaving: its re-sends stop, and the host expires its state.
+    b.network.set(true);
+    await until(() => a.sync.presence.peers.size === 0, "B's state to expire", 5000);
+  });
+
+  it("refuses a malformed cursor on the host", async (t) => {
+    const f = await fixture(t), a = await f.connect();
+    const clientId = a.sync.doc.checkpoint().clientId;
+    const response = await fetch(f.host.url + "/sync/presence", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clientId, state: { selection: { from: { anchor: null, bind: "up" }, to: { anchor: null, bind: "left" } } } }) });
+    assert.equal(response.status, 400);
+    await response.text();
+    assert.throws(() => { a.sync.presence.set({ selection: null, extra: 1 } as never); }, /Invalid payload/); // oxlint-disable-line typescript/no-unsafe-type-assertion -- Invalid on purpose.
   });
 
   it("serves fixed ESM assets and the sync routes, blocks source/tooling routes and closes idempotently", async (t) => {
@@ -223,7 +258,7 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
       assert.equal(asset.headers.get("Cache-Control"), "no-store");
       assert.ok((await asset.text()).length > 0);
     }
-    for (const route of ["/src/index.ts", "/server.ts", "/presence-relay.ts", "/text-editor/actions.js", "/package.json",
+    for (const route of ["/src/index.ts", "/server.ts", "/presence-relay.ts", "/presence", "/text-editor/actions.js", "/package.json",
       "/pnpm-lock.yaml", "/node_modules/@codemirror/view/dist/index.js", "/dist/index.js.map", "/dist/index.d.ts", "/sync/unknown"]) {
       const asset = await fetch(f.host.url + route); assert.equal(asset.status, 404, route); await asset.text();
     }
