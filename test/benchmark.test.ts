@@ -94,6 +94,65 @@ describe("collection benchmark", () => {
     assert.match(output.stdout, /signed GC estimate/);
   });
 
+  it("reports just the three List move smoke workloads", async () => {
+    const args = ["--expose-gc", script, "--list-move", "--smoke"];
+    const output = await run([...args, "--json"]);
+    assert.equal(output.stderr, "");
+    const report = record(JSON.parse(output.stdout));
+    assert.equal(record(report.environment).node, process.version);
+    assert.match(String(record(report.environment).gitSha), /^[a-f0-9]{40}$/);
+    assert.deepEqual(report.config, { sizes: [32], samples: 2, iterations: 2, pending: 0, warmups: 1 });
+    assert.ok(Array.isArray(report.results));
+    const rows = report.results.map((input: unknown) => record(input));
+    assert.deepEqual(rows.map(({ scenario }) => scenario),
+      ["list-local-move", "list-remote-move", "list-remote-move-observed"]);
+    for (const row of rows) {
+      assert.equal(row.kind, "list");
+      assert.equal(row.size, 32);
+      assert.equal(row.unit, "ms/op");
+      assert.equal(row.operationsPerSample, 2);
+      assert.ok(Array.isArray(row.samples));
+      assert.equal(row.samples.length, 2);
+      const samples = row.samples.map((sample: unknown) => {
+        assert.ok(typeof sample === "number" && Number.isFinite(sample) && sample >= 0);
+        return sample;
+      });
+      assert.equal(row.min, Math.min(...samples));
+      assert.equal(row.max, Math.max(...samples));
+      assert.equal(row.median, (samples[0]! + samples[1]!) / 2);
+      for (const field of ["snapshotBytes", "checkpointBytes"]) {
+        const bytes = row[field];
+        assert.ok(typeof bytes === "number" && Number.isSafeInteger(bytes) && bytes > 0);
+        assert.equal(bytes, rows[0]![field]);
+      }
+    }
+    const readable = await run(args);
+    assert.equal(readable.stderr, "");
+    assert.deepEqual(readable.stdout.split("\n").filter((line) => line.startsWith("list\t32\t"))
+      .map((line) => line.split("\t")[2]), rows.map(({ scenario }) => scenario));
+  });
+
+  it("rejects conflicting List move modes and invalid worker arguments", async () => {
+    for (const otherMode of [["--extended"], ["--checkpoint-storage"], ["--profile-remote-replace", "missing-directory"]]) {
+      await assert.rejects(run([script, "--list-move", "--smoke", ...otherMode]), (error: unknown) => {
+        assert.ok(error instanceof Error && "stderr" in error && typeof error.stderr === "string");
+        assert.match(error.stderr, /--list-move is separate from --extended, --checkpoint-storage and --profile-remote-replace/);
+        return true;
+      });
+    }
+    for (const [args, message] of [
+      [["text", "32", "list-remote-move", "smoke"], /Invalid benchmark worker arguments/],
+      [["list", "32", "list-remote-move", "unknown"], /Invalid benchmark worker arguments/],
+      [["list", "33", "list-local-move", "smoke"], /Invalid benchmark size/],
+    ] as const) {
+      await assert.rejects(run([script, "--worker", ...args]), (error: unknown) => {
+        assert.ok(error instanceof Error && "stderr" in error && typeof error.stderr === "string");
+        assert.match(error.stderr, message);
+        return true;
+      });
+    }
+  });
+
   it("runs the extended matrix with reproducible fragmented fixtures across two runs", async () => {
     const fingerprints: unknown[][] = [];
     for (let attempt = 0; attempt < 2; attempt++) {

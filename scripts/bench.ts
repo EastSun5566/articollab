@@ -12,7 +12,7 @@ import { brotliCompressSync, brotliDecompressSync, constants, gunzipSync, gzipSy
 
 import type {
   ClientBatch, ClientDocument, DocumentOperation, DocumentSnapshot, ServerCommit,
-  ListSchema, TextSchema, ValueSchema,
+  ListChangeEvent, ListSchema, TextSchema, ValueSchema,
 } from "../src/index.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -28,11 +28,13 @@ const pendingListScenarios = ["object-remote-set-pending-same", "object-remote-s
   "object-remote-replace-pending-same", "object-remote-replace-pending-disjoint", "object-json-mixed-ack"] as const;
 const pendingTextScenarios = ["remote-replace-pending-same", "remote-replace-pending-disjoint", "value-json-mixed-ack"] as const;
 type ReconciliationScenario = typeof pendingListScenarios[number] | typeof pendingTextScenarios[number];
+const listMoveScenarios = ["list-local-move", "list-remote-move", "list-remote-move-observed"] as const;
+type ListMoveScenario = typeof listMoveScenarios[number];
 const extendedScenarios = ["local-insert", "local-delete", "bulk-delete", "remote-replace",
   "remote-noop-delete", "pending-replay", "client-decode-restore", "server-decode-restore", "retained-heap"] as const;
 type ExtendedScenario = typeof extendedScenarios[number];
 type Kind = typeof kinds[number];
-type Scenario = typeof scenarios[number] | typeof objectScenarios[number] | ReconciliationScenario;
+type Scenario = typeof scenarios[number] | typeof objectScenarios[number] | ReconciliationScenario | ListMoveScenario;
 type Shape = { count: ValueSchema<number>; items: ListSchema<string>; body: TextSchema };
 type Doc = ClientDocument<Shape>;
 type Batch = ClientBatch<DocumentOperation<Shape>>;
@@ -89,6 +91,12 @@ function fixture(kind: Kind, size: number): DocumentSnapshot<Shape> {
 
 function board(api: Api) {
   return api.defineDocument({ count: api.value(0), items: api.list<string>(), body: api.text() });
+}
+
+function listMoveFixture(size: number): DocumentSnapshot<Shape> {
+  const snapshot = fixture("list", size);
+  const items = { ...snapshot.data.items, values: Array.from({ length: size }, (_, index) => String(index)) };
+  return { ...snapshot, data: { ...snapshot.data, items } };
 }
 
 function insert(doc: Doc, kind: Kind, index: number): void {
@@ -395,6 +403,93 @@ function reconciliationTrial(api: Api, kind: Kind, size: number,
   assert.equal(recipient.state.body.toString(), body);
   assert.deepEqual(recipient.state.meta.value, own ? kind === "text" ? { edited: iterations - 1 } : null
     : samePath ? null : { edited: 19 });
+  return elapsed / iterations;
+}
+
+function listMoveTrial(api: Api, snapshot: DocumentSnapshot<Shape>, scenario: ListMoveScenario, iterations: number): number {
+  const schema = board(api);
+  const server = api.createServer(schema, { historyLimit: 0,
+    checkpoint: { snapshot, lastClientNumber: 0, clients: [], history: [] } });
+  const batches: Batch[] = [];
+  const writer = api.createClient(schema, { clientId: server.openClient(), snapshot,
+    onBatch: (batch) => batches.push(batch) });
+  const peer = api.createClient(schema, { clientId: server.openClient(), snapshot,
+    onBatch: () => assert.fail("The peer must not generate local batches") });
+  const order = [...snapshot.data.items.values];
+  const from = order.length - 1, to = from - 1;
+  const seedRange = snapshot.data.items.idList[0]!;
+  const measureLocal = scenario === "list-local-move";
+  const mirror = scenario === "list-remote-move-observed" ? [...order] : undefined;
+  const events: ListChangeEvent<string>[] = [];
+  if (mirror !== undefined) peer.state.items.observe((event) => { events.push(event); });
+  let writerServerChanges = 0, peerSeq = 0, peerChanges = 0;
+  writer.on("change", (event) => { if (event.origin === "server") writerServerChanges++; });
+  peer.on("change", (event) => {
+    if (event.origin === "server") {
+      peerSeq = event.commit.serverSeq;
+      peerChanges++;
+    }
+  });
+
+  collect();
+  let elapsed = 0;
+  for (let index = 0; index < iterations; index++) {
+    const localStart = measureLocal ? performance.now() : 0;
+    writer.state.items.move(from, to);
+    if (measureLocal) elapsed += performance.now() - localStart;
+
+    assert.equal(batches.length, index + 1);
+    const batch = api.decodeClientBatch(schema, JSON.parse(JSON.stringify(batches[index])));
+    assert.equal(batch.seq, index + 1);
+    assert.equal(batch.operations.length, 1);
+    const operation = batch.operations[0]!;
+    assert.equal(operation.type, "list/move");
+    assert.deepEqual(operation.id, {
+      bunchId: seedRange.bunchId,
+      counter: seedRange.startCounter + Number(order[from]),
+    });
+    assert.notDeepEqual(operation.position, operation.id);
+    const commit = api.decodeServerCommit(schema, JSON.parse(JSON.stringify(server.receive(batch).commit)));
+    assert.deepEqual(commit.operations, batch.operations);
+    assert.equal(commit.serverSeq, index + 1);
+    writer.receive(commit);
+    assert.equal(writerServerChanges, 0);
+
+    const remoteStart = measureLocal ? 0 : performance.now();
+    peer.receive(commit);
+    if (!measureLocal) elapsed += performance.now() - remoteStart;
+
+    assert.equal(peerSeq, index + 1);
+    assert.equal(peerChanges, index + 1);
+    const movedValue = order[from]!;
+    order[from] = order[to]!;
+    order[to] = movedValue;
+    if (mirror !== undefined) {
+      assert.equal(events.length, index + 1);
+      const event = events[index]!;
+      assert.equal(event.beforeLength, order.length);
+      assert.equal(event.afterLength, order.length);
+      assert.equal(event.changes.length, 1);
+      const change = event.changes[0]!;
+      assert.equal(change.type, "move");
+      assert.equal(mirror[change.from], change.value);
+      mirror.splice(change.from, 1);
+      mirror.splice(change.to, 0, change.value);
+      assert.deepEqual(mirror, peer.state.items.toArray());
+      assert.deepEqual(mirror, order);
+    }
+  }
+  const authoritative = server.snapshot();
+  assert.deepEqual(authoritative.data.items.values, order);
+  for (const [doc, lastLocalSeq] of [[writer, iterations], [peer, 0]] as const) {
+    assert.deepEqual(doc.state.items.toArray(), order);
+    const checkpoint = doc.checkpoint();
+    assert.equal(checkpoint.snapshot.serverSeq, iterations);
+    assert.deepEqual(checkpoint.snapshot, authoritative);
+    assert.equal(checkpoint.lastLocalSeq, lastLocalSeq);
+    assert.deepEqual(checkpoint.pendingBatches, []);
+    assert.equal(doc.replayConflict, null);
+  }
   return elapsed / iterations;
 }
 
@@ -879,19 +974,22 @@ async function worker(kind: Kind, size: number, scenario: Scenario, smoke: boole
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Self-package resolution points to the built public entrypoint generated from the same source API.
   const api = loaded as Api;
   const config = settings(smoke);
+  const listMove = listMoveScenarios.find((candidate) => candidate === scenario);
+  const moveFixture = listMove === undefined ? undefined : { scenario: listMove, snapshot: listMoveFixture(size) };
   const objectScenario = objectScenarios.find((candidate) => candidate === scenario);
   assert.ok(objectScenario === undefined || kind === "list", "Object workloads require List");
   const reconciliationScenario = (kind === "list" ? pendingListScenarios : pendingTextScenarios)
     .find((candidate) => candidate === scenario);
-  const objectSnapshot = reconciliationScenario === undefined
+  const workloadSnapshot = moveFixture?.snapshot ?? (reconciliationScenario === undefined
     ? objectScenario === undefined ? undefined : objectFixture(size)
-    : reconciliationFixture(kind, size, reconciliationScenario);
-  const bytes = objectSnapshot === undefined ? serializedSizes(api, kind, size) : {
-    snapshotBytes: Buffer.byteLength(JSON.stringify(objectSnapshot), "utf8"),
-    checkpointBytes: Buffer.byteLength(JSON.stringify({ snapshot: objectSnapshot,
+    : reconciliationFixture(kind, size, reconciliationScenario));
+  const bytes = workloadSnapshot === undefined ? serializedSizes(api, kind, size) : {
+    snapshotBytes: Buffer.byteLength(JSON.stringify(workloadSnapshot), "utf8"),
+    checkpointBytes: Buffer.byteLength(JSON.stringify({ snapshot: workloadSnapshot,
       lastClientNumber: 0, clients: [], history: [] }), "utf8"),
   };
   const trial = () => {
+    if (moveFixture !== undefined) return listMoveTrial(api, moveFixture.snapshot, moveFixture.scenario, config.iterations);
     if (reconciliationScenario !== undefined) return reconciliationTrial(api, kind, size, reconciliationScenario, config.iterations);
     if (objectScenario !== undefined) return objectTrial(api, size, objectScenario, config.iterations);
     if (scenario === "retained-heap") return heapTrial(api, kind, size);
@@ -983,7 +1081,8 @@ async function main(args: string[]): Promise<void> {
   }
   if (args[0] === "--worker") {
     const kind = kinds.find((candidate) => candidate === args[1]);
-    const scenario = [...scenarios, ...(kind === "list" ? [...objectScenarios, ...pendingListScenarios] : pendingTextScenarios)]
+    const scenario = [...scenarios,
+      ...(kind === "list" ? [...objectScenarios, ...pendingListScenarios, ...listMoveScenarios] : pendingTextScenarios)]
       .find((candidate) => candidate === args[3]);
     const size = Number(args[2]);
     assert.ok(args.length === 5 && kind !== undefined && scenario !== undefined &&
@@ -994,7 +1093,12 @@ async function main(args: string[]): Promise<void> {
     return;
   }
   const { values } = parseArgs({ args, options: { json: { type: "boolean" }, smoke: { type: "boolean" },
-    extended: { type: "boolean" }, "checkpoint-storage": { type: "boolean" }, "profile-remote-replace": { type: "string" } } });
+    extended: { type: "boolean" }, "checkpoint-storage": { type: "boolean" }, "profile-remote-replace": { type: "string" },
+    "list-move": { type: "boolean" } } });
+  if (values["list-move"]) {
+    assert.ok(!values.extended && !values["checkpoint-storage"] && values["profile-remote-replace"] === undefined,
+      "--list-move is separate from --extended, --checkpoint-storage and --profile-remote-replace");
+  }
   if (values["checkpoint-storage"]) {
     assert.ok(!values.extended && values["profile-remote-replace"] === undefined,
       "--checkpoint-storage is separate from --extended and --profile-remote-replace");
@@ -1008,6 +1112,7 @@ async function main(args: string[]): Promise<void> {
     return;
   }
   const config = values.extended ? extendedSettings(values.smoke === true) : settings(values.smoke === true);
+  if (values["list-move"]) config.pending = 0;
   const environment = await metadata();
   const results: (Result | ExtendedResult)[] = [];
   if (values.extended) {
@@ -1029,9 +1134,11 @@ async function main(args: string[]): Promise<void> {
         throw new Error(`extended/${kind}/${size}/${scenario} worker failed\n${stderr}`, { cause });
       }
     }
-  } else for (const kind of kinds) {
+  } else for (const kind of values["list-move"] ? ["list"] as const : kinds) {
+    const selectedScenarios = values["list-move"] ? listMoveScenarios
+      : [...scenarios, ...(kind === "list" ? [...objectScenarios, ...pendingListScenarios] : pendingTextScenarios)];
     for (const size of config.sizes) {
-      for (const scenario of [...scenarios, ...(kind === "list" ? [...objectScenarios, ...pendingListScenarios] : pendingTextScenarios)]) {
+      for (const scenario of selectedScenarios) {
         const workerArgs = ["--expose-gc", filename, "--worker", kind, String(size), scenario,
           values.smoke ? "smoke" : "full"];
         try {
@@ -1058,7 +1165,8 @@ async function main(args: string[]): Promise<void> {
         row.max.toFixed(digits), row.unit, row.snapshotBytes, row.checkpointBytes].join("\t"));
     }
     if (values.extended) console.log("Extended: text size is visible code points; history size is commit capacity. Restore measures decode + constructor, excluding JSON.parse.");
-    console.log("Retained heap is a signed GC estimate, not peak memory, allocations or RSS. Results are not an SLA.");
+    if (values["list-move"]) console.log("List moves swap the last two elements. Observed receive includes event creation and collection.");
+    else console.log("Retained heap is a signed GC estimate, not peak memory, allocations or RSS. Results are not an SLA.");
   }
 }
 

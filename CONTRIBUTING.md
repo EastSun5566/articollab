@@ -114,6 +114,18 @@ Each worker has a 30-second timeout, one warm-up and five fresh-fixture samples.
 
 JSON includes raw samples, settings, Node/V8, system information, versions and Git SHA/dirty status. Save results outside the checkout. Compare repeated runs on the same machine, Node version and workload without unrelated load; five samples do not support p95 claims. There is no CI latency threshold, SLA or browser-performance promise.
 
+### List moves
+
+```sh
+pnpm bench --list-move
+pnpm --silent bench --list-move --json
+pnpm bench --list-move --smoke
+```
+
+This separate matrix swaps the last two elements of a single-bunch List with unique values. It times the local move, an unobserved peer receive and an observed peer receive. The observer collects each event during receive and applies it to an array mirror after timing. Fixture creation, JSON round trips, decoding, server submission, writer acknowledgements, explicit GC and assertions are outside the timer.
+
+The three workloads use the default sizes and sampling settings, for nine full rows and three smoke rows. Snapshot and checkpoint bytes describe the starting fixture. Run the mode twice in sequence on the same machine and save the JSON outside Git. The observed receive measures library notification work and event collection. Browser rendering and mirror updates have their own costs.
+
 ### Fragmented Text and bounded history
 
 The opt-in extended matrix is separate from the default 105 workloads:
