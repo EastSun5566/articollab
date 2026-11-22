@@ -103,7 +103,7 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
     }
   });
 
-  it("keeps a writer's unsent edits across a reload and sends them once it is back online", async (t) => {
+  it("keeps a writer's unsent edits across a reload or a closed tab and sends them once it is back online", async (t) => {
     const f = await fixture(t), b = await f.connect();
     const documentId = await documentIdOf(f.host.url);
     assert.equal(await documentIdOf(f.host.url), documentId, "stable while the server runs");
@@ -114,12 +114,24 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
 
     // The same browser profile across the reload: one IndexedDB, one lock manager.
     const indexedDB = new IDBFactory();
-    const open = () => openIndexedDbStore({ database: "articollab-kanban", key: `${documentId}:A`, indexedDB });
+    const open = () => openIndexedDbStore({ database: "articollab-kanban", key: `${documentId}:A`, slots: 2, indexedDB });
     const network = createOfflineSwitch();
     const transport = () => createHttpTransport({ url: f.host.url + "/sync/", fetch: network.fetch });
     const before = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 }, store: await open(), transport: transport() });
     await before.sync();
-    await assert.rejects(open(), CheckpointLockedError, "a second tab cannot open the same writer");
+    // A second tab takes the other slot and runs its own writer, with its own network.
+    const tabNetwork = createOfflineSwitch();
+    const tabStore = await open();
+    assert.equal(tabStore.slot, 1);
+    const tab = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 }, store: tabStore,
+      transport: createHttpTransport({ url: f.host.url + "/sync/", fetch: tabNetwork.fetch }) });
+    t.after(() => tab.stop());
+    assert.notEqual(tab.doc.checkpoint().clientId, before.doc.checkpoint().clientId, "each tab is its own writer");
+    await assert.rejects(open(), CheckpointLockedError, "every slot is held");
+    addCard(tab.doc, "todo", "From the second tab", "tab-card");
+    assert.equal(await tab.sync(), true);
+    await before.sync();
+    assert.equal(findCard(before.doc, "tab-card")?.card.title, "From the second tab", "tabs see each other's edits through the server");
     network.set(true);
     addCard(before.doc, "todo", "Typed offline", "offline-card");
     renameCard(before.doc, "seed-ship", "Renamed offline");
@@ -127,6 +139,7 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
     before.stop(); // The page unloads.
 
     network.set(false);
+    // The second tab is still open, so the reloaded page takes the freed slot with the unsent edits.
     const after = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 }, store: await open(), transport: transport() });
     t.after(() => after.stop());
     assert.equal(after.doc.checkpoint().clientId, before.doc.checkpoint().clientId, "the same writer resumes");
@@ -136,6 +149,8 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
     await until(() => b.settled() && findCard(b.sync.doc, "offline-card") !== undefined, "B to receive the restored edits");
     assert.equal(findCard(b.sync.doc, "seed-ship")?.card.title, "Renamed offline");
     assert.deepEqual(b.board(), f.serverBoard());
+    await tab.sync();
+    assert.equal(findCard(tab.doc, "offline-card")?.card.title, "Typed offline", "the second tab receives them too");
   });
 
   it("serves fixed ESM assets and the sync routes, and closes idempotently", async (t) => {

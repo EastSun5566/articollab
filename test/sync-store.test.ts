@@ -9,7 +9,8 @@ import { IDBFactory } from "fake-indexeddb";
 import { createServer, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, value, type ClientBatch } from "../src/index.ts";
 import { ListState } from "../src/list.ts";
 import {
-  CheckpointLockedError, connectSync, openIndexedDbStore, type CheckpointStore, type SyncTransport,
+  CheckpointLockedError, connectSync, openIndexedDbStore,
+  type CheckpointStore, type IndexedDbCheckpointStore, type SyncTransport,
 } from "../src/sync/index.ts";
 import { openFileStore, type FileStoreFileSystem } from "../src/sync/node.ts";
 
@@ -48,11 +49,11 @@ function harness() {
 function idb(t: TestContext) {
   const indexedDB = new IDBFactory();
   const database = `test-${randomUUID()}`;
-  const opened: CheckpointStore[] = [];
+  const opened: IndexedDbCheckpointStore[] = [];
   t.after(() => { for (const store of opened) store.close(); });
   return {
-    async open(key = "writer") {
-      const store = await openIndexedDbStore({ database, key, indexedDB });
+    async open(key = "writer", slots?: number) {
+      const store = await openIndexedDbStore(slots === undefined ? { database, key, indexedDB } : { database, key, slots, indexedDB });
       opened.push(store);
       return store;
     },
@@ -94,7 +95,53 @@ describe("IndexedDB checkpoint store", () => {
 
   it("validates options and the environment", async () => {
     await assert.rejects(openIndexedDbStore({ database: "", key: "k", indexedDB: new IDBFactory() }), TypeError);
+    for (const slots of [0, 1.5, 65, Number.NaN]) {
+      await assert.rejects(openIndexedDbStore({ database: "d", key: "k", slots, indexedDB: new IDBFactory() }), TypeError, String(slots));
+    }
     await assert.rejects(openIndexedDbStore({ database: "d", key: "k" }), /indexedDB is unavailable/);
+  });
+});
+
+describe("IndexedDB checkpoint store slots", () => {
+  const withPending = { clientId: "client-1", pendingBatches: [{ seq: 1 }] };
+  const withoutPending = { clientId: "client-2", pendingBatches: [] };
+
+  it("gives each open a free slot of one key until every slot is held", async (t) => {
+    const db = idb(t);
+    const opened = [await db.open("doc", 3), await db.open("doc", 3), await db.open("doc", 3)];
+    assert.deepEqual(opened.map(({ slot, key }) => [slot, key]), [[0, "doc"], [1, "doc#1"], [2, "doc#2"]]);
+    await assert.rejects(db.open("doc", 3), (error) => error instanceof CheckpointLockedError && /All 3/.test(error.message));
+    await opened[1]!.save({ from: "slot 1" });
+    assert.equal(await opened[0]!.load(), undefined, "slots keep separate checkpoints");
+    opened[1]!.close();
+    const again = await db.open("doc", 3);
+    assert.deepEqual([again.slot, await again.load()], [1, { from: "slot 1" }], "a closed slot is taken again with its checkpoint");
+  });
+
+  it("prefers a free slot with pending edits, then one with a checkpoint, then the lowest", async (t) => {
+    const db = idb(t);
+    // Fill the slots from a "previous visit", then close them all.
+    const earlier = [await db.open("doc", 4), await db.open("doc", 4), await db.open("doc", 4), await db.open("doc", 4)];
+    await earlier[0]!.save(withoutPending);
+    await earlier[2]!.save(withPending);
+    await earlier[3]!.save("not a checkpoint");
+    for (const store of earlier) store.close();
+    const order = [];
+    for (let index = 0; index < 4; index++) order.push((await db.open("doc", 4)).slot);
+    assert.deepEqual(order, [2, 0, 1, 3], "pending first, then a saved session, then the lowest; unreadable counts as empty");
+  });
+
+  it("shares slot 0 with stores opened without slots", async (t) => {
+    const db = idb(t);
+    const plain = await db.open("doc");
+    await plain.save(withoutPending);
+    const pooled = await db.open("doc", 2);
+    assert.equal(pooled.slot, 1, "slot 0 is held by the plain store");
+    plain.close();
+    pooled.close();
+    const adopted = await db.open("doc", 2);
+    assert.deepEqual([adopted.slot, adopted.key, await adopted.load()], [0, "doc", withoutPending]);
+    await assert.rejects(db.open("doc"), CheckpointLockedError, "the plain key is slot 0's lock");
   });
 });
 
@@ -304,6 +351,35 @@ describe("connectSync with a store", () => {
 
     const other = await db.open("other");
     await assert.rejects(connectSync(Board, { transport: h.transport(), store: other, save() {} }), TypeError);
+  });
+
+  it("runs one writer per tab from one key and lets a later tab send a closed tab's edits", async (t) => {
+    const h = harness(), db = idb(t);
+    const connect = async () => connectSync(Board, { transport: h.transport(), pollInterval: 0, store: await db.open("doc", 2) });
+    const first = await connect(), second = await connect();
+    t.after(() => { first.stop(); second.stop(); });
+    assert.notEqual(first.doc.checkpoint().clientId, second.doc.checkpoint().clientId, "each tab is its own writer");
+    first.doc.state.items.push("from the first tab");
+    second.doc.state.items.push("from the second tab");
+    await first.sync(); await second.sync(); await first.sync();
+    assert.deepEqual(first.doc.state.items.toArray(), second.doc.state.items.toArray());
+    assert.equal(first.doc.state.items.length, 2);
+
+    // The second tab edits while its request hangs, then closes.
+    const release = h.hold();
+    second.doc.state.items.push("left behind");
+    await tick(); await tick();
+    const closedId = second.doc.checkpoint().clientId;
+    second.stop();
+    release();
+    await tick();
+    const third = await connect();
+    t.after(() => third.stop());
+    assert.equal(third.doc.checkpoint().clientId, closedId, "the free slot is taken over with its writer");
+    assert.equal(await third.sync(), true);
+    await first.sync();
+    assert.ok(first.doc.state.items.toArray().includes("left behind"));
+    assert.equal(h.submitted.filter((entry) => entry === `${closedId}:2`).length, 1, "the left-behind batch was sent once");
   });
 
   it("releases the store's lock when the client stops", async (t) => {

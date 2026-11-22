@@ -75,8 +75,9 @@
         races. <strong>Undo</strong> and <strong>Redo</strong> revert only that writer's own edits, and never the other
         writer's later ones.</p>
       <p>Each writer saves its edits in this browser as you make them, so reloading the page keeps edits that were not
-        sent yet. A writer open in another tab stays locked there. This localhost prototype has no authentication, and
-        the server keeps the document in memory: restarting it starts a new document.</p>
+        sent yet. Another tab runs its own writers, and a tab you close leaves its unsent edits to the next tab you
+        open. This localhost prototype has no authentication, and the server keeps the document in memory: restarting
+        it starts a new document.</p>
     </header>
     <div id="app"></div>
   </main>

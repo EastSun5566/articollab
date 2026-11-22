@@ -410,14 +410,19 @@ import {
   connectSync, createSyncHandler, type SyncClient, type SyncHandler, type SyncPushState, type SyncStatus,
   type PresenceSyncClient, type SyncPresence, type PresenceOptions, type SyncHandlerPresenceOptions,
   type SyncSubscription, type SyncTransport, type CheckpointStore, type ConnectSyncOptions, openIndexedDbStore,
+  type IndexedDbCheckpointStore,
 } from "articollab/sync";
 import { openFileStore, type FileStoreOptions } from "articollab/sync/node";
 type StoreOption = Expect<Equal<ConnectSyncOptions<Shape>["store"], CheckpointStore | undefined>>;
-type OpenedIdb = Expect<Equal<Awaited<ReturnType<typeof openIndexedDbStore>>, CheckpointStore>>;
+type OpenedIdb = Expect<Equal<Awaited<ReturnType<typeof openIndexedDbStore>>, IndexedDbCheckpointStore>>;
+type IdbSlot = Expect<Equal<Pick<IndexedDbCheckpointStore, "slot" | "key">, { readonly slot: number; readonly key: string }>>;
+type IdbIsStore = Expect<IndexedDbCheckpointStore extends CheckpointStore ? true : false>;
 type OpenedFile = Expect<Equal<Awaited<ReturnType<typeof openFileStore>>, CheckpointStore>>;
 type FileLocks = Expect<Equal<keyof FileStoreOptions, "locks" | "fs">>;
 // @ts-expect-error A store needs a database and key.
 void openIndexedDbStore({ database: "d" });
+// @ts-expect-error Slots are a number.
+void openIndexedDbStore({ database: "d", key: "k", slots: "2" });
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Expect<T extends true> = T;

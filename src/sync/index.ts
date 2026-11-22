@@ -17,6 +17,7 @@ export {
   openIndexedDbStore,
   type CheckpointStore,
   type IdbFactoryLike,
+  type IndexedDbCheckpointStore,
   type IndexedDbStoreOptions,
   type LockManagerLike,
 } from "./store.ts";

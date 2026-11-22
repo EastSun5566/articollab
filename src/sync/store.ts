@@ -133,6 +133,12 @@ export interface IndexedDbStoreOptions {
   readonly database: string;
   /** This writer's key within the database, for example a document and writer name. */
   readonly key: string;
+  /**
+   * How many writers, one per tab, may use `key` at once. Default 1. Slot 0 is `key` itself and slot
+   * n is `key#n`; the store takes a free slot, preferring one with pending edits, then one with a
+   * saved checkpoint, then the lowest. At most 64.
+   */
+  readonly slots?: number;
   /** Defaults to the global `indexedDB`. */
   readonly indexedDB?: IdbFactoryLike;
   /** Defaults to `navigator.locks`. */
@@ -156,18 +162,50 @@ function completion(transaction: IdbTransaction): Promise<void> {
   });
 }
 
+/** A browser checkpoint store, with the slot it took. */
+export interface IndexedDbCheckpointStore extends CheckpointStore {
+  /** The slot this store holds, from 0 to `slots - 1`. */
+  readonly slot: number;
+  /** The key its checkpoint is stored under: `key` for slot 0, `key#n` for slot n. */
+  readonly key: string;
+}
+
+const MAX_SLOTS = 64;
+
+/** How much a free slot is worth taking: 2 with pending edits, 1 with a checkpoint, 0 empty or unreadable. */
+function slotRank(stored: unknown): number {
+  if (typeof stored !== "string") return 0;
+  try {
+    const parsed: unknown = JSON.parse(stored);
+    if (typeof parsed !== "object" || parsed === null) return 0;
+    const pending = (parsed as { readonly pendingBatches?: unknown }).pendingBatches;
+    return Array.isArray(pending) && pending.length > 0 ? 2 : 1;
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * Opens a browser checkpoint store. It takes the Web Lock `articollab:<database>:<key>` first and
- * throws `CheckpointLockedError` if another tab, or another client in this tab, holds it.
+ * throws `CheckpointLockedError` if another tab, or another client in this tab, holds it. With
+ * `slots`, each tab takes a free slot instead and the error means every slot is held.
  * Checkpoints are stored as JSON strings in the `checkpoints` object store.
  */
-export async function openIndexedDbStore(options: IndexedDbStoreOptions): Promise<CheckpointStore> {
-  const { database, key } = options;
+export async function openIndexedDbStore(options: IndexedDbStoreOptions): Promise<IndexedDbCheckpointStore> {
+  const { database } = options;
   if (typeof database !== "string" || database.length === 0) throw new TypeError("database must be a nonempty string");
-  if (typeof key !== "string") throw new TypeError("key must be a string");
+  if (typeof options.key !== "string") throw new TypeError("key must be a string");
+  const slots = options.slots ?? 1;
+  if (!Number.isSafeInteger(slots) || slots < 1 || slots > MAX_SLOTS) {
+    throw new TypeError(`slots must be an integer from 1 to ${MAX_SLOTS}`);
+  }
   const factory = options.indexedDB ?? (globalThis as { indexedDB?: IdbFactoryLike }).indexedDB;
   if (factory === undefined) throw new Error("indexedDB is unavailable; pass `indexedDB`");
-  const release = await acquireLock(`articollab:${database}:${key}`, options.locks);
+  const keys = Array.from({ length: slots }, (_, slot) => slot === 0 ? options.key : `${options.key}#${slot}`);
+  // With one slot, lock before opening the database, exactly as before slots existed.
+  let release: ((after?: Promise<unknown>) => void) | undefined =
+    slots === 1 ? await acquireLock(`articollab:${database}:${keys[0]!}`, options.locks) : undefined;
+  let slot = 0;
   let db: IdbDatabase;
   try {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The IndexedDB open request shape.
@@ -177,9 +215,34 @@ export async function openIndexedDbStore(options: IndexedDbStoreOptions): Promis
     };
     db = await settle(request);
   } catch (cause) {
-    release();
+    release?.();
     throw cause;
   }
+  if (release === undefined) {
+    try {
+      // A hint only: the lock decides. Take over a closed tab's pending edits first, then an existing session.
+      const objects = db.transaction(OBJECT_STORE, "readonly").objectStore(OBJECT_STORE);
+      const ranks = await Promise.all(keys.map(async (key) => slotRank(await settle(objects.get(key)))));
+      const order = keys.map((_, index) => index).sort((a, b) => ranks[b]! - ranks[a]! || a - b);
+      for (const candidate of order) {
+        try {
+          release = await acquireLock(`articollab:${database}:${keys[candidate]!}`, options.locks);
+          slot = candidate;
+          break;
+        } catch (error) {
+          if (!(error instanceof CheckpointLockedError)) throw error;
+        }
+      }
+    } catch (cause) {
+      db.close();
+      throw cause;
+    }
+    if (release === undefined) {
+      db.close();
+      throw new CheckpointLockedError(`All ${slots} checkpoint slots are in use elsewhere: ${options.key}`);
+    }
+  }
+  const key = keys[slot]!;
   const state = closable(release, () => db.close());
 
   function write(change: (store: IdbObjectStore) => void): Promise<void> {
@@ -192,6 +255,8 @@ export async function openIndexedDbStore(options: IndexedDbStoreOptions): Promis
   }
 
   return {
+    slot,
+    key,
     load: () => state.run(async () => {
       const stored = await settle(db.transaction(OBJECT_STORE, "readonly").objectStore(OBJECT_STORE).get(key));
       if (stored === undefined) return undefined;
