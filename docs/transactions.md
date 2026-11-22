@@ -196,7 +196,23 @@ history.redo();
 console.log(doc.state.items.toArray(), history.canRedo); // [ 'Write docs', 'Ship' ] true
 ```
 
-Each transaction is one step, and local changes less than `captureTimeout` milliseconds apart (default 500) merge into one, so typing a word undoes as a unit. `stopCapturing()` starts a new step; the example uses it because both edits happen at once. A new change clears the redo steps. Use `canUndo`, `canRedo` and `history.on("change", ...)` to enable buttons.
+Each transaction is one step, and local changes less than `captureTimeout` milliseconds apart (default 500) merge into one, so typing a word undoes as a unit. `stopCapturing()` starts a new step; the example uses it because both edits happen at once. A new change clears the redo steps. Use `canUndo`, `canRedo` and `history.on("change", ...)` to enable buttons. The manager keeps the latest `maxSteps` steps (default 1000) and drops older ones.
+
+To make one step of changes that are not one transaction, such as the moves of a drag gesture, open a group. Everything this writer changes until `end()` is one step, however far apart; changes you make with `history.ignore()` are not recorded at all:
+
+```ts
+const end = history.startGroup();
+doc.state.items.push("Draft");
+await nextAnimationFrame(); // Changes keep joining the group across awaits.
+doc.state.items.set(2, "Final");
+end();
+
+history.ignore(() => { doc.state.items.push("Added by the app"); });
+history.undo();
+console.log(doc.state.items.toArray()); // [ 'Write docs', 'Ship', 'Added by the app' ]
+```
+
+`undo()`, `redo()` and `stopCapturing()` end open groups. Ignored changes are still ordinary edits that are sent, and later undos skip what they changed, like a peer's change.
 
 Only this writer's changes are recorded, and undo never overwrites a later change by someone else. It reverts a value, Map key or List element only while it still holds what this writer wrote; a step another writer has entirely superseded is skipped, and `undo()` moves on to the next one. Undoing a deletion inserts the element again at its place with a new ID, which later steps follow. See the [exact rules](reference.md#undo-and-redo).
 

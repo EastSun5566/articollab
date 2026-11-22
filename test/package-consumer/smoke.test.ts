@@ -254,6 +254,15 @@ assert.deepEqual(undoWriter.state.items.toArray(), ["a"]);
 assert.deepEqual([history.undo(), undoWriter.state.items.toArray(), history.canUndo, history.canRedo], [true, [], false, true]);
 assert.throws(() => createUndoManager(undoWriter), /already has an undo manager/);
 history.destroy();
+const grouped = createUndoManager(undoWriter, { captureTimeout: 0, maxSteps: 2 });
+const endGroup = grouped.startGroup();
+undoWriter.state.items.push("g1");
+undoWriter.state.items.push("g2");
+endGroup();
+assert.equal(grouped.ignore(() => { undoWriter.state.items.push("ignored"); return "kept"; }), "kept");
+assert.equal(grouped.undo(), true);
+assert.deepEqual([undoWriter.state.items.toArray(), grouped.canUndo], [["ignored"], false]);
+grouped.destroy();
 
 const trackServer = createServer(Board, { resolve: ({ batch }) => batch.operations.filter((operation) => operation.type !== "list/insert") });
 const trackWriter = createClient(Board, { clientId: trackServer.openClient(), onBatch() {} });
@@ -457,6 +466,13 @@ type Undone = Expect<Equal<ReturnType<UndoManager["undo"]>, boolean>>;
 undoManager.canUndo = true;
 // @ts-expect-error The only event is "change".
 undoManager.on("other", () => {});
+const endUndoGroup: () => void = undoManager.startGroup();
+endUndoGroup();
+const ignoredValue: number = undoManager.ignore(() => 1);
+// @ts-expect-error ignore() takes a synchronous callback, like transact().
+undoManager.ignore(async () => {});
+// @ts-expect-error maxSteps is a number.
+createUndoManager(doc, { maxSteps: "10" });
 undoManager.destroy();
 const trackedChange = doc.track(() => "value");
 type Tracked = Expect<Equal<typeof trackedChange, TrackedChange<string, Operation>>>;

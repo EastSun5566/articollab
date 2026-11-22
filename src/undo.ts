@@ -13,6 +13,8 @@ export interface UndoManagerOptions {
   readonly captureTimeout?: number;
   /** The collections whose changes are recorded. Default: all. */
   readonly paths?: readonly string[];
+  /** The most undo steps kept, and the most redo steps; the oldest is dropped beyond it. Default 1000. */
+  readonly maxSteps?: number;
 }
 
 /** Undo and redo for one writer's own changes. Create it with `createUndoManager`. */
@@ -23,8 +25,22 @@ export interface UndoManager {
   redo(): boolean;
   readonly canUndo: boolean;
   readonly canRedo: boolean;
-  /** Makes the next local change start a new step, even within `captureTimeout`. */
+  /** Makes the next local change start a new step, even within `captureTimeout`, and ends open groups. */
   stopCapturing(): void;
+  /**
+   * Starts one step that takes every local change until the returned function is called, however far
+   * apart. Groups nest; undo, redo, stopCapturing, clear and destroy end them all.
+   */
+  startGroup(): () => void;
+  /** Runs `callback` without recording the local changes it makes, and returns its result. */
+  ignore<T>(
+    callback: () => T,
+    ...mustBeSynchronous: [T] extends [never]
+      ? []
+      : T extends PromiseLike<unknown>
+        ? [never]
+        : []
+  ): T;
   /** Forgets every step. */
   clear(): void;
   /** Called whenever the undo or redo stack changes. Returns an unsubscribe function. */
@@ -85,6 +101,10 @@ export function createUndoManager<S extends SchemaShape>(
   if (typeof captureTimeout !== "number" || !(captureTimeout >= 0)) {
     throw new RangeError("captureTimeout must be a non-negative number");
   }
+  const maxSteps = options.maxSteps ?? 1000;
+  if (maxSteps !== Infinity && !(Number.isSafeInteger(maxSteps) && maxSteps > 0)) {
+    throw new RangeError("maxSteps must be a positive integer or Infinity");
+  }
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Every document path holds one runtime collection.
   const collections = doc.state as unknown as Readonly<Record<string, Collection>>;
   const paths = new Set(options.paths ?? Object.keys(collections));
@@ -103,6 +123,19 @@ export function createUndoManager<S extends SchemaShape>(
   const listeners = new Set<() => void>();
   let recording: "edit" | "undo" | "redo" = "edit";
   let lastEdit = -Infinity, separate = true, destroyed = false;
+  /** Open groups, and a token that ends their stale end functions once groups are forced closed. */
+  let groupDepth = 0, groupToken = {};
+  let ignoring = 0;
+  const push = (stack: Step[], step: Step) => {
+    stack.push(step);
+    if (stack.length > maxSteps) stack.shift();
+  };
+  /** The next local change starts a new step; open groups end and their end functions do nothing. */
+  const endGroups = () => {
+    groupDepth = 0;
+    groupToken = {};
+    separate = true;
+  };
 
   const emit = () => { for (const listener of [...listeners]) listener(); };
   const resolve = (table: typeof elements, path: string, id: Readonly<ElementId>): Readonly<ElementId> => {
@@ -152,17 +185,19 @@ export function createUndoManager<S extends SchemaShape>(
   }
 
   attachHistory(doc, (local) => {
+    if (ignoring > 0) return;
     const step = capture(local);
     // A batch whose effects cancel out, such as inserting and deleting one element, is no step.
     if (step === undefined || reverts(step).length === 0) return;
-    if (recording === "undo") redoStack.push(step);
-    else if (recording === "redo") undoStack.push(step);
+    if (recording === "undo") push(redoStack, step);
+    else if (recording === "redo") push(undoStack, step);
     else {
       redoStack.length = 0;
       const now = Date.now();
       const top = undoStack.at(-1);
-      if (top !== undefined && !separate && now - lastEdit < captureTimeout) merge(top, step);
-      else undoStack.push(step);
+      // Within a group every change joins its step; otherwise only changes within captureTimeout do.
+      if (top !== undefined && !separate && (groupDepth > 0 || now - lastEdit < captureTimeout)) merge(top, step);
+      else push(undoStack, step);
       lastEdit = now;
       separate = false;
     }
@@ -298,7 +333,7 @@ export function createUndoManager<S extends SchemaShape>(
           recording = "edit";
         }
         stack.pop();
-        separate = true;
+        endGroups();
         changed = true;
         return true;
       }
@@ -308,15 +343,49 @@ export function createUndoManager<S extends SchemaShape>(
     }
   }
 
+  function ignore<T>(
+    callback: () => T,
+    ...mustBeSynchronous: [T] extends [never]
+      ? []
+      : T extends PromiseLike<unknown>
+        ? [never]
+        : []
+  ): T;
+  function ignore<T>(callback: () => T, ..._synchronous: readonly unknown[]): T {
+    // Inside a transaction the batch commits after the callback, outside its reach.
+    if (isTransacting(doc)) throw new Error("Cannot ignore changes inside a transaction");
+    ignoring++;
+    try {
+      return callback();
+    } finally {
+      ignoring--;
+    }
+  }
+
   return Object.freeze({
     undo: () => travel("undo"),
     redo: () => travel("redo"),
     get canUndo() { return undoStack.length > 0; },
     get canRedo() { return redoStack.length > 0; },
-    stopCapturing() { separate = true; },
+    stopCapturing() { endGroups(); },
+    startGroup() {
+      // The group's first change starts its own step.
+      if (groupDepth === 0) separate = true;
+      groupDepth++;
+      const token = groupToken;
+      let ended = false;
+      return () => {
+        if (ended || token !== groupToken) return;
+        ended = true;
+        groupDepth--;
+        // The change after a group starts a new step.
+        if (groupDepth === 0) separate = true;
+      };
+    },
+    ignore,
     clear() {
       const had = undoStack.length > 0 || redoStack.length > 0;
-      undoStack.length = 0; redoStack.length = 0; elements.clear(); positions.clear(); separate = true;
+      undoStack.length = 0; redoStack.length = 0; elements.clear(); positions.clear(); endGroups();
       if (had) emit();
     },
     on(event: "change", listener: () => void) {
@@ -327,6 +396,7 @@ export function createUndoManager<S extends SchemaShape>(
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      endGroups();
       attachHistory(doc, undefined);
       undoStack.length = 0; redoStack.length = 0; elements.clear(); positions.clear(); listeners.clear();
     },
