@@ -1,4 +1,6 @@
 export {
+  counter,
+  counters,
   defineDocument,
   DocumentSchema,
   list,
@@ -6,6 +8,8 @@ export {
   text,
   value,
   type CollectionSchema,
+  type CounterMapSchema,
+  type CounterSchema,
   type JsonPrimitive,
   type JsonValue,
   type ListSchema,
@@ -41,6 +45,18 @@ export {
   type MapSetOperation,
   type MapSnapshotData,
 } from "./map.ts";
+
+export {
+  type Counter,
+  type CounterAddOperation,
+  type CounterMap,
+  type CounterMapAddOperation,
+  type CounterMapChange,
+  type CounterMapChangeEvent,
+  type CounterMapDeleteOperation,
+  type CounterMapOperation,
+  type CounterMapSnapshotData,
+} from "./counter.ts";
 
 export {
   type Text,

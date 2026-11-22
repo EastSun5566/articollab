@@ -70,6 +70,8 @@ Pending: 0
 
 `server.receive(batch)` returns a receipt. Deliver its `commit` to each client in server order. At the writer, receiving the commit clears its pending batch. The visible count stays at `3`.
 
+A Value records the number you set, so this example suits a count one writer owns. When several writers increment the same count, use a [Counter](collections.md#counter-additions-that-all-count), which records additions instead.
+
 When listeners submit new work, [finish delivering the current commit first](server-wire.md#deliver-in-order).
 
 [Previous: Overview](README.md) · [Next: Concepts](concepts.md)

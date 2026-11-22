@@ -50,7 +50,7 @@ describe("Kanban board helpers", () => {
     assert.deepEqual([w.ids("todo"), w.ids("doing")], [["seed-drag"], ["seed-sketch"]]);
   });
 
-  it("writes a new card in one batch, renames through titles only and deletes all three parts", () => {
+  it("writes a new card in one batch, renames through titles only and deletes all four parts", () => {
     assert.equal(normalizeTitle("  Card  "), "Card");
     for (const title of ["", "   ", "x".repeat(MAX_TITLE_LENGTH + 1)]) assert.throws(() => normalizeTitle(title), RangeError);
     const w = writer();
@@ -66,7 +66,7 @@ describe("Kanban board helpers", () => {
     assert.equal(renameCard(w.doc, "missing", "x"), false);
     assert.equal(deleteCard(w.doc, "missing"), false);
     assert.ok(deleteCard(w.doc, "new"));
-    assert.deepEqual(w.types(), ["list/delete order", "map/delete columns", "map/delete titles"]);
+    assert.deepEqual(w.types(), ["list/delete order", "map/delete columns", "map/delete titles", "counters/delete votes"]);
     assert.equal(findCard(w.doc, "new"), undefined);
     assert.equal(w.doc.state.titles.has("new"), false);
   });

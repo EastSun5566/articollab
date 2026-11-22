@@ -48,7 +48,7 @@ import assert from "node:assert/strict";
 import {
   assertClientBatchNamespace,
   createClient, createServer, createUndoManager, defineDocument, list, map, text, value, PayloadValidationError,
-  decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeCursor,
+  decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeCursor, counter, counters,
 } from "articollab";
 import { CheckpointLockedError, connectSync, createHttpTransport, createSyncHandler, openIndexedDbStore } from "articollab/sync";
 import { openFileStore, CheckpointLockedError as NodeLockedError } from "articollab/sync/node";
@@ -391,6 +391,22 @@ assert.deepEqual(mapReader.state.fields.toObject(), { b: 2 });
 assert.deepEqual(mapChanges, [{ type: "set", key: "b", value: 2, previous: undefined },
   { type: "set", key: "a", value: 1, previous: undefined }, { type: "delete", key: "a", previous: 1 }]);
 assert.deepEqual(roundTrip(mapServer.snapshot().data), { fields: { b: 2 } });
+
+const Tally = defineDocument({ likes: counter(), votes: counters() });
+const tallyServer = createServer(Tally);
+const tallyBatches = [];
+const tallyA = createClient(Tally, { clientId: tallyServer.openClient(), onBatch: (batch) => tallyBatches.push(batch) });
+const tallyB = createClient(Tally, { clientId: tallyServer.openClient(), onBatch: (batch) => tallyBatches.push(batch) });
+tallyA.state.likes.add(1);
+tallyB.state.likes.add(1);
+tallyA.state.votes.add("card", 2);
+tallyB.state.votes.add("card", -2);
+for (const batch of tallyBatches.splice(0)) {
+  const commit = roundTrip(tallyServer.receive(decodeClientBatch(Tally, roundTrip(batch))).commit);
+  for (const doc of [tallyA, tallyB]) doc.receive(decodeServerCommit(Tally, commit));
+}
+assert.deepEqual([tallyA.state.likes.value, tallyB.state.likes.value, tallyB.state.votes.get("card")], [2, 2, 0]);
+assert.deepEqual(roundTrip(tallyServer.snapshot().data), { likes: 2, votes: {} });
 `;
 
 const typesFixture = `
@@ -399,6 +415,8 @@ import {
   createClient, createServer, defineDocument, list, map, text, value,
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeSnapshot, decodeCursor,
   type MapChange, type MapChangeEvent, type MapCollection, type MapSetOperation, type MapSnapshotData,
+  counter, counters, type Counter, type CounterMap, type CounterAddOperation, type CounterMapOperation,
+  type CounterMapChangeEvent, type CounterMapSnapshotData,
   type Cursor, type Value, type List, type Text, type TextChange, type TextChangeEvent, type DocumentOperation, type DocumentSnapshot,
   type ListChange, type ListChangeEvent,
   type ListSnapshotData, type ListSetOperation, type ListMoveOperation, type ListMoveEntry, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
@@ -621,6 +639,21 @@ server.closeClient(123);
 // @ts-expect-error Legacy replay-array checkpoints are not accepted.
 createServer(Board, { checkpoint: { snapshot, replays: [], history: [] } });
 type BunchCounters = Expect<Equal<typeof checkpoint.lastBunchSeqs, Readonly<{ items: number; body: number }>>>;
+
+const Tally = defineDocument({ likes: counter(3), votes: counters() });
+type TallyShape = typeof Tally.definition;
+declare const tally: import("articollab").ClientDocument<TallyShape>;
+type TallyLikes = Expect<Equal<typeof tally.state.likes, Counter>>;
+type TallyVotes = Expect<Equal<typeof tally.state.votes, CounterMap>>;
+type TallyValue = Expect<Equal<typeof tally.state.likes.value, number>>;
+type TallyGet = Expect<Equal<ReturnType<typeof tally.state.votes.get>, number>>;
+type TallyOperation = Expect<Equal<DocumentOperation<TallyShape>, CounterAddOperation<"likes"> | CounterMapOperation<"votes">>>;
+type TallySnapshot = Expect<Equal<ReturnType<typeof tally.checkpoint>["snapshot"]["data"], Readonly<{ likes: number; votes: CounterMapSnapshotData }>>>;
+tally.state.votes.observe((event) => { type Event = Expect<Equal<typeof event, CounterMapChangeEvent>>; });
+// @ts-expect-error A counter is added to, not set.
+tally.state.likes.value = 1;
+// @ts-expect-error Deltas are numbers.
+tally.state.votes.add("card", "1");
 
 const Settings = defineDocument({ fields: map<{ title: string }>(), count: value(0) });
 type SettingsShape = typeof Settings.definition;

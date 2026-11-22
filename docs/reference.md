@@ -6,7 +6,7 @@ Look up the public API and exact collaboration contracts here. For a runnable in
 
 List moves and the `transform` event were introduced in Articollab 0.9. If the npm `latest` tag still points to 0.8, use `pnpm add articollab@beta` to try these features.
 
-Upgrade all participating runtimes before exchanging new operations or snapshot formats. See the [0.9 upgrade guide](recovery.md#upgrading-from-08-to-09) for List moves and the [0.8 upgrade guide](recovery.md#upgrading-from-07-to-08) for Map and checkpoint stores.
+Upgrade all participating runtimes before exchanging new operations or snapshot formats. See the [0.10 upgrade guide](recovery.md#upgrading-from-09-to-010) for Counters, the [0.9 upgrade guide](recovery.md#upgrading-from-08-to-09) for List moves and the [0.8 upgrade guide](recovery.md#upgrading-from-07-to-08) for Map and checkpoint stores.
 
 Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` promises its documented `name`, JSON Pointer `path` and readable message, not exact wording.
 
@@ -16,10 +16,10 @@ Import from `"articollab"`; internal modules and example helpers are not package
 
 | API | Purpose |
 | --- | --- |
-| `defineDocument(definition)`, `value(initialValue)`, `list<T>()`, `text()`, `map<T>()` | Fixed typed schema; property keys are wire paths. List, Text and Map start empty. |
+| `defineDocument(definition)`, `value(initialValue)`, `list<T>()`, `text()`, `map<T>()`, `counter(initialValue = 0)`, `counters()` | Fixed typed schema; property keys are wire paths. List, Text, Map and `counters()` start empty. |
 | `value(initialValue, schema)`, `list(schema)`, `map(schema)`, `PayloadValidationError` | Validate every written payload with a Standard Schema, locally and on the server; the payload type comes from the schema. |
 | `createClient(schema, options)` | Requires nonempty `clientId` and `onBatch`; optional `snapshot` or `checkpoint`, never both. |
-| `doc.state` | Readonly collection bindings; mutate through Value/List/Text/Map methods. |
+| `doc.state` | Readonly collection bindings; mutate through Value/List/Text/Map/Counter methods. |
 | `doc.transact(callback)` | Groups synchronous mutations and returns the callback result. |
 | `doc.on("change", listener)` | Subscribes to document-level events; returns an unsubscribe function. |
 | `doc.on("discard", listener)` | Subscribes to this writer's List `set()` and `move()` operations that the server applied after their element was deleted. |
@@ -29,6 +29,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.state.body.observe(listener)` | Opt-in visible Text edits; returns an unsubscribe function. |
 | `doc.state.items.observe(listener)` | Opt-in visible List moves, splices and in-place sets; returns an unsubscribe function. |
 | `doc.state.settings.observe(listener)` | Opt-in visible Map sets and deletes, with previous values; returns an unsubscribe function. |
+| `doc.state.votes.observe(listener)` | Opt-in visible `counters()` changes, each key's new and previous count; returns an unsubscribe function. |
 | `cursorAt(index, bind?)`, `cursorIndex(cursor)` on Text and List | Stable gap positions: create a frozen cursor, then resolve its current index or `undefined`. |
 | `doc.receive(commit)` | Applies the next authoritative commit, acknowledges own pending work and replays the rest. |
 | `doc.replayConflict`, `doc.checkpoint()` | Read the first replay failure or save authoritative state and pending work. |
@@ -47,11 +48,11 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | Types | Role |
 | --- | --- |
 | `JsonPrimitive`, `JsonValue` | JSON-compatible payload types. |
-| `SchemaShape`, `CollectionSchema`, `ValueSchema`, `ListSchema`, `TextSchema`, `MapSchema`, `ValueType`, `ListType`, `MapType` | Schema descriptors and inferred element types. |
-| `Value`, `List`, `Text`, `MapCollection`, `DocumentState` | Typed collection views. |
+| `SchemaShape`, `CollectionSchema`, `ValueSchema`, `ListSchema`, `TextSchema`, `MapSchema`, `CounterSchema`, `CounterMapSchema`, `ValueType`, `ListType`, `MapType` | Schema descriptors and inferred element types. |
+| `Value`, `List`, `Text`, `MapCollection`, `Counter`, `CounterMap`, `DocumentState` | Typed collection views. |
 | `CreateClientOptions`, `CreateServerOptions`, `ServerResolveContext`, `ServerResolver` | Construction and batch policy contracts. |
 | `ServerClientSession` | One open writer session from `server.listClients()`. |
-| `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation`, `ListMoveOperation`, `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextOperation`, `TextIdRange`, `MapSetOperation`, `MapDeleteOperation`, `MapOperation`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
+| `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation`, `ListMoveOperation`, `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextOperation`, `TextIdRange`, `MapSetOperation`, `MapDeleteOperation`, `MapOperation`, `CounterAddOperation`, `CounterMapAddOperation`, `CounterMapDeleteOperation`, `CounterMapOperation`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
 | `ClientBatchRef`, `ClientBatch`, `ServerCommit`, `ServerReceipt`, `ServerReplayEntry` | Batch identity, authoritative result, local routing metadata and retry entries. |
 | `LocalChangeEvent`, `ServerChangeEvent`, `ChangeEvent`, `PendingReplayConflict` | Local/server notifications and the first blocked pending operation. |
 | `DiscardEvent` | This writer's List sets and moves that had no effect because their element was already deleted. |
@@ -59,8 +60,9 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `TextChange`, `TextChangeEvent` | Visible Text element edits from an opt-in subscription. |
 | `ListChange`, `ListChangeEvent` | Visible List moves, splices and in-place sets from an opt-in subscription. |
 | `MapChange`, `MapChangeEvent` | Visible Map sets and deletes, with previous values, from an opt-in subscription. |
+| `CounterMapChange`, `CounterMapChangeEvent` | Visible `counters()` changes, with 0 for an absent key, from an opt-in subscription. |
 | `Cursor` | A stable Text or List gap position: `{ anchor, bind }`. |
-| `DocumentSnapshotData`, `DocumentSnapshot`, `ListSnapshotData`, `ListMoveEntry`, `TextSnapshotData`, `MapSnapshotData`, `SavedIdRange` | Typed snapshot payloads, including List/Text tombstones. |
+| `DocumentSnapshotData`, `DocumentSnapshot`, `ListSnapshotData`, `ListMoveEntry`, `TextSnapshotData`, `MapSnapshotData`, `CounterMapSnapshotData`, `SavedIdRange` | Typed snapshot payloads, including List/Text tombstones. |
 | `ClientCheckpoint`, `ServerCheckpoint` | Complete client/server restore data. |
 
 ## Core contracts
@@ -91,6 +93,8 @@ List/Text operations use stable IDs, not mutable indices. The wire field `before
 `List.set(index, value): void` emits `{ type: "list/set", path, id, value }`, with exactly those fields. The target is the visible ID at call time. Setting a present target replaces the whole payload without changing its ID, position, length or allocation counters; concurrent updates follow server operation order. A known deleted target is a legal no-op and never stores the new value or resurrects the element. An unknown target is a collection conflict: server processing fails atomically, while pending replay blocks at that batch. Other operations in a batch containing a tombstone no-op still apply. Updating another writer's element is allowed; insertion namespace checks are not update authorization.
 
 `map<T>()` paths hold string keys, including `""` and `"__proto__"`, each with one immutable JSON value. `set(key, value)` emits `{ type: "map/set", path, key, value }` and `delete(key)` emits `{ type: "map/delete", path, key }`, with exactly those fields; non-string keys throw `TypeError` and values use the same synchronous JSON validation as List `set()`. Each key is last-writer-wins in server operation order: a later `set` recreates a deleted key and a later `delete` removes it. Deleting an absent key is a legal no-op that the writer still records, because the server may hold a value this writer has not received; `delete()` returns whether the key was present in this writer's view. `clear()` emits one `map/delete` per key visible to this writer, in key order and in one batch (or the enclosing transaction); an empty Map records nothing, and keys set concurrently by peers survive. Map operations have no IDs, tombstones, namespace checks or bunch allocation, so they never cause replay conflicts and `lastBunchSeqs` has no entry for Map paths. Iteration (`keys()`, `values()`, `entries()`, `for...of`) is sorted by UTF-16 code unit. A Map snapshot is a frozen own-property object from key to value.
+
+`counter(initialValue = 0)` paths hold one safe integer; `initialValue` must be one or the schema throws `TypeError`. `add(delta)` emits `{ type: "counter/add", path, delta }` and `counters()` emits `{ type: "counters/add", path, key, delta }` for `add(key, delta)` and `{ type: "counters/delete", path, key }` for `delete(key)`, with exactly those fields. `delta` must be a safe integer, or `add()` throws `TypeError`; `add()` throws `RangeError` when this writer's total would leave the safe integer range; both throw before any change or batch, and adding 0 checks the arguments, then records nothing. On the wire, `delta` is a nonzero safe integer and keys are strings. Applying an addition adds `delta` to the authoritative or replayed total; a total outside the safe integer range is a collection conflict: server processing fails atomically, while pending replay blocks at that batch. In `counters()`, an absent key counts as 0 and a total of 0 removes the key; `counters/delete` sets the key to 0, and a later addition in server order counts from 0. `get(key)` returns the count or 0, `has(key)` whether it is nonzero, `size` the number of nonzero keys, and `delete(key)` records the reset even when the key is 0 here and returns whether it was nonzero here. Iteration is sorted by UTF-16 code unit. Counter operations have no IDs, namespace checks, payload schemas or bunch allocation, and `lastBunchSeqs` has no entry for them. A `counter()` snapshot is the integer; a `counters()` snapshot is a frozen own-property object from key to a nonzero safe integer, and decoders reject 0, fractions and out-of-range numbers. `observe()` on `counters()` reports `{ changes }`, sorted by key, each `{ key, value, previous }` with 0 for an absent key, with the same delivery rules as Map. A resolver that changes `delta` transforms the batch like any changed payload.
 
 `List.move(from, to): void` requires `from` and `to` in `0..length-1`; `from === to` records nothing. It emits `{ type: "list/move", path, id, before, position }`, with exactly those fields: `id` is the element's permanent ID (its original insertion ID), `before` the preceding position anchor (`null` for the start) after the element is taken out, and `position` a new ID from the mover's namespace, allocated like an insertion ID and covered by `lastBunchSeqs`. Applying it inserts `position` after `before` and retires the element's previous position as a tombstone; the element keeps `id`, so `set`, `delete` and later moves name `id` wherever it is. Concurrent moves of one element follow server order. Moving a known deleted element is a legal no-op that still records `position` as a tombstone, so later anchors on it resolve, and the mover's acknowledgement reports it through `discard`. An unknown `id` or anchor, or an already known `position`, is a collection conflict, as for insertion. `set`, `delete` and `move` targets must be permanent IDs: naming a moved element's current position ID is an unknown-ID conflict too. Cursors and insertion anchors name positions: a cursor bound to a moved element stays at its old gap. `assertClientBatchNamespace` checks `position` like an insertion ID.
 
@@ -136,6 +140,7 @@ It records each local batch that touches a recorded path as a step: the touched 
 | --- | --- | --- |
 | Value | it still equals the step's result | the value before the step |
 | Map key | it still equals the step's result, absence included | the earlier value, or a delete |
+| Counter or `counters()` key | the step's net addition is not 0, whatever others added since | an addition of the opposite amount; a reset is undone by adding back what it removed |
 | List element inserted | it is still visible | `list/delete` |
 | List element deleted | it is still deleted | `list/insert` of its earlier value with a new ID, right after its last position, so it returns to its place |
 | List element set or moved | it still holds the step's value, or still sits at the step's position | `list/set` of the earlier value, or `list/move` back right after its earlier position |

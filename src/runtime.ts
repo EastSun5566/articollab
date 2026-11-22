@@ -29,7 +29,22 @@ import {
   type MapOperation,
   type MapSetOperation,
 } from "./map.ts";
+import {
+  freezeCounterMapOperation,
+  freezeCounterOperation,
+  CounterMapState,
+  RuntimeCounter,
+  RuntimeCounterMap,
+  type Counter,
+  type CounterAddOperation,
+  type CounterMap,
+  type CounterMapAddOperation,
+  type CounterMapDeleteOperation,
+  type CounterMapOperation,
+} from "./counter.ts";
 import type {
+  CounterMapSchema,
+  CounterSchema,
   DocumentSchema,
   JsonValue,
   ListSchema,
@@ -73,7 +88,10 @@ export type Operation =
   | TextInsertOperation
   | TextDeleteOperation
   | MapSetOperation
-  | MapDeleteOperation;
+  | MapDeleteOperation
+  | CounterAddOperation
+  | CounterMapAddOperation
+  | CounterMapDeleteOperation;
 
 type OperationFor<D, Path extends string> =
   D extends ValueSchema<infer T extends JsonValue>
@@ -84,7 +102,11 @@ type OperationFor<D, Path extends string> =
         ? TextOperation<Path>
         : D extends MapSchema<infer T extends JsonValue>
           ? MapOperation<Path, T>
-          : never;
+          : D extends CounterSchema
+            ? CounterAddOperation<Path>
+            : D extends CounterMapSchema
+              ? CounterMapOperation<Path>
+              : never;
 
 export type DocumentOperation<S extends SchemaShape> = {
   [K in Extract<keyof S, string>]: OperationFor<S[K], K>;
@@ -322,7 +344,9 @@ type RuntimeCollection =
   | RuntimeValue<JsonValue>
   | RuntimeList<JsonValue>
   | RuntimeText
-  | RuntimeMap<JsonValue>;
+  | RuntimeMap<JsonValue>
+  | RuntimeCounter
+  | RuntimeCounterMap;
 
 function restoreServerCheckpoint<S extends SchemaShape>(
   schema: DocumentSchema<S>,
@@ -343,6 +367,14 @@ function restoreServerCheckpoint<S extends SchemaShape>(
     history: owned.history,
     nextServerSeq: owned.snapshot.serverSeq + 1,
   };
+}
+
+/** Collections with `observe()`. */
+function isObservable(
+  runtime: RuntimeCollection | undefined
+): runtime is RuntimeList<JsonValue> | RuntimeText | RuntimeMap<JsonValue> | RuntimeCounterMap {
+  return runtime instanceof RuntimeText || runtime instanceof RuntimeList || runtime instanceof RuntimeMap ||
+    runtime instanceof RuntimeCounterMap;
 }
 
 function runtimeState(runtime: RuntimeCollection): CollectionState {
@@ -418,6 +450,13 @@ function sameOperations(
           (allowValueChanges || Object.is(operation.value, other.value));
       case "map/delete":
         return other.type === "map/delete" && operation.key === other.key;
+      case "counter/add":
+        return other.type === "counter/add" && (allowValueChanges || operation.delta === other.delta);
+      case "counters/add":
+        return other.type === "counters/add" && operation.key === other.key &&
+          (allowValueChanges || operation.delta === other.delta);
+      case "counters/delete":
+        return other.type === "counters/delete" && operation.key === other.key;
       default:
         return false;
     }
@@ -449,6 +488,15 @@ function runtimeVisibleEquals(
     return skipComparison || (mapComparisonKeys === undefined ? runtime.visibleEquals(state) :
       mapComparisonKeys.every((key) => runtime.state.visibleKeyEquals(state, key)));
   }
+  if (runtime instanceof RuntimeCounterMap) {
+    if (!(state instanceof CounterMapState)) throw wrongCollectionKind(path);
+    return skipComparison || (mapComparisonKeys === undefined ? runtime.visibleEquals(state) :
+      mapComparisonKeys.every((key) => runtime.state.visibleKeyEquals(state, key)));
+  }
+  if (runtime instanceof RuntimeCounter) {
+    if (typeof state !== "number") throw wrongCollectionKind(path);
+    return skipComparison || runtime.visibleEquals(state);
+  }
   if (isStructuredState(state)) {
     throw wrongCollectionKind(path);
   }
@@ -469,6 +517,12 @@ function restoreRuntime(
     runtime.restore(state);
   } else if (runtime instanceof RuntimeMap) {
     if (!(state instanceof MapState)) throw wrongCollectionKind(path);
+    runtime.restore(state);
+  } else if (runtime instanceof RuntimeCounterMap) {
+    if (!(state instanceof CounterMapState)) throw wrongCollectionKind(path);
+    runtime.restore(state);
+  } else if (runtime instanceof RuntimeCounter) {
+    if (typeof state !== "number") throw wrongCollectionKind(path);
     runtime.restore(state);
   } else {
     if (isStructuredState(state)) {
@@ -493,6 +547,11 @@ function freezeOperation(operation: Operation): Operation {
     case "map/set":
     case "map/delete":
       return freezeMapOperation(operation);
+    case "counter/add":
+      return freezeCounterOperation(operation);
+    case "counters/add":
+    case "counters/delete":
+      return freezeCounterMapOperation(operation);
     default:
       throw unknownOperationType(operation);
   }
@@ -516,7 +575,11 @@ type DocumentCollection<D> =
         ? Text
         : D extends MapSchema<infer T extends JsonValue>
           ? MapCollection<T>
-          : never;
+          : D extends CounterSchema
+            ? Counter
+            : D extends CounterMapSchema
+              ? CounterMap
+              : never;
 
 export type DocumentState<S extends SchemaShape> = Readonly<{
   [K in keyof S]: DocumentCollection<S[K]>;
@@ -647,7 +710,7 @@ export class ClientDocument<S extends SchemaShape> {
     };
 
     const publicState: Partial<
-      Record<keyof S, Value<JsonValue> | List<JsonValue> | Text | MapCollection<JsonValue>>
+      Record<keyof S, Value<JsonValue> | List<JsonValue> | Text | MapCollection<JsonValue> | Counter | CounterMap>
     > = {};
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The fixed schema’s own keys are the document paths.
     for (const path of Object.keys(schema.definition) as Array<
@@ -684,6 +747,22 @@ export class ClientDocument<S extends SchemaShape> {
           lastBunchSeqs?.[path] ?? 0,
           () => this.registerObserver("List"),
           descriptor.payload
+        );
+      } else if (descriptor.kind === "counter") {
+        if (typeof collectionState !== "number") {
+          throw wrongCollectionKind(path);
+        }
+        runtime = new RuntimeCounter((operation) => this.mutate(operation), path, collectionState, beforeMutation);
+      } else if (descriptor.kind === "counters") {
+        if (!(collectionState instanceof CounterMapState)) {
+          throw wrongCollectionKind(path);
+        }
+        runtime = new RuntimeCounterMap(
+          (operation) => this.mutate(operation),
+          path,
+          collectionState,
+          beforeMutation,
+          () => this.registerObserver("CounterMap")
         );
       } else if (descriptor.kind === "map") {
         if (!(collectionState instanceof MapState)) {
@@ -1006,7 +1085,8 @@ export class ClientDocument<S extends SchemaShape> {
           const ids = listComparisonIds.get(operation.path) ?? [];
           ids.push(operation.id);
           listComparisonIds.set(operation.path, ids);
-        } else if (operation.type === "map/set" || (compareRemoteTargets && operation.type === "map/delete")) {
+        } else if (operation.type === "map/set" || operation.type === "counters/add" ||
+          (compareRemoteTargets && (operation.type === "map/delete" || operation.type === "counters/delete"))) {
           const keys = mapComparisonKeys!.get(operation.path) ?? [];
           keys.push(operation.key);
           mapComparisonKeys!.set(operation.path, keys);
@@ -1046,7 +1126,7 @@ export class ClientDocument<S extends SchemaShape> {
     for (const [path, runtime] of this.collections) {
       restoreRuntime(runtime, nextOptimisticStates.get(path)!, path,
         this.observerCount > 0 && singleRemoteMove?.path === path ? singleRemoteMove.id : undefined);
-      if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList || runtime instanceof RuntimeMap) &&
+      if (isObservable(runtime) &&
         (previous !== null || conflict !== null || (isOwnCommit && !compareOwnPayloads))) {
         runtime.requireFullComparison();
       }
@@ -1100,7 +1180,7 @@ export class ClientDocument<S extends SchemaShape> {
     this.flushObservers();
   }
 
-  private registerObserver(kind: "List" | "Text" | "Map"): () => void {
+  private registerObserver(kind: "List" | "Text" | "Map" | "CounterMap"): () => void {
     if (this.transactionDepth !== 0) throw new Error(`Cannot observe ${kind} during a transaction`);
     this.observerCount++;
     return () => { this.observerCount--; };
@@ -1120,6 +1200,9 @@ export class ClientDocument<S extends SchemaShape> {
         case "map/set": case "map/delete":
           if (runtime instanceof RuntimeMap) runtime.track(operation);
           break;
+        case "counters/add": case "counters/delete":
+          if (runtime instanceof RuntimeCounterMap) runtime.track(operation);
+          break;
         default:
           break;
       }
@@ -1134,12 +1217,12 @@ export class ClientDocument<S extends SchemaShape> {
       do {
         pending = false;
         for (const runtime of this.collections.values()) {
-          if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList || runtime instanceof RuntimeMap) && runtime.hasPendingObservers) {
+          if (isObservable(runtime) && runtime.hasPendingObservers) {
             runtime.flushObservers();
           }
         }
         for (const runtime of this.collections.values()) {
-          if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList || runtime instanceof RuntimeMap) && runtime.hasPendingObservers) {
+          if (isObservable(runtime) && runtime.hasPendingObservers) {
             pending = true;
           }
         }
@@ -1171,7 +1254,7 @@ export class ClientDocument<S extends SchemaShape> {
 function checkOperationPayloads(definition: Readonly<SchemaShape>, operations: readonly Operation[]): void {
   for (const operation of operations) {
     const descriptor = Object.hasOwn(definition, operation.path) ? definition[operation.path] : undefined;
-    const payload = descriptor === undefined || descriptor.kind === "text" ? undefined : descriptor.payload;
+    const payload = descriptor === undefined || !("payload" in descriptor) ? undefined : descriptor.payload;
     if (payload === undefined) continue;
     switch (operation.type) {
       case "value/set": case "list/insert": case "list/set":

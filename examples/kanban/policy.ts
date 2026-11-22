@@ -7,7 +7,8 @@ type Operation = DocumentOperation<Shape>;
  * Example server policy. Moves need none: List moves and column changes are decided by server
  * order, so concurrent moves never duplicate a card. Card data does: `columns` and `titles` are
  * last-writer-wins Maps, so a set that arrives after the card was deleted would recreate data with
- * no position. Such a set is dropped unless the same batch adds the card. Payloads need no check
+ * no position, and a vote would count for a card that no longer exists. Such a set or vote is
+ * dropped unless the same batch adds the card. Payloads need no check
  * here: the schemas in `board.js` reject a bad column or title before this policy runs. This is not
  * authorization.
  */
@@ -15,6 +16,6 @@ export function resolveBoard({ batch, snapshot }: ServerResolveContext<Shape>): 
   const present = new Set(snapshot.data.order.values);
   for (const operation of batch.operations) if (operation.type === "list/insert") present.add(operation.value);
   const kept = batch.operations.filter((operation) =>
-    operation.type !== "map/set" || present.has(operation.key));
+    (operation.type !== "map/set" && operation.type !== "counters/add") || present.has(operation.key));
   return kept.length === batch.operations.length ? batch.operations : kept;
 }

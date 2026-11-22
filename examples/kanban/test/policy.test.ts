@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createClient, createUndoManager, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, map, PayloadValidationError, type DocumentOperation, type ServerCommit, type ServerDocument } from "../../../dist/index.js";
+import { counters, createClient, createUndoManager, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, map, PayloadValidationError, type DocumentOperation, type ServerCommit, type ServerDocument } from "../../../dist/index.js";
 import {
-  addCard, Board, cardsIn, COLUMNS, deleteCard, droppedEdits, findCard, moveCard, renameCard, watchDroppedEdits, type Shape,
+  addCard, Board, cardsIn, COLUMNS, deleteCard, droppedEdits, findCard, moveCard, renameCard, voteCard, watchDroppedEdits, type Shape,
 } from "../board.js";
 import { resolveBoard } from "../policy.ts";
 import { createBoardServer } from "../server.ts";
@@ -22,6 +22,12 @@ function network(server: ServerDocument<Shape> = createBoardServer()) {
       /** Renames as the page does: tracked, so a rename the server drops is reported. */
       rename(cardId: string, title: string) {
         const tracked = doc.track(() => renameCard(doc, cardId, title));
+        watcher.follow(tracked.settled);
+        return tracked;
+      },
+      /** Votes as the page does: tracked, so a vote the server drops is reported. */
+      vote(cardId: string, delta: 1 | -1 = 1) {
+        const tracked = doc.track(() => voteCard(doc, cardId, delta));
         watcher.follow(tracked.settled);
         return tracked;
       },
@@ -196,7 +202,7 @@ describe("Board payload schemas", () => {
     assert.throws(() => a.doc.state.titles.set("seed-ship", "x".repeat(201)), PayloadValidationError);
     assert.deepEqual(a.doc.checkpoint().pendingBatches, [], "nothing was recorded");
     // A writer without the schemas sends the same edit; the server refuses it before the policy runs.
-    const Unchecked = defineDocument({ order: list<string>(), columns: map<string>(), titles: map<string>() });
+    const Unchecked = defineDocument({ order: list<string>(), columns: map<string>(), titles: map<string>(), votes: counters() });
     const rogue = createClient(Unchecked, { clientId: n.server.openClient(), snapshot: n.server.snapshot(), onBatch() {} });
     rogue.state.columns.set("seed-ship", "trash");
     const batch = decodeClientBatch(Board, JSON.parse(JSON.stringify(rogue.checkpoint().pendingBatches[0])));
@@ -268,5 +274,58 @@ describe("Dropped edits", () => {
     ] as const;
     assert.deepEqual(droppedEdits(dropped), [{ kind: "rename", id: "x", title: "last" }, { kind: "move", id: "y" }]);
     assert.deepEqual(droppedEdits([]), []);
+  });
+});
+
+describe("Votes on the board", () => {
+  it("counts every concurrent vote, where a Map of numbers would keep only the last", async () => {
+    const n = network(), a = n.writer(), b = n.writer();
+    a.vote("seed-ship"); a.vote("seed-ship");
+    b.vote("seed-ship");
+    assert.equal(b.doc.state.votes.get("seed-ship"), 1, "each writer sees its own votes at once");
+    a.sendAll(); b.sendAll();
+    a.receive(); b.receive();
+    assert.deepEqual([a.doc.state.votes.get("seed-ship"), b.doc.state.votes.get("seed-ship")], [3, 3]);
+    assert.deepEqual(n.server.snapshot().data.votes, { "seed-ship": 3 });
+    await Promise.resolve();
+    assert.deepEqual([a.notices, b.notices], [[], []]);
+  });
+
+  it("drops a vote for a card another writer deleted first, and tells the voter", async () => {
+    const n = network(), a = n.writer(), b = n.writer();
+    a.vote("seed-ship");
+    a.sendAll(); b.receive();
+    assert.ok(deleteCard(b.doc, "seed-ship"));
+    const late = a.vote("seed-ship");
+    assert.equal(voteCard(a.doc, "missing"), false, "a card this writer does not know gets no vote");
+    b.sendAll(); a.sendAll();
+    a.receive(); b.receive();
+    assert.equal((await late.settled)?.status, "rejected");
+    assert.deepEqual(a.notices, ["Vote not counted: another writer deleted this card."]);
+    assert.deepEqual(n.server.snapshot().data.votes, {}, "no votes remain for the deleted card");
+    assert.deepEqual(droppedEdits([{ type: "counters/add", path: "votes", key: "seed-ship", delta: 1 }]),
+      [{ kind: "vote", id: "seed-ship" }]);
+  });
+
+  it("undoes only this writer's vote, and undoing a delete brings the card's votes back", () => {
+    const n = network(), a = n.writer(), b = n.writer();
+    const history = createUndoManager(a.doc, { captureTimeout: 0 });
+    a.vote("seed-ship");
+    b.vote("seed-ship"); b.vote("seed-ship");
+    b.sendAll(); a.receive();
+    assert.equal(a.doc.state.votes.get("seed-ship"), 3);
+    assert.ok(history.undo());
+    assert.equal(a.doc.state.votes.get("seed-ship"), 2, "B's votes stay");
+    assert.ok(history.redo());
+    a.sendAll(); b.receive();
+    assert.equal(b.doc.state.votes.get("seed-ship"), 3);
+
+    deleteCard(a.doc, "seed-ship");
+    a.sendAll(); b.receive();
+    assert.equal(b.doc.state.votes.get("seed-ship"), 0);
+    assert.ok(history.undo());
+    a.sendAll(); b.receive();
+    assert.deepEqual([findCard(b.doc, "seed-ship")?.card.title, b.doc.state.votes.get("seed-ship")], ["Ship articollab 0.7", 3],
+      "the policy accepts the votes because the same batch adds the card back");
   });
 });

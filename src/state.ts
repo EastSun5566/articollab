@@ -1,6 +1,7 @@
 import { ListState, type ListMoveOperation, type ListSetOperation, type ListSnapshotData } from "./list.ts";
 import { TextState, type TextSnapshotData } from "./text.ts";
 import { MapState, type MapSnapshotData } from "./map.ts";
+import { addCount, CounterMapState, type CounterMapSnapshotData } from "./counter.ts";
 import type { DocumentSchema, JsonValue, SchemaShape } from "./schema.ts";
 import type {
   ClientBatch,
@@ -13,12 +14,13 @@ import { CollectionConflictError, PendingReplayError } from "./conflict.ts";
 import { validateJsonValue } from "./json.ts";
 
 /** Collection states that are not plain Value payloads. */
-export type StructuredState = ListState<JsonValue> | TextState | MapState<JsonValue>;
+export type StructuredState = ListState<JsonValue> | TextState | MapState<JsonValue> | CounterMapState;
 
 export type CollectionState = JsonValue | StructuredState;
 
 export function isStructuredState(state: CollectionState): state is StructuredState {
-  return state instanceof ListState || state instanceof TextState || state instanceof MapState;
+  return state instanceof ListState || state instanceof TextState || state instanceof MapState ||
+    state instanceof CounterMapState;
 }
 
 // Only decoder-owned, frozen snapshots enter this cache; states remain persistent.
@@ -100,6 +102,24 @@ export function applyOperations(
         break;
       case "map/delete":
         if (!(current instanceof MapState)) {
+          throw wrongCollectionKind(operation.path);
+        }
+        states.set(operation.path, current.delete(operation));
+        break;
+      case "counter/add":
+        if (typeof current !== "number") {
+          throw wrongCollectionKind(operation.path);
+        }
+        states.set(operation.path, addCount(current, operation.delta, operation.path));
+        break;
+      case "counters/add":
+        if (!(current instanceof CounterMapState)) {
+          throw wrongCollectionKind(operation.path);
+        }
+        states.set(operation.path, current.add(operation));
+        break;
+      case "counters/delete":
+        if (!(current instanceof CounterMapState)) {
           throw wrongCollectionKind(operation.path);
         }
         states.set(operation.path, current.delete(operation));
@@ -212,6 +232,22 @@ export function initialStates<S extends SchemaShape>(
             ? decoded
             // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Typed snapshot boundary supplies the matching payload; collection loaders retain their runtime checks.
             : ListState.load(payload as ListSnapshotData)
+      );
+    } else if (descriptor.kind === "counter") {
+      const count = snapshotData === undefined ? descriptor.initialValue : payload;
+      if (typeof count !== "number" || !Number.isSafeInteger(count)) {
+        throw new Error(`Counter snapshot must be a safe integer: ${path}`);
+      }
+      states.set(path, count);
+    } else if (descriptor.kind === "counters") {
+      states.set(
+        path,
+        snapshotData === undefined
+          ? CounterMapState.empty()
+          : decoded instanceof CounterMapState
+            ? decoded
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Typed snapshot boundary supplies the matching payload; the loader checks every count.
+            : CounterMapState.load(payload as CounterMapSnapshotData)
       );
     } else if (descriptor.kind === "map") {
       states.set(

@@ -52,7 +52,7 @@ Suppose the authoritative count is 1 and you locally set it to 5:
 
 The peer's result changes the base, but your pending write still applies over it. Rejection removes that write, revealing the base.
 
-Replay uses the recorded operations, not a rerun of your transaction callback. A pending `set(5)` stays `set(5)`; it is not an intent such as “increment the latest count.”
+Replay uses the recorded operations, not a rerun of your transaction callback. A pending `set(5)` stays `set(5)`; it is not an intent such as “increment the latest count.” To record increments, use a [Counter](collections.md#counter-additions-that-all-count): a pending `add(1)` replays as an addition to the latest count.
 
 ## Why List and Text use stable IDs
 
