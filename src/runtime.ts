@@ -148,11 +148,6 @@ export interface DiscardEvent<TOperation extends Operation = Operation> {
   readonly operations: readonly Extract<TOperation, { readonly type: "list/set" | "list/move" }>[];
 }
 
-/**
- * An own acknowledged batch whose commit differs from what this writer sent: the server transformed
- * or rejected it. `dropped` lists sent operations the commit lacks, in batch order, and `added` the
- * commit's operations that were not sent, in commit order; both compare operations as JSON.
- */
 /** What the server did with one of this writer's batches, once its acknowledgement was received. */
 export interface BatchOutcome<TOperation extends Operation = Operation> {
   /** "rejected": the commit has no operations; "transformed": it is not JSON-equal to the batch. */
@@ -182,6 +177,11 @@ interface Waiter<TOperation extends Operation> {
   batch?: ClientBatch<TOperation>;
 }
 
+/**
+ * An own acknowledged batch whose commit differs from what this writer sent: the server transformed
+ * or rejected it. `dropped` lists sent operations the commit lacks, in batch order, and `added` the
+ * commit's operations that were not sent, in commit order; both compare operations as JSON.
+ */
 export interface TransformEvent<TOperation extends Operation = Operation> {
   readonly batch: ClientBatch<TOperation>;
   readonly commit: ServerCommit<TOperation>;
