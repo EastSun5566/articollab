@@ -369,7 +369,6 @@ export function createUndoManager<S extends SchemaShape>(
     get canRedo() { return redoStack.length > 0; },
     stopCapturing() { endGroups(); },
     startGroup() {
-      if (destroyed) throw new Error("This undo manager was destroyed");
       // The group's first change starts its own step.
       if (groupDepth === 0) separate = true;
       groupDepth++;

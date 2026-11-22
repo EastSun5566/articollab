@@ -192,6 +192,7 @@ describe("Undo manager", () => {
     stop();
     a.history.destroy();
     assert.throws(() => a.history.undo(), /destroyed/);
+    assert.doesNotThrow(() => { a.history.startGroup()(); }, "only undo() and redo() throw after destroy()");
     const again: UndoManager = createUndoManager(a.doc);
     assert.equal(again.canUndo, false);
     again.destroy(); again.destroy();
