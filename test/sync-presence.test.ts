@@ -81,6 +81,11 @@ describe("Presence over the sync channel", () => {
     assert.deepEqual(changes, [["Ann"], ["Ann (editing)"], []]);
     b.stop();
     await until(() => names(a).length === 0, "A to see B leave on stop");
+    // Editors may still report selections after their client stopped: ignored, not thrown.
+    b.presence.set({ name: "Ben again" });
+    assert.throws(() => { b.presence.set({ nickname: "x" } as never); }, PayloadValidationError); // oxlint-disable-line typescript/no-unsafe-type-assertion -- An invalid state on purpose.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual([b.presence.state, names(a)], [null, []], "a stopped writer does not come back");
   });
 
   it("sends a new stream everyone's state, and rebuilds after the stream is lost", async (t) => {

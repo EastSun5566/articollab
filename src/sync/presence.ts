@@ -15,7 +15,10 @@ export interface SyncPresence<P extends JsonValue = JsonValue> {
   readonly state: P | null;
   /** The other writers' states by client ID, as the push channel last delivered them. */
   readonly peers: ReadonlyMap<string, P>;
-  /** Shares `state`, or stops sharing with null. Sending is best-effort and retried by the re-sends. */
+  /**
+   * Shares `state`, or stops sharing with null. Sending is best-effort and retried by the re-sends.
+   * Once the client is stopped or failed, a valid state is ignored.
+   */
   set(state: P | null): void;
   /** Called whenever `peers` changes. Returns an unsubscribe function. */
   on(event: "change", listener: (peers: ReadonlyMap<string, P>) => void): () => void;
@@ -87,8 +90,9 @@ export function createPresence<P extends JsonValue>(
       get state() { return state; },
       get peers() { return peers; },
       set(next) {
-        if (stopped) throw new Error("This sync client was stopped");
         if (next !== null) checkState(schema, next);
+        // A stopped or failed client has left; editors may still report selections afterwards.
+        if (stopped) return;
         state = next;
         send(next);
         rearm();
