@@ -65,6 +65,8 @@ To update a view without calling `toArray()` after every change, subscribe with 
 
 ### Move an element
 
+List moves require [Articollab 0.9 or later](reference.md#compatibility). Before enabling moves in a shared document, [upgrade all its readers](recovery.md#upgrading-from-08-to-09).
+
 `move(from, to)` moves the element at index `from` so that it ends at index `to`, like moving an array item. With the List above containing `"Implement API"`:
 
 ```ts

@@ -4,6 +4,8 @@ Look up the public API and exact collaboration contracts here. For a runnable in
 
 ## Compatibility
 
+List moves and the `transform` event were introduced in Articollab 0.9. If the npm `latest` tag still points to 0.8, use `pnpm add articollab@beta` to try these features.
+
 Upgrade all participating runtimes before exchanging new operations or snapshot formats. See the [0.9 upgrade guide](recovery.md#upgrading-from-08-to-09) for List moves and the [0.8 upgrade guide](recovery.md#upgrading-from-07-to-08) for Map and checkpoint stores.
 
 Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` promises its documented `name`, JSON Pointer `path` and readable message, not exact wording.
