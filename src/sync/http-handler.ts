@@ -7,8 +7,18 @@ import {
   type ServerCheckpoint,
   type ServerDocument,
 } from "../index.ts";
+import { jsonEquals, validateJsonValue } from "../json.ts";
+import { checkPayload, type PayloadSchema } from "../payload.ts";
+import type { JsonValue } from "../schema.ts";
 
-export type SyncAction = "register" | "submit" | "reject" | "catchUp";
+export type SyncAction = "register" | "submit" | "reject" | "catchUp" | "presence";
+
+export interface SyncHandlerPresenceOptions {
+  /** Validates each writer's state; invalid ones are answered with 400. */
+  readonly schema?: PayloadSchema;
+  /** Milliseconds a state lives without being sent again. Default 30000. */
+  readonly ttl?: number;
+}
 
 export interface SyncHandlerOptions<S extends SchemaShape> {
   /**
@@ -29,6 +39,11 @@ export interface SyncHandlerOptions<S extends SchemaShape> {
   readonly heartbeatInterval?: number;
   /** Maximum open event streams; more are answered with 503. Default 1000. */
   readonly maxEventStreams?: number;
+  /**
+   * Enables `POST presence`: writers' ephemeral states, kept in memory only and pushed to every
+   * event stream as `presence` events until they are cleared or expire.
+   */
+  readonly presence?: SyncHandlerPresenceOptions;
 }
 
 /** A Fetch API handler that can also push commits made outside it to open event streams. */
@@ -43,7 +58,7 @@ export interface SyncHandler {
 
 function routeMethod(route: string): "GET" | "POST" | undefined {
   switch (route) {
-    case "clients": case "batches": case "rejections": return "POST";
+    case "clients": case "batches": case "rejections": case "presence": return "POST";
     case "commits": case "events": return "GET";
     default: return undefined;
   }
@@ -106,6 +121,11 @@ export function createSyncHandler<S extends SchemaShape>(
   const bodyLimit = nonNegativeInteger(options.bodyLimit ?? 1024 * 1024, "bodyLimit");
   const heartbeatInterval = nonNegativeInteger(options.heartbeatInterval ?? 15_000, "heartbeatInterval");
   const maxEventStreams = nonNegativeInteger(options.maxEventStreams ?? 1000, "maxEventStreams");
+  const presenceTtl = options.presence === undefined ? 0 : nonNegativeInteger(options.presence.ttl ?? 30_000, "presence.ttl");
+  if (options.presence !== undefined && presenceTtl === 0) throw new TypeError("presence.ttl must be positive");
+  /** Writers' current presence, in memory only. */
+  const presence = new Map<string, { readonly state: JsonValue; expiresAt: number }>();
+  let sweeper: ReturnType<typeof setInterval> | undefined;
   const encoder = new TextEncoder();
   const streams = new Set<EventStream>();
   let failed = false;
@@ -139,6 +159,40 @@ export function createSyncHandler<S extends SchemaShape>(
       }
     }
   }
+  const presenceFrame = (clientId: string, state: JsonValue | null) =>
+    `event: presence\ndata: ${JSON.stringify({ clientId, state })}\n\n`;
+  function broadcastPresence(clientId: string, state: JsonValue | null): void {
+    const frame = presenceFrame(clientId, state);
+    for (const stream of [...streams]) if (!stream.send(frame)) stream.close();
+  }
+  /** Removes expired states; runs only while some exist. */
+  function sweep(): void {
+    const now = Date.now();
+    for (const [clientId, entry] of [...presence]) {
+      if (entry.expiresAt > now) continue;
+      presence.delete(clientId);
+      broadcastPresence(clientId, null);
+    }
+    if (presence.size === 0 && sweeper !== undefined) { clearInterval(sweeper); sweeper = undefined; }
+  }
+  function setPresence(clientId: string, state: JsonValue | null): void {
+    const previous = presence.get(clientId);
+    if (state === null) {
+      if (previous === undefined) return;
+      presence.delete(clientId);
+      broadcastPresence(clientId, null);
+    } else {
+      presence.set(clientId, { state, expiresAt: Date.now() + presenceTtl });
+      // A re-send of the same state only extends it.
+      if (previous === undefined || !jsonEquals(previous.state, state)) broadcastPresence(clientId, state);
+    }
+    if (presence.size > 0 && sweeper === undefined) {
+      sweeper = setInterval(sweep, Math.max(1, Math.floor(presenceTtl / 3)));
+      // Presence alone must not keep a Node.js process alive.
+      if (typeof sweeper === "object" && "unref" in sweeper) sweeper.unref();
+    } else if (presence.size === 0 && sweeper !== undefined) { clearInterval(sweeper); sweeper = undefined; }
+  }
+
   async function allowed(request: Request, action: SyncAction, clientId?: string): Promise<boolean> {
     if (options.authorize === undefined) return true;
     return await options.authorize(request, clientId === undefined ? { action } : { action, clientId });
@@ -183,6 +237,10 @@ export function createSyncHandler<S extends SchemaShape>(
     }, new ByteLengthQueuingStrategy({ highWaterMark: MAX_EVENT_STREAM_BUFFER_BYTES }));
     // Commits already saved past the watermark go first; an uncovered watermark ends the stream.
     broadcast();
+    // Then everyone's current presence, which the client rebuilds from on every new stream.
+    for (const [clientId, { state }] of presence) {
+      if (stream !== undefined && !stream.send(presenceFrame(clientId, state))) { stream.close(); break; }
+    }
     return new Response(body, { status: 200, headers: {
       "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", "X-Accel-Buffering": "no",
     } });
@@ -193,7 +251,8 @@ export function createSyncHandler<S extends SchemaShape>(
     const url = new URL(request.url);
     const route = url.pathname.slice(url.pathname.lastIndexOf("/") + 1);
     const method = routeMethod(route);
-    if (method === undefined || (route === "rejections" && options.allowRejections !== true)) {
+    if (method === undefined || (route === "rejections" && options.allowRejections !== true) ||
+      (route === "presence" && options.presence === undefined)) {
       return error(404, "Unknown route");
     }
     if (request.method !== method) return error(405, "Method not allowed", { Allow: method });
@@ -225,6 +284,27 @@ export function createSyncHandler<S extends SchemaShape>(
     if (message === null) return error(413, `Body exceeds ${bodyLimit} bytes`, { Connection: "close" });
     let input: unknown;
     try { input = JSON.parse(message); } catch { return error(400, "Invalid JSON"); }
+
+    if (route === "presence") {
+      if (input === null || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== 2 ||
+        !("clientId" in input) || typeof input.clientId !== "string" || !("state" in input)) {
+        return error(400, "Expected { clientId, state }");
+      }
+      const { clientId } = input;
+      const state = input.state;
+      if (state !== null) {
+        try {
+          validateJsonValue(state, ["state"]);
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- validateJsonValue has just accepted it as JSON.
+          checkPayload(options.presence?.schema, state as JsonValue, ["state"]);
+        } catch { return error(400, "Invalid presence state"); }
+      }
+      if (!(await allowed(request, "presence", clientId))) return error(403, "Forbidden");
+      if (!server.listClients().some((session) => session.clientId === clientId)) return error(409, "Unknown client session");
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Checked to be JSON above.
+      setPresence(clientId, state as JsonValue | null);
+      return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+    }
 
     if (route === "clients") {
       if (input === null || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== 0) {

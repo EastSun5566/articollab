@@ -225,7 +225,7 @@ console.log(bob.state.body.cursorIndex(caret)); // 13
 
 `cursorIndex(cursor)` returns `undefined` while the cursor's element is unknown to that document: a peer's pending insertion that has not been committed and received yet, an insertion the server rejected or a transaction rolled back, or a cursor from another collection. Hide that position or keep showing its previous index, and try again after the next change. Deleted elements stay known, so cursors keep resolving after snapshot loads and checkpoint restores. [Undo](transactions.md#undo-and-redo) brings a deleted element back with a new ID, so a cursor bound to the old element keeps resolving to the nearest gap, not to the restored element.
 
-Validate received cursors with `decodeCursor()`, like other wire data. Articollab provides only the positions; sending presence, expiring it and drawing remote carets are up to the application. Text cursor indices count elements, like every other Text index, so convert them to editor offsets at the UI boundary. Both Text and List support cursors with the same methods.
+Validate received cursors with `decodeCursor()`, like other wire data. Articollab provides the positions, and the sync adapter can [share them as presence](sync.md#share-presence), with expiry; drawing remote carets is up to the application. Text cursor indices count elements, like every other Text index, so convert them to editor offsets at the UI boundary. Both Text and List support cursors with the same methods.
 
 See the [canonical collection contracts](reference.md#collections-and-immutable-values) for the full immutable-value and bounds rules.
 

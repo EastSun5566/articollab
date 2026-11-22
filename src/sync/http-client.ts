@@ -1,4 +1,4 @@
-import type { ClientBatch } from "../index.ts";
+import type { ClientBatch, JsonValue } from "../index.ts";
 import type { SyncSubscription, SyncTransport } from "./client.ts";
 import { readServerSentEvents } from "./sse.ts";
 
@@ -22,7 +22,7 @@ class SyncResponseError extends Error {
 }
 
 export interface HttpTransportOptions {
-  /** Base URL of the sync handler; `clients`, `batches`, `rejections` and `commits` resolve under it. */
+  /** Base URL of the sync handler; `clients`, `batches`, `rejections`, `commits`, `events` and `presence` resolve under it. */
   readonly url: string | URL;
   readonly fetch?: typeof globalThis.fetch;
   /** Extra request headers, such as authorization, read before every request. */
@@ -63,6 +63,7 @@ export function createHttpTransport(options: HttpTransportOptions): SyncTranspor
     },
     async submit(batch: ClientBatch) { await post("batches", 204, batch); },
     async reject(batch: ClientBatch) { await post("rejections", 204, batch); },
+    async publishPresence(clientId: string, state: JsonValue | null) { await post("presence", 204, { clientId, state }); },
     async commitsSince(watermark: number) {
       return parse(await request(`commits?since=${watermark}`, 200), "catch-up");
     },
@@ -79,6 +80,7 @@ export function createHttpTransport(options: HttpTransportOptions): SyncTranspor
         handlers.onOpen();
         await readServerSentEvents(response.body, (event) => {
           if (event.type === "commits") handlers.onCommits(parse(event.data, "pushed commit"));
+          else if (event.type === "presence") handlers.onPresence?.(parse(event.data, "presence"));
           else if (event.type === "gap") handlers.onGap();
         }, () => { if (!abort.signal.aborted) handlers.onActivity(); });
         if (!abort.signal.aborted) handlers.onEnd();

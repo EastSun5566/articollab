@@ -8,10 +8,12 @@ import {
   type ClientDocument,
   type DocumentOperation,
   type DocumentSchema,
+  type JsonValue,
   type SchemaShape,
   type ServerCommit,
 } from "../index.ts";
 import { readClientProgress } from "../runtime.ts";
+import { createPresence, type PresenceController, type PresenceOptions, type SyncPresence } from "./presence.ts";
 import type { CheckpointStore } from "./store.ts";
 
 /**
@@ -31,6 +33,8 @@ export interface SyncTransport {
    * returned function closes it. Without it the client polls.
    */
   subscribe?(watermark: number, handlers: SyncSubscription): () => void;
+  /** Optional presence: shares a writer's ephemeral state, or null to leave. Needed for `presence`. */
+  publishPresence?(clientId: string, state: JsonValue | null): Promise<void>;
 }
 
 /** Callbacks a transport's push channel reports to. */
@@ -41,6 +45,8 @@ export interface SyncSubscription {
   onCommits(commits: unknown): void;
   /** History no longer covers the watermark; the channel ends after this. */
   onGap(): void;
+  /** Parsed JSON `{ clientId, state }`: one writer's presence, or its departure with a null state. */
+  onPresence?(update: unknown): void;
   /** Any traffic, including heartbeats; proves the channel is alive. */
   onActivity(): void;
   /** The channel ended, with the reason when it failed. */
@@ -80,6 +86,8 @@ export interface ConnectSyncOptions<S extends SchemaShape> {
   readonly push?: boolean;
   /** Milliseconds without any push traffic, heartbeats included, before reconnecting. Default 45000; 0 disables. */
   readonly pushTimeout?: number;
+  /** Shares ephemeral per-writer state over the push channel; requires a transport with `publishPresence`. */
+  readonly presence?: PresenceOptions;
 }
 
 export interface SyncClient<S extends SchemaShape> {
@@ -118,10 +126,23 @@ function nonNegativeInteger(value: number, name: string): number {
   return value;
 }
 
+/** A sync client with presence enabled. */
+export interface PresenceSyncClient<S extends SchemaShape, P extends JsonValue = JsonValue> extends SyncClient<S> {
+  readonly presence: SyncPresence<P>;
+}
+
 /**
  * Creates or restores a document and keeps it synchronized through `transport`.
  * The client owns the document's `onBatch`: local edits are scheduled for submission automatically.
  */
+export function connectSync<S extends SchemaShape, P extends JsonValue = JsonValue>(
+  schema: DocumentSchema<S>,
+  options: ConnectSyncOptions<S> & { readonly presence: PresenceOptions<P> }
+): Promise<PresenceSyncClient<S, P>>;
+export function connectSync<S extends SchemaShape>(
+  schema: DocumentSchema<S>,
+  options: ConnectSyncOptions<S>
+): Promise<SyncClient<S>>;
 export function connectSync<S extends SchemaShape>(
   schema: DocumentSchema<S>,
   options: ConnectSyncOptions<S>
@@ -144,6 +165,9 @@ async function start<S extends SchemaShape>(
   const maxDelay = nonNegativeInteger(options.retry?.maxDelay ?? 30_000, "retry.maxDelay");
   const pushTimeout = nonNegativeInteger(options.pushTimeout ?? 45_000, "pushTimeout");
   const { transport } = options;
+  if (options.presence !== undefined && transport.publishPresence === undefined) {
+    throw new TypeError("presence requires a transport with publishPresence");
+  }
   const save = store === undefined ? options.save : (checkpoint: ClientCheckpoint<S>) => store.save(checkpoint);
   let ownsStore = store !== undefined;
   const subscribe = options.push === false ? undefined : transport.subscribe?.bind(transport);
@@ -192,11 +216,16 @@ async function start<S extends SchemaShape>(
     });
   }
   const document = doc;
+  const presence: PresenceController<JsonValue> | undefined = options.presence === undefined ? undefined : (() => {
+    const { clientId } = document.checkpoint();
+    return createPresence(options.presence, clientId, (state) => transport.publishPresence!(clientId, state));
+  })();
 
   function setStatus(next: SyncStatus): void {
     if (status === next || status === "stopped" || status === "failed") return;
     status = next;
     if (next === "gap" || next === "stopped" || next === "failed") shutdownPush();
+    if (next === "stopped" || next === "failed") presence?.stop();
     let thrown: { readonly cause: unknown } | undefined;
     for (const listener of [...listeners]) {
       try { listener(next); } catch (cause) { thrown ??= { cause }; }
@@ -321,6 +350,7 @@ async function start<S extends SchemaShape>(
     if (watchdog !== undefined) clearTimeout(watchdog);
     watchdog = undefined;
     close?.();
+    presence?.closed();
     setPush("off");
   }
   function shutdownPush(): void {
@@ -359,12 +389,18 @@ async function start<S extends SchemaShape>(
       onOpen() {
         if (!current()) return;
         pushAttempt = 0;
+        presence?.opened();
         setPush("open");
         if (!current()) return;
         armWatchdog();
         if (status === "idle" || status === "blocked") clearTimer(); // Push replaces polling.
       },
       onActivity() { if (current()) armWatchdog(); },
+      onPresence(update) {
+        if (!current()) return;
+        armWatchdog();
+        presence?.received(update);
+      },
       onCommits(input) {
         if (!current()) return;
         armWatchdog();
@@ -499,7 +535,8 @@ async function start<S extends SchemaShape>(
     });
   }
 
-  const client: SyncClient<S> = {
+  const client: SyncClient<S> & { presence?: SyncPresence } = {
+    ...(presence === undefined ? {} : { presence: presence.api }),
     doc: document,
     get status() { return status; },
     get error() { return error; },

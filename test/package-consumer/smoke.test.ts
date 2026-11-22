@@ -284,6 +284,24 @@ trackWriter.receive(decodeServerCommit(Board, roundTrip(trackServer.receive(trac
 const trackedOutcome = await tracked.settled;
 assert.deepEqual([trackedOutcome.status, trackedOutcome.dropped.map((operation) => operation.value)], ["rejected", ["dropped"]]);
 
+const presenceServer = createServer(Board);
+const presenceHandle = createSyncHandler(Board, presenceServer, { presence: { ttl: 5000 } });
+const viaPresence = async (input, init) => presenceHandle(new Request(input, init));
+const present = [];
+for (let index = 0; index < 2; index++) {
+  const sync = await connectSync(Board, { pollInterval: 0, presence: {},
+    transport: createHttpTransport({ url: "http://presence.local/api/", fetch: viaPresence }) });
+  await sync.sync();
+  present.push(sync);
+}
+present[0].presence.set({ name: "first" });
+for (let tries = 0; present[1].presence.peers.size === 0; tries++) {
+  assert.ok(tries < 500, "presence did not arrive");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+assert.deepEqual([...present[1].presence.peers.values()], [{ name: "first" }]);
+for (const sync of present) sync.stop();
+
 const syncServer = createServer(Board);
 const handle = createSyncHandler(Board, syncServer);
 const viaHandler = async (input, init) => handle(new Request(input, init));
@@ -390,6 +408,7 @@ import {
 } from "articollab";
 import {
   connectSync, createSyncHandler, type SyncClient, type SyncHandler, type SyncPushState, type SyncStatus,
+  type PresenceSyncClient, type SyncPresence, type PresenceOptions, type SyncHandlerPresenceOptions,
   type SyncSubscription, type SyncTransport, type CheckpointStore, type ConnectSyncOptions, openIndexedDbStore,
 } from "articollab/sync";
 import { openFileStore, type FileStoreOptions } from "articollab/sync/node";
@@ -516,6 +535,19 @@ void trackedChange.settled.then((outcome) => {
   outcome?.dropped.push(outcome.dropped[0]!);
 });
 type Connected = Expect<Equal<Awaited<ReturnType<typeof connectSync<Shape>>>, SyncClient<Shape>>>;
+declare const presenceSchema: StandardSchemaV1<{ name: string }>;
+declare const transportForTypes: SyncTransport;
+const withPresence = await connectSync(Board, { transport: transportForTypes, presence: { schema: presenceSchema } });
+type WithPresence = Expect<Equal<typeof withPresence, PresenceSyncClient<Shape, { name: string }>>>;
+type PresencePeers = Expect<Equal<typeof withPresence.presence.peers, ReadonlyMap<string, { name: string }>>>;
+// @ts-expect-error Not the schema's state.
+withPresence.presence.set({ nickname: "x" });
+const withoutPresence = await connectSync(Board, { transport: transportForTypes });
+// @ts-expect-error Presence is only there when enabled.
+void withoutPresence.presence;
+type PresenceApi = Expect<Equal<SyncPresence<{ name: string }>["state"], { name: string } | null>>;
+const handlerPresence: SyncHandlerPresenceOptions = { schema: presenceSchema, ttl: 1000 };
+const clientPresence: PresenceOptions<{ name: string }> = { schema: presenceSchema, republishInterval: 1000 };
 type Status = Expect<Equal<SyncClient<Shape>["status"], SyncStatus>>;
 type Handler = Expect<Equal<ReturnType<typeof createSyncHandler<Shape>>, SyncHandler>>;
 const asPlainHandler: (request: Request) => Promise<Response> = createSyncHandler(Board, server);
