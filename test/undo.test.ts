@@ -18,7 +18,7 @@ const view = (doc: ClientDocument<Shape>) => JSON.stringify([doc.state.count.val
 function setup(resolve?: (batch: Batch) => readonly Operation[]) {
   const server = createServer(Doc, resolve === undefined ? {} : { resolve: ({ batch }) => resolve(batch) });
   const log: Commit[] = [];
-  const writer = (options: { captureTimeout?: number; paths?: string[] } = {}) => {
+  const writer = (options: { captureTimeout?: number; paths?: string[]; maxSteps?: number } = {}) => {
     const batches: Batch[] = [];
     const doc = createClient(Doc, { clientId: server.openClient(), snapshot: server.snapshot(), onBatch(batch) { batches.push(batch); } });
     let received = server.snapshot().serverSeq;
@@ -254,6 +254,102 @@ describe("Undo manager", () => {
       const expected = JSON.stringify([data.count, data.items.values, data.body.value, data.tags]);
       for (const w of writers) assert.equal(view(w.doc), expected, `seed ${seed}`);
     }
+  });
+});
+
+describe("Undo limits, groups and exclusions", () => {
+  it("keeps at most maxSteps undo and redo steps, dropping the oldest", () => {
+    const { writer } = setup();
+    const a = writer({ maxSteps: 3 });
+    for (let count = 1; count <= 5; count++) a.doc.state.count.set(count);
+    let undone = 0;
+    while (a.history.undo()) undone++;
+    assert.deepEqual([undone, a.doc.state.count.value], [3, 2], "steps 1 and 2 were dropped");
+    let redone = 0;
+    while (a.history.redo()) redone++;
+    assert.deepEqual([redone, a.doc.state.count.value], [3, 5]);
+    for (const maxSteps of [0, -1, 1.5, Number.NaN]) {
+      assert.throws(() => createUndoManager(createClient(Doc, { clientId: "x", onBatch() {} }), { maxSteps }), /maxSteps/);
+    }
+    const unlimited = createUndoManager(createClient(Doc, { clientId: "y", onBatch() {} }), { maxSteps: Infinity });
+    unlimited.destroy();
+  });
+
+  it("defaults to 1000 steps", () => {
+    const doc = createClient(Doc, { clientId: "z", onBatch() {} });
+    const history = createUndoManager(doc, { captureTimeout: 0 });
+    for (let count = 1; count <= 1001; count++) doc.state.count.set(count);
+    let undone = 0;
+    while (history.undo()) undone++;
+    assert.deepEqual([undone, doc.state.count.value], [1000, 1]);
+  });
+
+  it("merges a group's changes into one step however far apart, and nests", () => {
+    mock.timers.enable({ apis: ["Date"], now: 1000 });
+    try {
+      const { writer } = setup();
+      const a = writer({ captureTimeout: 500 });
+      a.doc.state.items.push("before");
+      const end = a.history.startGroup();
+      a.doc.state.items.push("a");
+      mock.timers.tick(10_000);
+      const inner = a.history.startGroup();
+      a.doc.state.items.push("b");
+      inner(); inner();
+      mock.timers.tick(10_000);
+      a.doc.state.items.push("c");
+      end(); end();
+      a.doc.state.items.push("after");
+      assert.equal(a.history.undo(), true);
+      assert.deepEqual(a.doc.state.items.toArray(), ["before", "a", "b", "c"], "the change after a group is its own step");
+      assert.equal(a.history.undo(), true);
+      assert.deepEqual(a.doc.state.items.toArray(), ["before"], "the group is one step, apart from the change before it");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("ends open groups on undo, so a stale end does not reopen them", () => {
+    const { writer } = setup();
+    const a = writer();
+    a.doc.state.count.set(1);
+    const end = a.history.startGroup();
+    a.doc.state.count.set(2);
+    a.history.undo();
+    assert.equal(a.doc.state.count.value, 1);
+    a.doc.state.count.set(3);
+    const next = a.history.startGroup();
+    a.doc.state.count.set(4);
+    end(); // Stale: must not end the new group, so 5 still joins 4's step (captureTimeout is 0 here).
+    a.doc.state.count.set(5);
+    next();
+    a.history.undo();
+    assert.equal(a.doc.state.count.value, 3, "4 and 5 formed one group step");
+    a.history.stopCapturing();
+    assert.doesNotThrow(() => { a.history.startGroup()(); });
+  });
+
+  it("does not record ignored changes or clear redo, but still sends them", () => {
+    const { writer, server } = setup();
+    const a = writer();
+    a.doc.state.count.set(1);
+    a.doc.state.tags.set("k", "mine");
+    a.history.undo();
+    assert.equal(a.history.canRedo, true);
+    const result = a.history.ignore(() => { a.doc.state.tags.set("k", "layout"); a.doc.state.items.push("auto"); return 42; });
+    assert.equal(result, 42);
+    assert.equal(a.history.canRedo, true, "ignored changes keep redo");
+    a.send();
+    assert.deepEqual(server.snapshot().data.items.values, ["auto"], "ignored changes are still sent");
+    assert.equal(a.history.redo(), false, "the tag was changed since by the ignored change, so redo skips it");
+    assert.equal(a.doc.state.tags.get("k"), "layout");
+    assert.equal(a.history.undo(), true);
+    assert.deepEqual([a.doc.state.count.value, a.doc.state.items.toArray()], [0, ["auto"]], "the ignored insert is not undone");
+    const failure = new Error("callback failed");
+    assert.throws(() => a.history.ignore(() => { throw failure; }), (error) => error === failure);
+    a.doc.state.count.set(5);
+    assert.equal(a.history.canUndo, true, "recording resumes after a throwing callback");
+    assert.throws(() => a.doc.transact(() => a.history.ignore(() => {})), /inside a transaction/);
   });
 });
 
