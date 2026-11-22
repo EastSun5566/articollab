@@ -69,6 +69,8 @@ function dropIndex(list, y) {
 /** IndexedDB database for both writers' checkpoints; each writer has its own key. */
 const DATABASE = "articollab-kanban";
 const LABELS = ["A", "B"];
+/** Tabs that can run each writer at once; every tab is its own writer in a free slot. */
+const SLOTS = 4;
 
 /** The server's document identity. Stored checkpoints are keyed by it, so a restarted server starts fresh.
  * @param {string} url */
@@ -82,9 +84,11 @@ async function readDocumentId(url) {
   return body.documentId;
 }
 
-/** @param {string} documentId @param {string} label */
-function storeKey(documentId, label) {
-  return `${documentId}:${label}`;
+/** The key of one slot: slot 0 is the base key, slot n is `<key>#n`.
+ * @param {string} documentId @param {string} label @param {number} [slot] */
+function storeKey(documentId, label, slot = 0) {
+  const key = `${documentId}:${label}`;
+  return slot === 0 ? key : `${key}#${slot}`;
 }
 
 /** Explicit mount keeps imports free of DOM, requests and writer registration.
@@ -106,16 +110,18 @@ export async function mountKanban(root, url) {
     destroyed = true;
     for (const stop of stops) stop();
   }
-  // Stopping the writers releases their locks; a writer open in another tab keeps its saved edits.
+  // Stopping the writers releases their locks; a slot open in another tab keeps its saved edits.
   clear.addEventListener("click", async () => {
     destroy();
     if (documentId !== undefined) {
       for (const label of LABELS) {
-        try {
-          const store = await openIndexedDbStore({ database: DATABASE, key: storeKey(documentId, label) });
-          try { await store.clear(); } finally { store.close(); }
-        } catch (error) {
-          if (!(error instanceof CheckpointLockedError)) throw error;
+        for (let slot = 0; slot < SLOTS; slot++) {
+          try {
+            const store = await openIndexedDbStore({ database: DATABASE, key: storeKey(documentId, label, slot) });
+            try { await store.clear(); } finally { store.close(); }
+          } catch (error) {
+            if (!(error instanceof CheckpointLockedError)) throw error;
+          }
         }
       }
     }
@@ -128,12 +134,13 @@ export async function mountKanban(root, url) {
       const name = "Writer " + label;
       let store;
       try {
-        store = await openIndexedDbStore({ database: DATABASE, key: storeKey(documentId, label) });
+        // Each tab takes a free slot, preferring one a closed tab left unsent edits in.
+        store = await openIndexedDbStore({ database: DATABASE, key: storeKey(documentId, label), slots: SLOTS });
       } catch (error) {
         if (!(error instanceof CheckpointLockedError)) throw error;
-        // Another tab already runs this writer; a second copy would reuse its client ID.
+        // Every slot is held by another tab; a second copy of a slot would reuse its client ID.
         const pane = element("section", "writer");
-        pane.append(element("h2", undefined, name), element("p", "message", `${name} is open in another tab.`));
+        pane.append(element("h2", undefined, name), element("p", "message", `${name} is open in ${SLOTS} other tabs.`));
         writers.append(pane);
         locked++;
         continue;
@@ -148,11 +155,12 @@ export async function mountKanban(root, url) {
         throw error;
       }
       if (destroyed) { sync.stop(); break; }
-      stops.push(mountWriter(writers, name, sync, network, sync.doc.checkpoint().pendingBatches.length));
+      stops.push(mountWriter(writers, name, sync, network, store.slot, sync.doc.checkpoint().pendingBatches.length));
     }
     if (!destroyed) {
-      status.textContent = locked === LABELS.length ? "Both writers are open in another tab."
-        : "Ready. Drag cards or use their buttons; both writers update automatically. Unsent edits survive a reload.";
+      status.textContent = locked === LABELS.length ? `Both writers are open in ${SLOTS} other tabs.`
+        : "Ready. Drag cards or use their buttons; both writers update automatically. Unsent edits survive a reload, " +
+          "and another tab runs its own writers.";
     }
   } catch (error) {
     status.textContent = "Stopped: " + describeError(error);
@@ -168,17 +176,18 @@ export async function mountKanban(root, url) {
  * in place. The selection is re-read after each render.
  * @param {HTMLElement} parent @param {string} name @param {BoardSync} sync
  * @param {ReturnType<typeof createOfflineSwitch>} network
+ * @param {number} slot The store slot this tab took for the writer.
  * @param {number} [restored] Pending batches restored from the store, for a notice.
  * @returns {() => void} Stops the writer and removes its listeners.
  */
-function mountWriter(parent, name, sync, network, restored = 0) {
+function mountWriter(parent, name, sync, network, slot, restored = 0) {
   const doc = sync.doc;
   const section = element("section", "writer");
   section.setAttribute("aria-label", name);
   const heading = element("h2", undefined, name + " ");
   const badge = element("span", "badge");
   heading.append(badge);
-  const identity = element("p", "identity", doc.checkpoint().clientId);
+  const identity = element("p", "identity", `${doc.checkpoint().clientId} · tab slot ${slot + 1} of ${SLOTS}`);
   const board = element("fieldset", "board");
   const legend = element("legend", "visually-hidden", name + " board");
   const columns = element("div", "columns");
@@ -471,7 +480,7 @@ function mountWriter(parent, name, sync, network, restored = 0) {
   offline.addEventListener("change", onOffline);
   discard.addEventListener("click", onDiscard);
   refresh();
-  if (restored > 0) notify(`Restored ${restored} unsent ${restored === 1 ? "edit" : "edits"} from before the reload; they are sent once this writer is online.`);
+  if (restored > 0) notify(`Restored ${restored} unsent ${restored === 1 ? "edit" : "edits"} from before a reload or from a closed tab; they are sent once this writer is online.`);
 
   return () => {
     stopped = true;
