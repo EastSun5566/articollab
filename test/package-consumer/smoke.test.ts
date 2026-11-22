@@ -47,7 +47,7 @@ const runtimeFixture = `
 import assert from "node:assert/strict";
 import {
   assertClientBatchNamespace,
-  createClient, createServer, defineDocument, list, map, text, value,
+  createClient, createServer, createUndoManager, defineDocument, list, map, text, value,
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeCursor,
 } from "articollab";
 import { CheckpointLockedError, connectSync, createHttpTransport, createSyncHandler, openIndexedDbStore } from "articollab/sync";
@@ -245,6 +245,16 @@ transformWriter.state.items.push("dropped");
 transformWriter.receive(decodeServerCommit(Board, roundTrip(transformServer.receive(transformWriter.checkpoint().pendingBatches[0]).commit)));
 assert.deepEqual(transformed, [[["dropped"], 0]]);
 
+const undoWriter = createClient(Board, { clientId: createServer(Board).openClient(), onBatch() {} });
+const history = createUndoManager(undoWriter, { captureTimeout: 0 });
+undoWriter.state.items.push("a");
+undoWriter.state.items.delete(0);
+assert.equal(history.undo(), true);
+assert.deepEqual(undoWriter.state.items.toArray(), ["a"]);
+assert.deepEqual([history.undo(), undoWriter.state.items.toArray(), history.canUndo, history.canRedo], [true, [], false, true]);
+assert.throws(() => createUndoManager(undoWriter), /already has an undo manager/);
+history.destroy();
+
 const syncServer = createServer(Board);
 const handle = createSyncHandler(Board, syncServer);
 const viaHandler = async (input, init) => handle(new Request(input, init));
@@ -346,6 +356,7 @@ import {
   type ListChange, type ListChangeEvent,
   type ListSnapshotData, type ListSetOperation, type ListMoveOperation, type ListMoveEntry, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
   type CreateServerOptions, type ClientBatch, type ServerCommit, type ServerClientSession, type DiscardEvent, type TransformEvent,
+  createUndoManager, type UndoManager, type UndoManagerOptions,
 } from "articollab";
 import {
   connectSync, createSyncHandler, type SyncClient, type SyncHandler, type SyncPushState, type SyncStatus,
@@ -431,6 +442,13 @@ doc.on("transform", (event) => {
 });
 // @ts-expect-error Transform listeners receive transform events, not change events.
 doc.on("transform", (event: { origin: "local" }) => event);
+const undoManager: UndoManager = createUndoManager(doc, { captureTimeout: 0, paths: ["items"] } satisfies UndoManagerOptions);
+type Undone = Expect<Equal<ReturnType<UndoManager["undo"]>, boolean>>;
+// @ts-expect-error canUndo is read-only.
+undoManager.canUndo = true;
+// @ts-expect-error The only event is "change".
+undoManager.on("other", () => {});
+undoManager.destroy();
 type Connected = Expect<Equal<Awaited<ReturnType<typeof connectSync<Shape>>>, SyncClient<Shape>>>;
 type Status = Expect<Equal<SyncClient<Shape>["status"], SyncStatus>>;
 type Handler = Expect<Equal<ReturnType<typeof createSyncHandler<Shape>>, SyncHandler>>;

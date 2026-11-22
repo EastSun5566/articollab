@@ -12,6 +12,7 @@ import { HamtMap } from "./vendor/hamt.ts";
 import { validateJsonValue } from "./json.ts";
 import { CollectionObservers, elementTargets } from "./observe.ts";
 import { cursorAt, cursorIndex, type Cursor } from "./cursor.ts";
+import { historyWriter } from "./history-access.ts";
 
 export interface SavedIdRange {
   readonly bunchId: string;
@@ -330,6 +331,11 @@ export class ListState<T extends JsonValue> {
     return this.idList.has(this.positionFor(id));
   }
 
+  /** Whether an element or position ID is known, visible or as a tombstone. */
+  knows(id: Readonly<ElementId>): boolean {
+    return this.idList.isKnown(id);
+  }
+
   cursorAt(index: number, bind?: Cursor["bind"]): Cursor {
     return cursorAt(this.idList, index, bind);
   }
@@ -608,7 +614,8 @@ export class ListState<T extends JsonValue> {
   }
 
   // Lists that never moved an element skip the lookups, and their key strings, entirely.
-  private positionFor(id: Readonly<ElementId>): Readonly<ElementId> {
+  /** Where a known element sits, or its last position if deleted. */
+  positionFor(id: Readonly<ElementId>): Readonly<ElementId> {
     return this.positionOf.size === 0 ? id : this.positionOf.get(idKey(id)) ?? id;
   }
 
@@ -620,7 +627,8 @@ export class ListState<T extends JsonValue> {
     return this.idList.indexOf(this.positionFor(id));
   }
 
-  private valueFor(id: Readonly<ElementId>): T {
+  /** The value of a visible element. */
+  valueFor(id: Readonly<ElementId>): T {
     const key = idKey(id);
     const value = this.valuesById.get(key);
     if (value === undefined) {
@@ -823,6 +831,44 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
     });
     this.current = this.current.move(operation);
     this.mutate(operation);
+  }
+
+  /** ID-targeted writes for the undo manager; each records one operation like the index-based API. */
+  [historyWriter]() {
+    const write = (operation: ListOperation<string, T>, apply: (state: ListState<T>) => ListState<T>) => {
+      this.current = apply(this.current);
+      this.mutate(operation);
+    };
+    return {
+      /** Inserts `value` right after the `before` position, which may be a tombstone; returns its new ID. */
+      insertAfter: (before: Readonly<ElementId> | null, value: T): Readonly<ElementId> => {
+        this.beforeMutation();
+        validateJsonValue(value, [this.path]);
+        const operation = freezeListOperation({ type: "list/insert", path: this.path, before,
+          id: this.idGenerator.generateAfter(before), value });
+        write(operation, (state) => state.insert(operation));
+        return operation.id;
+      },
+      delete: (id: Readonly<ElementId>): void => {
+        this.beforeMutation();
+        const operation = freezeListOperation({ type: "list/delete", path: this.path, id });
+        write(operation, (state) => state.delete(operation));
+      },
+      set: (id: Readonly<ElementId>, value: T): void => {
+        this.beforeMutation();
+        validateJsonValue(value, [this.path]);
+        const operation = freezeListOperation({ type: "list/set", path: this.path, id, value });
+        write(operation, (state) => state.set(operation));
+      },
+      /** Moves the element to right after the `before` position, which may be a tombstone; returns its new position. */
+      moveAfter: (id: Readonly<ElementId>, before: Readonly<ElementId> | null): Readonly<ElementId> => {
+        this.beforeMutation();
+        const operation = freezeListOperation({ type: "list/move", path: this.path, id, before,
+          position: this.idGenerator.generateAfter(before) });
+        write(operation, (state) => state.move(operation));
+        return operation.position;
+      },
+    };
   }
 
   values(): IterableIterator<T> {

@@ -21,6 +21,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.on("change", listener)` | Subscribes to document-level events; returns an unsubscribe function. |
 | `doc.on("discard", listener)` | Subscribes to this writer's List `set()` and `move()` operations that the server applied after their element was deleted. |
 | `doc.on("transform", listener)` | Subscribes to this writer's batches that the server transformed or rejected. |
+| `createUndoManager(doc, options?)` | Undo and redo for this writer's own changes; optional `captureTimeout` (default 500 ms) and `paths`. |
 | `doc.state.body.observe(listener)` | Opt-in visible Text edits; returns an unsubscribe function. |
 | `doc.state.items.observe(listener)` | Opt-in visible List splices and in-place sets; returns an unsubscribe function. |
 | `doc.state.settings.observe(listener)` | Opt-in visible Map sets and deletes, with previous values; returns an unsubscribe function. |
@@ -113,6 +114,28 @@ Text observers run after existing callbacks at successful outermost local commit
 `cursorAt(index, bind = "left"): Cursor` requires a safe integer gap index in `0..length` and returns `{ anchor, bind }`, frozen with an owned anchor copy. With `"left"`, `anchor` is the element before the gap (`null` at index 0); with `"right"`, it is the element after the gap (`null` at `length`). `cursorIndex(cursor): number | undefined` resolves the current gap: an insertion into the gap lands after a left-bound cursor and before a right-bound one, and a deleted anchor moves the cursor to the nearest surviving gap on its side. It returns `undefined` when the anchor ID is unknown to that collection, for example a peer's uncommitted or unreceived insertion, a rejected or rolled-back insertion, or a cursor from another collection; `null` anchors always resolve. Tombstones keep anchors known across snapshots and restores. Both methods are reads that reflect optimistic state, including inside a transaction, never notify and cost O(log n). Text cursor indices count elements. Malformed indices, binds and cursor shapes throw. `decodeCursor` rejects missing or extra fields with a `WireDecodeError`. See [Stable positions with cursors](collections.md#stable-positions-with-cursors).
 
 An `onBatch`/existing-listener throw defers Text, List and Map notifications until a later successful operation. An observer baseline advances before invoking its callback; a throw stops remaining notifications and propagates without rollback or permanently disabling the document. Uncalled observers retain their baselines. After partially applying a failed observer callback, discard that mirror and resubscribe from the current elements. Subscription state is not part of checkpoints.
+
+### Undo and redo
+
+`createUndoManager(doc, { captureTimeout?, paths? })` returns `{ undo(), redo(), canUndo, canRedo, stopCapturing(), clear(), on("change", listener), destroy() }`. A document has at most one manager at a time; creating a second throws until the first is destroyed. `paths` limits recording to those collections (default: all); an unknown path throws. `captureTimeout` is a non-negative number of milliseconds (default 500).
+
+It records each local batch that touches a recorded path as a step: the touched collections' states before and after it, and the elements or keys its operations named. Peers' commits, acknowledgements and untracked paths are not recorded. A batch is merged into the latest step when it follows the previous recorded local batch by less than `captureTimeout` by `Date.now()`, unless `stopCapturing()`, `undo()` or `redo()` came in between. A batch whose effects cancel out, such as inserting and deleting one element, is not a step. A new step clears the redo steps; a batch on untracked paths does not.
+
+`undo()` reverts the latest step against the current optimistic state, writing only what nobody has changed since, compared as JSON:
+
+| Collection | Reverted when | Written |
+| --- | --- | --- |
+| Value | it still equals the step's result | the value before the step |
+| Map key | it still equals the step's result, absence included | the earlier value, or a delete |
+| List element inserted | it is still visible | `list/delete` |
+| List element deleted | it is still deleted | `list/insert` of its earlier value with a new ID, right after its last position, so it returns to its place |
+| List element set or moved | it still holds the step's value, or still sits at the step's position | `list/set` of the earlier value, or `list/move` back right after its earlier position |
+| Text elements inserted | they are still visible | `text/delete` |
+| Text elements deleted | they are still deleted | `text/insert` of the earlier text with new IDs, after the deleted run's last element |
+
+All writes of one undo form one transaction, so one batch. A reinserted element or text gets new IDs; the manager maps the old IDs to the new ones, so earlier and later steps keep following it, but cursors and application references to the old IDs do not. When a step has nothing left to revert, because other writers changed or deleted all of it or the server never applied it, it is dropped and `undo()` tries the next one. It returns whether it changed anything. `redo()` is the same for undone steps: each undo records a redo step, and each redo an undo step. Both throw, leaving the steps, while pending replay is blocked or inside a transaction.
+
+Steps are not part of checkpoints: a restored writer starts with none. They keep references to earlier collection states, which share structure with later ones; `clear()` or `destroy()` releases them. `on("change", listener)` reports each change of the steps, for example to update buttons. After `destroy()` the manager stops recording and its methods throw, except `destroy()`.
 
 ### Ordered reconciliation and blocked pending
 
@@ -244,6 +267,6 @@ Each event stream has a 4 MiB queue measured in encoded UTF-8 bytes. If a commit
 
 The server uses explicit writer sessions. Examples demonstrate application orchestration and are not exported or shipped as production adapters. In particular, browser `documentId` envelopes/headers are example-only lineage markers, not core wire fields or authentication.
 
-The [sync adapter](sync.md) provides HTTP transport with push, polling and retries, plus IndexedDB and file checkpoint stores; there is no server-side storage adapter, multi-tab sharing of one writer, snapshot fallback, schema migration, auth, presence, writer coordination, undo, rich text, bulk List editing or move between Lists. Cursors are positions only: there is no presence channel, selection type or remote-caret rendering. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
+The [sync adapter](sync.md) provides HTTP transport with push, polling and retries, plus IndexedDB and file checkpoint stores; there is no server-side storage adapter, multi-tab sharing of one writer, snapshot fallback, schema migration, auth, presence, writer coordination, rich text, bulk List editing or move between Lists. Cursors are positions only: there is no presence channel, selection type or remote-caret rendering. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
 
 [Previous: Sync adapter](sync.md) · [Next: FAQ](faq.md)

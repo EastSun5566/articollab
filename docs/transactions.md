@@ -164,6 +164,40 @@ stop();
 
 Writing the value a key already holds (by `Object.is`), deleting an absent key, or changes that cancel out within one batch emit nothing. Like a List, an acknowledgement that replaces an object with an equal decoded copy is reported as a `set`.
 
+## Undo and redo
+
+`createUndoManager(doc)` records this writer's own changes as steps and reverts them on request. Undo and redo are ordinary local edits: they are sent, resolved and acknowledged like any other batch.
+
+```ts
+import { createClient, createServer, createUndoManager, defineDocument, list } from "articollab";
+
+const Todos = defineDocument({ items: list<string>() });
+const server = createServer(Todos);
+const doc = createClient(Todos, {
+  clientId: server.openClient(),
+  onBatch() {}, // This example keeps edits local.
+});
+const history = createUndoManager(doc);
+
+doc.transact(() => {
+  doc.state.items.push("Write docs");
+  doc.state.items.push("Ship");
+});
+history.stopCapturing();
+doc.state.items.delete(0);
+
+history.undo();
+console.log(doc.state.items.toArray()); // [ 'Write docs', 'Ship' ]
+history.undo();
+console.log(doc.state.items.toArray()); // []
+history.redo();
+console.log(doc.state.items.toArray(), history.canRedo); // [ 'Write docs', 'Ship' ] true
+```
+
+Each transaction is one step, and local changes less than `captureTimeout` milliseconds apart (default 500) merge into one, so typing a word undoes as a unit. `stopCapturing()` starts a new step; the example uses it because both edits happen at once. A new change clears the redo steps. Use `canUndo`, `canRedo` and `history.on("change", ...)` to enable buttons.
+
+Only this writer's changes are recorded, and undo never overwrites a later change by someone else. It reverts a value, Map key or List element only while it still holds what this writer wrote; a step another writer has entirely superseded is skipped, and `undo()` moves on to the next one. Undoing a deletion inserts the element again at its place with a new ID, which later steps follow. See the [exact rules](reference.md#undo-and-redo).
+
 ## Callback failure is not rollback
 
 If `onBatch` throws, its batch is already pending; the local change is not emitted. If a listener throws, completed state/sequence advances remain and later listeners may not run. A server listener throws after receive has advanced state and watermark.

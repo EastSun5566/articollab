@@ -505,6 +505,21 @@ interface ClientProgress<S extends SchemaShape> {
   readonly nextPendingBatch: ClientBatch<DocumentOperation<S>> | undefined;
 }
 
+/** A local batch with every collection's state right before and after it. Internal, for undo. */
+export interface LocalStep<S extends SchemaShape> {
+  readonly batch: ClientBatch<DocumentOperation<S>>;
+  readonly before: ReadonlyMap<string, CollectionState>;
+  readonly after: ReadonlyMap<string, CollectionState>;
+}
+
+/** Internal access for the undo manager: records each local batch while attached. Initialized by ClientDocument. */
+export let attachHistory: <S extends SchemaShape>(
+  document: ClientDocument<S>, recorder: ((step: LocalStep<S>) => void) | undefined
+) => void;
+
+/** Internal: whether a transaction is open on the document. Initialized by ClientDocument. */
+export let isTransacting: <S extends SchemaShape>(document: ClientDocument<S>) => boolean;
+
 /** Internal access for the sync adapter. Initialized by ClientDocument. */
 export let readClientProgress: <S extends SchemaShape>(document: ClientDocument<S>) => ClientProgress<S>;
 
@@ -531,8 +546,21 @@ export class ClientDocument<S extends SchemaShape> {
   private notificationDepth = 0;
   private drainingObservers = false;
   private observerCount = 0;
+  private historyRecorder: ((step: LocalStep<S>) => void) | undefined;
+  /** States before the batch being built, kept only while history is attached. */
+  private batchBefore: Map<string, CollectionState> | undefined;
 
   static {
+    attachHistory = <Shape extends SchemaShape>(
+      document: ClientDocument<Shape>, recorder: ((step: LocalStep<Shape>) => void) | undefined
+    ): void => {
+      if (recorder !== undefined && document.historyRecorder !== undefined) {
+        throw new Error("This document already has an undo manager");
+      }
+      document.historyRecorder = recorder;
+      document.batchBefore = undefined;
+    };
+    isTransacting = <Shape extends SchemaShape>(document: ClientDocument<Shape>): boolean => document.transactionDepth !== 0;
     readClientProgress = <Shape extends SchemaShape>(document: ClientDocument<Shape>): ClientProgress<Shape> => {
       document.assertOutsideTransactionForCheckpoint();
       return {
@@ -575,7 +603,11 @@ export class ClientDocument<S extends SchemaShape> {
     const lastBunchSeqs = checkpoint?.lastBunchSeqs as
       | Readonly<Record<string, number>>
       | undefined;
-    const beforeMutation = () => this.assertCanMutate();
+    const beforeMutation = () => {
+      this.assertCanMutate();
+      // The first mutation of a batch runs before any collection changes.
+      if (this.historyRecorder !== undefined && this.batchBefore === undefined) this.batchBefore = this.currentStates();
+    };
 
     const publicState: Partial<
       Record<keyof S, Value<JsonValue> | List<JsonValue> | Text | MapCollection<JsonValue>>
@@ -783,6 +815,8 @@ export class ClientDocument<S extends SchemaShape> {
       throw new Error("Cannot receive a server commit during a transaction");
     }
 
+    // A mutation that failed validation may have captured states this commit is about to replace.
+    this.batchBefore = undefined;
     const expectedServerSeq = this.lastServerSeq + 1;
     if (commit.serverSeq !== expectedServerSeq) {
       throw new Error(
@@ -915,7 +949,13 @@ export class ClientDocument<S extends SchemaShape> {
     return { discarded, transform };
   }
 
+  private currentStates(): Map<string, CollectionState> {
+    return new Map([...this.collections].map(([path, runtime]) => [path, runtimeState(runtime)]));
+  }
+
   private commit(): void {
+    const before = this.batchBefore;
+    this.batchBefore = undefined;
     if (this.operations.length === 0) return;
 
     const operations = Object.freeze(
@@ -929,6 +969,9 @@ export class ClientDocument<S extends SchemaShape> {
 
     this.pendingBatches.push(batch);
     this.trackObservedOperations(operations);
+    if (before !== undefined && this.historyRecorder !== undefined) {
+      this.historyRecorder(Object.freeze({ batch, before, after: this.currentStates() }));
+    }
     this.notificationDepth++;
     try {
       this.onBatch(batch);
@@ -996,6 +1039,7 @@ export class ClientDocument<S extends SchemaShape> {
     const snapshot = this.transactionSnapshot;
     this.transactionSnapshot = undefined;
     this.operations = [];
+    this.batchBefore = undefined;
 
     if (snapshot === undefined) return;
     for (const [path, state] of snapshot) {

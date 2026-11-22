@@ -11,6 +11,7 @@ import { HamtMap } from "./vendor/hamt.ts";
 import { jsonArray, jsonPointer, type JsonPathSegment } from "./json.ts";
 import { CollectionObservers, elementTargets } from "./observe.ts";
 import { cursorAt, cursorIndex, type Cursor } from "./cursor.ts";
+import { historyWriter } from "./history-access.ts";
 
 export interface TextSnapshotData {
   readonly idList: readonly SavedIdRange[];
@@ -193,6 +194,21 @@ export class TextState {
 
   idAt(index: number): ElementId {
     return this.idList.at(index);
+  }
+
+  /** Whether the element is visible, as opposed to unknown or deleted. */
+  has(id: Readonly<ElementId>): boolean {
+    return this.idList.has(id);
+  }
+
+  /** Whether the element is known, visible or as a tombstone. */
+  knows(id: Readonly<ElementId>): boolean {
+    return this.idList.isKnown(id);
+  }
+
+  /** The index of a known element among all known elements, tombstones included. */
+  knownIndexOf(id: Readonly<ElementId>): number {
+    return this.idList.knownIds.indexOf(id);
   }
 
   cursorAt(index: number, bind?: Cursor["bind"]): Cursor {
@@ -403,7 +419,8 @@ export class TextState {
     });
   }
 
-  private valueFor(id: Readonly<ElementId>): string {
+  /** The value of a visible element. */
+  valueFor(id: Readonly<ElementId>): string {
     const key = idKey(id);
     const value = this.valuesById.get(key);
     if (value === undefined) {
@@ -562,6 +579,28 @@ export class RuntimeText implements Text {
     });
     this.current = this.current.delete(operation);
     this.mutate(operation);
+  }
+
+  /** ID-targeted writes for the undo manager; each records one operation like the index-based API. */
+  [historyWriter]() {
+    return {
+      /** Inserts `value` right after the `before` element, which may be a tombstone; returns the first new ID. */
+      insertAfter: (before: Readonly<ElementId> | null, value: string): Readonly<ElementId> => {
+        this.beforeMutation();
+        const operation = freezeTextOperation({ type: "text/insert", path: this.path, before,
+          // oxlint-disable-next-line typescript/no-misused-spread -- Text deliberately uses Unicode code points, not grapheme clusters.
+          id: this.idGenerator.generateAfter(before, [...value].length), value });
+        this.current = this.current.insert(operation);
+        this.mutate(operation);
+        return operation.id;
+      },
+      delete: (ids: readonly Readonly<ElementId>[]): void => {
+        this.beforeMutation();
+        const operation = freezeTextOperation({ type: "text/delete", path: this.path, ranges: compressIds(ids) });
+        this.current = this.current.delete(operation);
+        this.mutate(operation);
+      },
+    };
   }
 
   values(): IterableIterator<string> {
