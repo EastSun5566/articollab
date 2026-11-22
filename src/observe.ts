@@ -39,6 +39,7 @@ export class CollectionObservers<
   private readonly observers = new Set<Observer<S, E>>();
   private readonly targets = new Map<string, K>();
   private fullComparison = false;
+  private compareTransition: ((before: S, after: S) => E | undefined) | undefined;
 
   constructor(current: () => S, beforeObserve: () => () => void, kind: ObserverTargets<K>) {
     this.current = current;
@@ -63,13 +64,18 @@ export class CollectionObservers<
   track(targets: Iterable<K>): void {
     if (this.observers.size === 0) return;
     if (!this.hasPending) { this.clear(); return; }
-    if (this.fullComparison) return;
+    if (this.fullComparison) {
+      this.compareTransition = undefined;
+      return;
+    }
     for (const target of targets) this.targets.set(this.kind.key(target), this.kind.own(target));
   }
 
-  requireFullComparison(): void {
+  /** A known transition can describe its matching pair of states before falling back. */
+  requireFullComparison(compareTransition?: (before: S, after: S) => E | undefined): void {
     if (this.observers.size === 0) return;
     if (!this.hasPending) { this.clear(); return; }
+    this.compareTransition = this.fullComparison || this.targets.size > 0 ? undefined : compareTransition;
     this.fullComparison = true;
     this.targets.clear();
   }
@@ -85,7 +91,8 @@ export class CollectionObservers<
       for (const observer of [...this.observers]) {
         if (!this.observers.has(observer)) continue;
         const state = this.current();
-        const event = observer.state.changesTo(state, this.fullComparison ? undefined : this.targets.values());
+        const event = this.compareTransition?.(observer.state, state) ??
+          observer.state.changesTo(state, this.fullComparison ? undefined : this.targets.values());
         observer.state = state;
         if (event.changes.length > 0) observer.listener(event);
       }
@@ -98,5 +105,6 @@ export class CollectionObservers<
     if (this.hasPending) return;
     this.targets.clear();
     this.fullComparison = false;
+    this.compareTransition = undefined;
   }
 }

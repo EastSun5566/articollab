@@ -424,11 +424,12 @@ function runtimeVisibleEquals(
 function restoreRuntime(
   runtime: RuntimeCollection,
   state: CollectionState,
-  path: string
+  path: string,
+  singleMoveId?: Readonly<ElementId>
 ): void {
   if (runtime instanceof RuntimeList) {
     if (!(state instanceof ListState)) throw wrongCollectionKind(path);
-    runtime.restore(state);
+    runtime.restore(state, singleMoveId);
   } else if (runtime instanceof RuntimeText) {
     if (!(state instanceof TextState)) throw wrongCollectionKind(path);
     runtime.restore(state);
@@ -895,14 +896,20 @@ export class ClientDocument<S extends SchemaShape> {
     this.checkpointSnapshot = undefined;
     this.currentReplayConflict = sameConflict ? previous : conflict;
 
+    // shortcut: one remote move with no pending replay changes only the named element's position.
+    const operations: readonly Operation[] = commit.operations;
+    const operation = operations[0];
+    const singleObservedMove = this.observerCount > 0 && compareRemoteTargets && remainingBatches.length === 0 &&
+      commit.operations.length === 1 && operation?.type === "list/move" ? operation : undefined;
     for (const [path, runtime] of this.collections) {
-      restoreRuntime(runtime, nextOptimisticStates.get(path)!, path);
+      restoreRuntime(runtime, nextOptimisticStates.get(path)!, path,
+        singleObservedMove?.path === path ? singleObservedMove.id : undefined);
       if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList || runtime instanceof RuntimeMap) &&
         (previous !== null || conflict !== null || (isOwnCommit && !compareOwnPayloads))) {
         runtime.requireFullComparison();
       }
     }
-    this.trackObservedOperations(commit.operations);
+    if (singleObservedMove === undefined) this.trackObservedOperations(commit.operations);
     if (ownBatch !== undefined) this.trackObservedOperations(ownBatch.operations);
 
     if (changed) {

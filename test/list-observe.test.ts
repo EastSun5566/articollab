@@ -100,6 +100,114 @@ describe("List visible changes", () => {
     assert.deepEqual(remote.elements, ["b", "c", "a", "d"]);
   });
 
+  it("describes a single remote move without scanning either subscriber's List", (t) => {
+    const net = setup(), writer = net.client(), peer = net.client();
+    writer.doc.transact(() => { for (const item of ["a", { label: "b" }, "c", "d"]) writer.doc.state.items.push(item); });
+    net.server.receive(writer.batches.shift()!);
+    net.catchUp(writer.doc); net.catchUp(peer.doc);
+    const first = mirror(peer.doc.state.items), second = mirror(peer.doc.state.items);
+    const compare = t.mock.method(ListState.prototype, "changesTo");
+    const moved = peer.doc.state.items.get(1);
+    for (const [from, to] of [[1, 2], [2, 1], [1, 3]] as const) {
+      writer.doc.state.items.move(from, to);
+      net.server.receive(writer.batches.shift()!);
+      net.catchUp(writer.doc); net.catchUp(peer.doc);
+      for (const view of [first, second]) {
+        assert.deepEqual(view.events.at(-1)?.changes, [{ type: "move", from, to, value: moved }]);
+        assert.equal(peer.doc.state.items.get(to), moved);
+      }
+    }
+    assert.equal(first.events.length, 3);
+    assert.equal(second.events.length, 3);
+    assert.equal(compare.mock.callCount(), 0);
+  });
+
+  it("keeps remote moves to the same index and moves of deleted elements silent", (t) => {
+    const net = setup(), writer = net.client(), peer = net.client();
+    writer.doc.transact(() => { for (const item of ["a", "b", "c"]) writer.doc.state.items.push(item); });
+    net.server.receive(writer.batches.shift()!);
+    net.catchUp(writer.doc); net.catchUp(peer.doc);
+    const view = mirror(peer.doc.state.items);
+    const compare = t.mock.method(ListState.prototype, "changesTo");
+
+    writer.doc.state.items.move(0, 2);
+    const batch = writer.batches.shift()!;
+    const move = batch.operations[0]!;
+    assert.ok(move.type === "list/move");
+    net.server.receive({ ...batch, operations: [{ ...move, before: null }] });
+    net.catchUp(peer.doc);
+    assert.deepEqual(view.events, []);
+    assert.equal(compare.mock.callCount(), 0);
+    net.catchUp(writer.doc);
+
+    writer.doc.state.items.move(0, 2);
+    peer.doc.state.items.delete(0);
+    net.server.receive(peer.batches.shift()!);
+    net.catchUp(peer.doc);
+    const calls = compare.mock.callCount();
+    net.server.receive(writer.batches.shift()!);
+    net.catchUp(peer.doc);
+    assert.equal(compare.mock.callCount(), calls);
+    assert.equal(view.events.length, 1);
+    assert.deepEqual(view.elements, ["b", "c"]);
+    assert.equal(peer.doc.checkpoint().snapshot.serverSeq, 4);
+  });
+
+  it("compares the full List when a listener adds work before later subscribers run", (t) => {
+    const net = setup(), writer = net.client(), peer = net.client();
+    writer.doc.transact(() => { for (const item of ["a", "b", "c"]) writer.doc.state.items.push(item); });
+    net.server.receive(writer.batches.shift()!);
+    net.catchUp(writer.doc); net.catchUp(peer.doc);
+    const first = mirror(peer.doc.state.items, (event) => {
+      if (event.changes[0]?.type === "move") peer.doc.state.items.set(0, "B");
+    });
+    const second = mirror(peer.doc.state.items);
+    const compare = t.mock.method(ListState.prototype, "changesTo");
+    writer.doc.state.items.move(0, 2);
+    net.server.receive(writer.batches.shift()!);
+    net.catchUp(peer.doc);
+    assert.ok(compare.mock.calls.some(({ arguments: [, targets] }) => targets === undefined));
+    assert.equal(first.events.length, 2);
+    assert.equal(second.events.length, 1);
+    assert.deepEqual(first.elements, ["B", "c", "a"]);
+    assert.deepEqual(second.elements, first.elements);
+    assert.equal(peer.doc.checkpoint().pendingBatches.length, 1);
+  });
+
+  it("retains the full comparison with pending work or a lagging observer", (t) => {
+    const net = setup(), writer = net.client(), peer = net.client();
+    writer.doc.transact(() => { for (const item of ["a", "b", "c", "d"]) writer.doc.state.items.push(item); });
+    net.server.receive(writer.batches.shift()!);
+    net.catchUp(writer.doc); net.catchUp(peer.doc);
+    const early = mirror(peer.doc.state.items);
+    const compare = t.mock.method(ListState.prototype, "changesTo");
+    const failure = new Error("change listener");
+    const stop = peer.doc.on("change", () => { throw failure; });
+    writer.doc.state.items.move(0, 3);
+    net.server.receive(writer.batches.shift()!);
+    assert.throws(() => net.catchUp(peer.doc), (error) => error === failure);
+    assert.equal(early.events.length, 0);
+    stop();
+    const late = mirror(peer.doc.state.items);
+
+    writer.doc.state.items.move(0, 2);
+    net.server.receive(writer.batches.shift()!);
+    net.catchUp(peer.doc);
+    assert.deepEqual(early.elements, ["c", "d", "b", "a"]);
+    assert.deepEqual(late.elements, early.elements);
+    assert.ok(compare.mock.calls.some(({ arguments: [, targets] }) => targets === undefined));
+
+    peer.doc.state.items.set(0, "C");
+    const calls = compare.mock.callCount();
+    writer.doc.state.items.move(3, 1);
+    net.server.receive(writer.batches.shift()!);
+    net.catchUp(peer.doc);
+    assert.ok(compare.mock.calls.slice(calls).some(({ arguments: [, targets] }) => targets === undefined));
+    assert.deepEqual(early.elements, ["C", "a", "d", "b"]);
+    assert.deepEqual(late.elements, early.elements);
+    assert.equal(peer.doc.checkpoint().pendingBatches.length, 1);
+  });
+
   it("orders moves before splices and sets when one event mixes them", () => {
     const net = setup();
     const a = net.client(), b = net.client();
