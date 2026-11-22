@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createClient, createUndoManager, decodeClientCheckpoint, type DocumentOperation, type ServerCommit, type ServerDocument } from "../../../dist/index.js";
+import { createClient, createUndoManager, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, map, PayloadValidationError, type DocumentOperation, type ServerCommit, type ServerDocument } from "../../../dist/index.js";
 import {
   addCard, Board, cardsIn, COLUMNS, deleteCard, droppedEdits, findCard, moveCard, renameCard, watchDroppedEdits, type Shape,
 } from "../board.js";
@@ -185,6 +185,25 @@ describe("Kanban board under concurrent edits", () => {
     deleteCard(doc, "seed-sketch");
     assert.equal(batches.length, 5);
     for (const batch of batches) assert.equal(resolveBoard({ batch, snapshot }), batch.operations);
+  });
+});
+
+describe("Board payload schemas", () => {
+  it("rejects a bad column or title locally, and on the server from a writer that skips the check", () => {
+    const n = network(), a = n.writer();
+    assert.throws(() => a.doc.state.columns.set("seed-ship", "trash" as never), PayloadValidationError); // oxlint-disable-line typescript/no-unsafe-type-assertion -- Writes an invalid column on purpose.
+    assert.throws(() => a.doc.state.titles.set("seed-ship", " padded "), /without surrounding spaces/);
+    assert.throws(() => a.doc.state.titles.set("seed-ship", "x".repeat(201)), PayloadValidationError);
+    assert.deepEqual(a.doc.checkpoint().pendingBatches, [], "nothing was recorded");
+    // A writer without the schemas sends the same edit; the server refuses it before the policy runs.
+    const Unchecked = defineDocument({ order: list<string>(), columns: map<string>(), titles: map<string>() });
+    const rogue = createClient(Unchecked, { clientId: n.server.openClient(), snapshot: n.server.snapshot(), onBatch() {} });
+    rogue.state.columns.set("seed-ship", "trash");
+    const batch = decodeClientBatch(Board, JSON.parse(JSON.stringify(rogue.checkpoint().pendingBatches[0])));
+    const before = n.server.snapshot();
+    assert.throws(() => n.server.receive(batch), (error) => error instanceof PayloadValidationError &&
+      error.message === "Invalid payload at /columns/seed-ship: A column is one of todo, doing, done");
+    assert.deepEqual(n.server.snapshot(), before);
   });
 });
 

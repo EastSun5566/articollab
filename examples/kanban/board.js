@@ -7,24 +7,48 @@ import { defineDocument, list, map } from "../../dist/index.js";
 export const COLUMNS = /** @type {const} */ (["todo", "doing", "done"]);
 /** @typedef {(typeof COLUMNS)[number]} Column */
 
+export const MAX_TITLE_LENGTH = 200;
+
+/**
+ * A hand-written Standard Schema: `check` returns why a value is invalid, or undefined. Zod,
+ * Valibot or ArkType schemas work the same way; this example avoids the dependency.
+ * @template {import("../../dist/index.js").JsonValue} T
+ * @param {(input: unknown) => input is T} accepts @param {string} message
+ * @returns {import("../../dist/index.js").StandardSchemaV1<T>}
+ */
+function standardSchema(accepts, message) {
+  return { "~standard": { version: 1, vendor: "articollab-kanban",
+    validate: (input) => accepts(input) ? { value: input } : { issues: [{ message }] } } };
+}
+
+/** A card ID: a non-empty string of up to 100 characters. */
+const cardIdSchema = standardSchema(
+  /** @returns {input is string} */ (input) => typeof input === "string" && input.length > 0 && input.length <= 100,
+  "A card ID needs 1–100 characters");
+/** One of the board's columns. */
+const columnSchema = standardSchema(
+  /** @returns {input is Column} */ (input) => COLUMNS.some((column) => column === input),
+  `A column is one of ${COLUMNS.join(", ")}`);
+/** A title as `normalizeTitle()` produces it: trimmed, 1–200 characters. */
+const titleSchema = standardSchema(
+  /** @returns {input is string} */ (input) => typeof input === "string" && input === input.trim() &&
+    input.length > 0 && input.length <= MAX_TITLE_LENGTH,
+  `A card title needs 1–${MAX_TITLE_LENGTH} characters, without surrounding spaces`);
+
 /**
  * One List orders every card, a Map records each card's column and another its title. Each column
  * shows the cards of that column in `order`. Moving a card is a List move plus, between columns, a
  * column change; renaming touches only `titles`. Each part is decided by server order on its own,
- * so concurrent moves, column changes and renames never conflict or duplicate a card.
+ * so concurrent moves, column changes and renames never conflict or duplicate a card. The schemas
+ * validate every value written, here and on the server, so no writer can store a bad column or title.
  */
 export const Board = defineDocument({
-  // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- Pins the element type for tsc --checkJs.
-  order: /** @type {import("../../dist/index.js").ListSchema<string>} */ (list()),
-  // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- As above.
-  columns: /** @type {import("../../dist/index.js").MapSchema<Column>} */ (map()),
-  // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- As above.
-  titles: /** @type {import("../../dist/index.js").MapSchema<string>} */ (map()),
+  order: list(cardIdSchema),
+  columns: map(columnSchema),
+  titles: map(titleSchema),
 });
 /** @typedef {typeof Board.definition} Shape */
 /** @typedef {import("../../dist/index.js").ClientDocument<Shape>} BoardDocument */
-
-export const MAX_TITLE_LENGTH = 200;
 
 /** @param {string} title */
 export function normalizeTitle(title) {

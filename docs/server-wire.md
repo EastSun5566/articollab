@@ -55,7 +55,7 @@ The promise resolves once the acknowledgement is received, with `status` `"accep
 
 For the `set(12)` above it logs `Saved as 10 instead.` Identical acknowledgements, including decoded copies, are silent. See the [reference](reference.md#mutations-transactions-and-events) for exact matching and ordering.
 
-The resolver receives the pre-batch snapshot and returns operations synchronously. Return `batch.operations` to accept unchanged, a valid operation set to transform, or `[]` to acknowledge without an authoritative effect. It need not return one operation per input.
+The resolver receives the pre-batch snapshot and returns operations synchronously. With [payload schemas](collections.md#validate-payloads), it only ever sees valid payloads, and its own output is validated too. Return `batch.operations` to accept unchanged, a valid operation set to transform, or `[]` to acknowledge without an authoritative effect. It need not return one operation per input.
 
 For explicit cancellation, trusted application code can call `server.reject(originalBatch)`. It skips the resolver and incoming operation application. A previously accepted batch cannot become rejected: an identical latest retry returns its original result through either entrypoint.
 

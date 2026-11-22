@@ -53,6 +53,7 @@ import {
   type CollectionState,
 } from "./state.ts";
 import { canonicalJson, jsonEquals, validateJsonValue } from "./json.ts";
+import { checkPayload, type PayloadSchema } from "./payload.ts";
 
 export interface ValueSetOperation<
   Path extends string = string,
@@ -266,17 +267,20 @@ class RuntimeValue<T extends JsonValue> implements Value<T> {
   private readonly path: string;
   private readonly mutate: (operation: ValueSetOperation<string, T>) => void;
   private readonly beforeMutation: () => void;
+  private readonly payload: PayloadSchema | undefined;
 
   constructor(
     mutate: (operation: ValueSetOperation<string, T>) => void,
     path: string,
     initialValue: T,
-    beforeMutation: () => void
+    beforeMutation: () => void,
+    payload: PayloadSchema | undefined
   ) {
     this.mutate = mutate;
     this.path = path;
     this.current = initialValue;
     this.beforeMutation = beforeMutation;
+    this.payload = payload;
   }
 
   get state(): T {
@@ -294,6 +298,7 @@ class RuntimeValue<T extends JsonValue> implements Value<T> {
   set(nextValue: T): void {
     this.beforeMutation();
     validateJsonValue(nextValue, [this.path]);
+    checkPayload(this.payload, nextValue, [this.path]);
     this.current = nextValue;
     this.mutate(
       Object.freeze({
@@ -663,7 +668,8 @@ export class ClientDocument<S extends SchemaShape> {
           (operation) => this.mutate(operation),
           path,
           collectionState,
-          beforeMutation
+          beforeMutation,
+          descriptor.payload
         );
       } else if (descriptor.kind === "list") {
         if (!(collectionState instanceof ListState)) {
@@ -676,7 +682,8 @@ export class ClientDocument<S extends SchemaShape> {
           collectionState,
           beforeMutation,
           lastBunchSeqs?.[path] ?? 0,
-          () => this.registerObserver("List")
+          () => this.registerObserver("List"),
+          descriptor.payload
         );
       } else if (descriptor.kind === "map") {
         if (!(collectionState instanceof MapState)) {
@@ -688,7 +695,8 @@ export class ClientDocument<S extends SchemaShape> {
           collectionState,
           beforeMutation,
           (callback) => { this.transact(callback); },
-          () => this.registerObserver("Map")
+          () => this.registerObserver("Map"),
+          descriptor.payload
         );
       } else {
         if (!(collectionState instanceof TextState)) {
@@ -1159,6 +1167,25 @@ export class ClientDocument<S extends SchemaShape> {
   }
 }
 
+/** Throws a PayloadValidationError for the first written value its collection's schema rejects. */
+function checkOperationPayloads(definition: Readonly<SchemaShape>, operations: readonly Operation[]): void {
+  for (const operation of operations) {
+    const descriptor = Object.hasOwn(definition, operation.path) ? definition[operation.path] : undefined;
+    const payload = descriptor === undefined || descriptor.kind === "text" ? undefined : descriptor.payload;
+    if (payload === undefined) continue;
+    switch (operation.type) {
+      case "value/set": case "list/insert": case "list/set":
+        checkPayload(payload, operation.value, [operation.path]);
+        break;
+      case "map/set":
+        checkPayload(payload, operation.value, [operation.path, operation.key]);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
 /** A synchronous authoritative document that resolves and orders client batches. */
 export class ServerDocument<S extends SchemaShape> {
   private authoritativeStates: Map<string, CollectionState>;
@@ -1171,6 +1198,7 @@ export class ServerDocument<S extends SchemaShape> {
   private history: ServerCommit<DocumentOperation<S>>[];
   private historyStart = 0;
   private readonly resolve: ServerResolver<S> | undefined;
+  private readonly definition: Readonly<S>;
   private nextServerSeq = 1;
   private receiving = false;
 
@@ -1178,6 +1206,7 @@ export class ServerDocument<S extends SchemaShape> {
     schema: DocumentSchema<S>,
     options: CreateServerOptions<S> = {}
   ) {
+    this.definition = schema.definition;
     const allowCustomClientNamespaces = options.allowCustomClientNamespaces;
     if (allowCustomClientNamespaces !== undefined && typeof allowCustomClientNamespaces !== "boolean") {
       throw new TypeError("allowCustomClientNamespaces must be a boolean");
@@ -1343,6 +1372,8 @@ export class ServerDocument<S extends SchemaShape> {
       if (!reject && !this.allowCustomClientNamespaces) {
         assertClientBatchNamespace(ownedBatch, ownedBatch.clientId);
       }
+      // A rejected batch is never applied, so its payloads need not be valid.
+      if (!reject) checkOperationPayloads(this.definition, incomingOperations);
       const states = this.authoritativeStates;
       const watermark = this.nextServerSeq - 1;
       let snapshot: DocumentSnapshot<S> | undefined;
@@ -1365,6 +1396,7 @@ export class ServerDocument<S extends SchemaShape> {
       }
 
       const operations = freezeOperations<DocumentOperation<S>>(resolvedOperations);
+      checkOperationPayloads(this.definition, operations);
       const nextAuthoritativeStates = new Map(this.authoritativeStates);
       applyOperations(nextAuthoritativeStates, operations);
 

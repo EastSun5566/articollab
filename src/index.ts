@@ -101,3 +101,12 @@ export {
 
 export { assertClientBatchNamespace } from "./namespace.ts";
 export { createUndoManager, type UndoManager, type UndoManagerOptions } from "./undo.ts";
+export {
+  PayloadValidationError,
+  type PayloadOf,
+  type PayloadSchema,
+  type StandardSchemaV1,
+  type StandardSchemaV1Issue,
+  type StandardSchemaV1Props,
+  type StandardSchemaV1Result,
+} from "./payload.ts";
