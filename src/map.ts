@@ -1,6 +1,7 @@
 import type { JsonValue } from "./schema.ts";
 import { HamtMap } from "./vendor/hamt.ts";
 import { validateJsonValue } from "./json.ts";
+import { checkPayload, type PayloadSchema } from "./payload.ts";
 import { CollectionObservers, type ObserverTargets } from "./observe.ts";
 
 export interface MapSetOperation<
@@ -193,6 +194,7 @@ export class RuntimeMap<T extends JsonValue> implements MapCollection<T> {
   private readonly beforeMutation: () => void;
   private readonly transact: (callback: () => void) => void;
   private readonly observers: CollectionObservers<MapState<T>, MapChangeEvent<T>, string>;
+  private readonly payload: PayloadSchema | undefined;
 
   constructor(
     mutate: (operation: MapOperation<string, T>) => void,
@@ -200,8 +202,10 @@ export class RuntimeMap<T extends JsonValue> implements MapCollection<T> {
     initialState: MapState<T>,
     beforeMutation: () => void,
     transact: (callback: () => void) => void,
-    beforeObserve: () => () => void
+    beforeObserve: () => () => void,
+    payload?: PayloadSchema
   ) {
+    this.payload = payload;
     this.mutate = mutate;
     this.path = path;
     this.current = initialState;
@@ -232,6 +236,7 @@ export class RuntimeMap<T extends JsonValue> implements MapCollection<T> {
     requireKey(key);
     this.beforeMutation();
     validateJsonValue(value, [this.path, key]);
+    checkPayload(this.payload, value, [this.path, key]);
     const operation = freezeMapOperation({ type: "map/set", path: this.path, key, value });
     this.current = this.current.set(operation);
     this.mutate(operation);

@@ -13,6 +13,7 @@ import { validateJsonValue } from "./json.ts";
 import { CollectionObservers, elementTargets } from "./observe.ts";
 import { cursorAt, cursorIndex, type Cursor } from "./cursor.ts";
 import { historyWriter } from "./history-access.ts";
+import { checkPayload, type PayloadSchema } from "./payload.ts";
 
 export interface SavedIdRange {
   readonly bunchId: string;
@@ -730,6 +731,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
   private readonly beforeMutation: () => void;
   private bunchSeq: number;
   private readonly observers: CollectionObservers<ListState<T>, ListChangeEvent<T>, Readonly<ElementId>>;
+  private readonly payload: PayloadSchema | undefined;
 
   constructor(
     mutate: (operation: ListOperation<string, T>) => void,
@@ -738,11 +740,13 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
     initialState: ListState<T>,
     beforeMutation: () => void,
     lastBunchSeq: number,
-    beforeObserve: () => () => void
+    beforeObserve: () => () => void,
+    payload?: PayloadSchema
   ) {
     this.mutate = mutate;
     this.path = path;
     this.current = initialState;
+    this.payload = payload;
 
     this.beforeMutation = beforeMutation;
     this.observers = new CollectionObservers(() => this.current, beforeObserve, elementTargets);
@@ -778,6 +782,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
 
     this.beforeMutation();
     validateJsonValue(value, [this.path]);
+    checkPayload(this.payload, value, [this.path]);
     const operation = freezeListOperation({
       type: "list/set", path: this.path, id: this.current.logicalAt(index), value,
     });
@@ -792,6 +797,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
 
     this.beforeMutation();
     validateJsonValue(value, [this.path]);
+    checkPayload(this.payload, value, [this.path]);
     const before = index === 0 ? null : this.current.positionAt(index - 1);
     const operation = freezeListOperation({
       type: "list/insert",
@@ -857,6 +863,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
       insertAfter: (before: Readonly<ElementId> | null, value: T): Readonly<ElementId> => {
         this.beforeMutation();
         validateJsonValue(value, [this.path]);
+        checkPayload(this.payload, value, [this.path]);
         const operation = freezeListOperation({ type: "list/insert", path: this.path, before,
           id: this.idGenerator.generateAfter(before), value });
         write(operation, (state) => state.insert(operation));
@@ -870,6 +877,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
       set: (id: Readonly<ElementId>, value: T): void => {
         this.beforeMutation();
         validateJsonValue(value, [this.path]);
+        checkPayload(this.payload, value, [this.path]);
         const operation = freezeListOperation({ type: "list/set", path: this.path, id, value });
         write(operation, (state) => state.set(operation));
       },

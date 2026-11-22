@@ -130,6 +130,44 @@ Text snapshots preserve these boundaries across restore. See [Text snapshot boun
 
 One string insertion uses a continuous ID range. One delete produces one operation containing compressed target ranges. `insert(index, "")` and `delete(index, 0)` validate bounds, then do nothing. Counts/indices must be safe integers; deletions must fit completely.
 
+## Validate payloads
+
+Value, List and Map payloads are only checked to be JSON unless you give the collection a schema. Pass any [Standard Schema](https://standardschema.dev), such as one from Zod, Valibot or ArkType, and the payload type comes from it:
+
+```ts
+import { z } from "zod";
+
+const Board = defineDocument({
+  title: value("Untitled", z.string().max(200)),
+  cards: list(z.object({ title: z.string().min(1), done: z.boolean() })),
+  columns: map(z.enum(["todo", "doing", "done"])),
+});
+```
+
+Every value written is validated: locally before the edit changes anything, and again by the server before its resolver runs and before it applies the resolver's result, so a writer that skips the check cannot store an invalid value. A rejected value throws `PayloadValidationError`, a `TypeError` with the collection `path` (and the Map key) and the schema's `issues`. Schemas must validate synchronously. They only check: the value written is the one you passed, never a transformed output such as a trimmed or defaulted copy.
+
+A schema can also be a small object of your own, with no dependency:
+
+```ts
+const shortTitle: StandardSchemaV1<string> = {
+  "~standard": {
+    version: 1,
+    vendor: "my-app",
+    validate: (input) => typeof input === "string" && input.length <= 20
+      ? { value: input }
+      : { issues: [{ message: "Use up to 20 characters" }] },
+  },
+};
+const Notes = defineDocument({ titles: map(shortTitle) });
+const notes = createClient(Notes, { clientId: "notes", onBatch() {} });
+try {
+  notes.state.titles.set("a", "A title that is far too long");
+} catch (error) {
+  if (error instanceof PayloadValidationError) console.log(error.path, error.message);
+  // [ 'titles', 'a' ] Invalid payload at /titles/a: Use up to 20 characters
+}
+```
+
 ## Stable positions with cursors
 
 An index is only valid for the view it was read from: a remote insertion or deletion earlier in the Text or List moves everything after it. To keep a caret or selection, or to show another writer's position, store a cursor instead. A cursor is a frozen JSON object that names the element on one side of a gap, so it follows that element through later edits:

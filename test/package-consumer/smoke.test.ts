@@ -47,7 +47,7 @@ const runtimeFixture = `
 import assert from "node:assert/strict";
 import {
   assertClientBatchNamespace,
-  createClient, createServer, createUndoManager, defineDocument, list, map, text, value,
+  createClient, createServer, createUndoManager, defineDocument, list, map, text, value, PayloadValidationError,
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeCursor,
 } from "articollab";
 import { CheckpointLockedError, connectSync, createHttpTransport, createSyncHandler, openIndexedDbStore } from "articollab/sync";
@@ -264,6 +264,17 @@ assert.equal(grouped.undo(), true);
 assert.deepEqual([undoWriter.state.items.toArray(), grouped.canUndo], [["ignored"], false]);
 grouped.destroy();
 
+const shortTag = { "~standard": { version: 1, vendor: "smoke", validate: (input) =>
+  typeof input === "string" && input.length <= 3 ? { value: input } : { issues: [{ message: "Too long" }] } } };
+const Tagged = defineDocument({ tags: map(shortTag) });
+const taggedServer = createServer(Tagged);
+const tagged = createClient(Tagged, { clientId: taggedServer.openClient(), onBatch() {} });
+assert.throws(() => tagged.state.tags.set("k", "long"), (error) => error instanceof PayloadValidationError &&
+  error.message === "Invalid payload at /tags/k: Too long");
+const looseTags = createClient(defineDocument({ tags: map() }), { clientId: taggedServer.openClient(), onBatch() {} });
+looseTags.state.tags.set("k", "long");
+assert.throws(() => taggedServer.receive(decodeClientBatch(Tagged, roundTrip(looseTags.checkpoint().pendingBatches[0]))), PayloadValidationError);
+
 const trackServer = createServer(Board, { resolve: ({ batch }) => batch.operations.filter((operation) => operation.type !== "list/insert") });
 const trackWriter = createClient(Board, { clientId: trackServer.openClient(), onBatch() {} });
 const tracked = trackWriter.track(() => { trackWriter.state.items.push("dropped"); return 7; });
@@ -375,6 +386,7 @@ import {
   type ListSnapshotData, type ListSetOperation, type ListMoveOperation, type ListMoveEntry, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
   type CreateServerOptions, type ClientBatch, type ServerCommit, type ServerClientSession, type DiscardEvent, type TransformEvent,
   createUndoManager, type UndoManager, type UndoManagerOptions, type BatchOutcome, type TrackedChange,
+  PayloadValidationError, type StandardSchemaV1, type PayloadOf,
 } from "articollab";
 import {
   connectSync, createSyncHandler, type SyncClient, type SyncHandler, type SyncPushState, type SyncStatus,
@@ -474,6 +486,25 @@ undoManager.ignore(async () => {});
 // @ts-expect-error maxSteps is a number.
 createUndoManager(doc, { maxSteps: "10" });
 undoManager.destroy();
+const columnSchema: StandardSchemaV1<"todo" | "done"> = { "~standard": { version: 1, vendor: "types",
+  validate: (input) => input === "todo" || input === "done" ? { value: input } : { issues: [{ message: "No" }] } } };
+const Typed = defineDocument({ columns: map(columnSchema), stage: value("todo", columnSchema), order: list(columnSchema) });
+type Column = Expect<Equal<PayloadOf<typeof columnSchema>, "todo" | "done">>;
+const typedDoc = createClient(Typed, { clientId: "typed", onBatch() {} });
+type TypedValue = Expect<Equal<typeof typedDoc.state.stage.value, "todo" | "done">>;
+// @ts-expect-error Not a column.
+typedDoc.state.columns.set("x", "trash");
+// @ts-expect-error The initial value must satisfy the schema's input type.
+value("trash", columnSchema);
+const undefinedInput: StandardSchemaV1<{ a?: string }> = { "~standard": { version: 1, vendor: "types", validate: (input) => ({ value: input as { a?: string } }) } };
+// An optional property is allowed: JSON validation still rejects an explicit undefined at runtime.
+type OptionalField = Expect<Equal<PayloadOf<typeof undefinedInput>, { a?: string }>>;
+list(undefinedInput);
+const dateInput: StandardSchemaV1<Date> = { "~standard": { version: 1, vendor: "types", validate: (input) => ({ value: input as Date }) } };
+// @ts-expect-error A schema whose input is not JSON is rejected.
+list(dateInput);
+const payloadError = new PayloadValidationError(["tags", "k"], [{ message: "Too long" }]);
+type PayloadPath = Expect<Equal<typeof payloadError.path, readonly (string | number)[]>>;
 const trackedChange = doc.track(() => "value");
 type Tracked = Expect<Equal<typeof trackedChange, TrackedChange<string, Operation>>>;
 type TrackedStatus = Expect<Equal<NonNullable<Awaited<typeof trackedChange.settled>>["status"], "accepted" | "transformed" | "rejected">>;
