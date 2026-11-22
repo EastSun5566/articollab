@@ -61,6 +61,8 @@ export {
   type ChangeEvent,
   type DiscardEvent,
   type TransformEvent,
+  type BatchOutcome,
+  type TrackedChange,
   type ClientBatch,
   type ClientBatchRef,
   type ClientCheckpoint,

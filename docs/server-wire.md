@@ -43,6 +43,16 @@ const stop = doc.on("transform", ({ commit, added }) => {
 });
 ```
 
+To follow one change rather than every batch, make it with `doc.track()`. It works like `transact()` and also returns the batch and a promise of what the server did with it:
+
+```ts
+const { settled } = doc.track(() => { doc.state.count.value = 12; });
+const outcome = await settled;
+console.log(outcome?.status, outcome?.added); // transformed [ { type: 'value/set', path: 'count', value: 10 } ]
+```
+
+The promise resolves once the acknowledgement is received, with `status` `"accepted"`, `"transformed"` or `"rejected"`, and never rejects. `doc.settled(batch)` returns the same promise for any pending batch, such as one restored from a checkpoint. See the [exact contract](reference.md#mutations-transactions-and-events).
+
 For the `set(12)` above it logs `Saved as 10 instead.` Identical acknowledgements, including decoded copies, are silent. See the [reference](reference.md#mutations-transactions-and-events) for exact matching and ordering.
 
 The resolver receives the pre-batch snapshot and returns operations synchronously. Return `batch.operations` to accept unchanged, a valid operation set to transform, or `[]` to acknowledge without an authoritative effect. It need not return one operation per input.

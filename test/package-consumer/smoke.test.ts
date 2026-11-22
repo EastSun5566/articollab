@@ -255,6 +255,15 @@ assert.deepEqual([history.undo(), undoWriter.state.items.toArray(), history.canU
 assert.throws(() => createUndoManager(undoWriter), /already has an undo manager/);
 history.destroy();
 
+const trackServer = createServer(Board, { resolve: ({ batch }) => batch.operations.filter((operation) => operation.type !== "list/insert") });
+const trackWriter = createClient(Board, { clientId: trackServer.openClient(), onBatch() {} });
+const tracked = trackWriter.track(() => { trackWriter.state.items.push("dropped"); return 7; });
+assert.equal(tracked.value, 7);
+assert.strictEqual(trackWriter.settled(tracked.batch), tracked.settled);
+trackWriter.receive(decodeServerCommit(Board, roundTrip(trackServer.receive(tracked.batch).commit)));
+const trackedOutcome = await tracked.settled;
+assert.deepEqual([trackedOutcome.status, trackedOutcome.dropped.map((operation) => operation.value)], ["rejected", ["dropped"]]);
+
 const syncServer = createServer(Board);
 const handle = createSyncHandler(Board, syncServer);
 const viaHandler = async (input, init) => handle(new Request(input, init));
@@ -356,7 +365,7 @@ import {
   type ListChange, type ListChangeEvent,
   type ListSnapshotData, type ListSetOperation, type ListMoveOperation, type ListMoveEntry, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
   type CreateServerOptions, type ClientBatch, type ServerCommit, type ServerClientSession, type DiscardEvent, type TransformEvent,
-  createUndoManager, type UndoManager, type UndoManagerOptions,
+  createUndoManager, type UndoManager, type UndoManagerOptions, type BatchOutcome, type TrackedChange,
 } from "articollab";
 import {
   connectSync, createSyncHandler, type SyncClient, type SyncHandler, type SyncPushState, type SyncStatus,
@@ -449,6 +458,16 @@ undoManager.canUndo = true;
 // @ts-expect-error The only event is "change".
 undoManager.on("other", () => {});
 undoManager.destroy();
+const trackedChange = doc.track(() => "value");
+type Tracked = Expect<Equal<typeof trackedChange, TrackedChange<string, Operation>>>;
+type TrackedStatus = Expect<Equal<NonNullable<Awaited<typeof trackedChange.settled>>["status"], "accepted" | "transformed" | "rejected">>;
+type Outcome = Expect<Equal<ReturnType<typeof doc.settled>, Promise<BatchOutcome<Operation>>>>;
+// @ts-expect-error track() takes a synchronous callback, like transact().
+doc.track(async () => {});
+void trackedChange.settled.then((outcome) => {
+  // @ts-expect-error Outcome arrays are readonly.
+  outcome?.dropped.push(outcome.dropped[0]!);
+});
 type Connected = Expect<Equal<Awaited<ReturnType<typeof connectSync<Shape>>>, SyncClient<Shape>>>;
 type Status = Expect<Equal<SyncClient<Shape>["status"], SyncStatus>>;
 type Handler = Expect<Equal<ReturnType<typeof createSyncHandler<Shape>>, SyncHandler>>;

@@ -16,7 +16,7 @@ const result = doc.transact(() => {
 // result === "done"; one batch with three operations; one local change.
 ```
 
-Outside a transaction, each actual mutation creates its own batch. An empty transaction creates none. Value assignment still records an operation when the value is unchanged.
+Outside a transaction, each actual mutation creates its own batch. An empty transaction creates none. Value assignment still records an operation when the value is unchanged. To learn what the server did with a batch, make it with [`doc.track()`](server-wire.md#accept-transform-or-reject) instead.
 
 Transactions are synchronous. Do not pass an async callback. An exception escaping the outer callback rolls back its visible mutations and does not consume a local batch sequence. Already allocated List/Text IDs are not reused.
 
