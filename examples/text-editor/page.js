@@ -2,18 +2,8 @@
 import { connectSync, createHttpTransport } from "../../dist/sync/index.js";
 import { Board } from "../browser-http-smoke/smoke.js";
 import { createTextEditor } from "./editor.js";
-import { createPresenceChannel } from "./presence.js";
+import { selectionOf, selectionSchema } from "./presence.js";
 import { createOfflineSwitch, describeSync } from "../sync-ui.js";
-
-const PRESENCE_INTERVAL = 1000;
-/** Republish an unchanged selection before the relay's 15-second expiry. */
-const PRESENCE_HEARTBEAT = 5000;
-
-/** Presence is best-effort: failures are shown on the pane and never stop the editors.
- * @param {{presenceStatus: HTMLParagraphElement}} pane @param {unknown} error */
-function presenceFailed(pane, error) {
-  pane.presenceStatus.textContent = "Presence unavailable: " + (error instanceof Error ? error.message : String(error));
-}
 
 /** @param {readonly import("./binding.js").RemoteStatus[]} statuses @param {readonly string[]} labels */
 function describePresence(statuses, labels) {
@@ -43,18 +33,15 @@ export async function mountTextEditors(root, url) {
   const columns = document.createElement("div");
   columns.className = "editors";
   root.append(status, columns);
-  /** @type {{sync: import("../../dist/sync/index.js").SyncClient<typeof Board.definition>,
-   * editor: Awaited<ReturnType<typeof createTextEditor>>, details: HTMLPreElement,
-   * presence: ReturnType<typeof createPresenceChannel>, presenceStatus: HTMLParagraphElement,
-   * polling: boolean, published: number, cleanup: () => void}[]} */
+  /** @type {{sync: import("../../dist/sync/index.js").PresenceSyncClient<typeof Board.definition,
+   *   import("./presence.js").SelectionPresence>,
+   * editor: Awaited<ReturnType<typeof createTextEditor>>, details: HTMLPreElement, cleanup: () => void}[]} */
   const panes = [];
   let destroyed = false, failed = false;
   /** @type {unknown} */
   let failure;
   /** Writer labels by client ID, for naming remote carets. @type {Map<string, string>} */
   const labels = new Map();
-  /** @type {ReturnType<typeof setInterval> | undefined} */
-  let timer;
 
   /** A binding failure stops the page; the sync clients keep their checkpoints. @param {unknown} error */
   function stop(error) {
@@ -65,39 +52,33 @@ export async function mountTextEditors(root, url) {
       ". Inspect and preserve the current checkpoints. Completed edits were not rolled back.";
     status.dataset.state = "error";
   }
-  /** @param {(typeof panes)[number]} pane */
+  /** Shares the pane's main selection as cursors; the sync client re-sends it so it does not expire.
+   * @param {(typeof panes)[number]} pane */
   function publish(pane) {
     if (destroyed || failed) return;
-    pane.published = Date.now();
-    try { pane.presence.publish(pane.editor.selectionCursors()).catch((error) => presenceFailed(pane, error)); }
-    catch (error) { presenceFailed(pane, error); }
+    try { pane.sync.presence.set({ selection: pane.editor.selectionCursors() }); }
+    catch (error) { stop(error); }
   }
-  /** @param {(typeof panes)[number]} pane */
-  async function poll(pane) {
-    // Skip a tick rather than queue requests or redraw under an active input-method composition.
-    if (destroyed || failed || pane.polling || pane.editor.isComposing()) return;
-    pane.polling = true;
-    try {
-      const entries = await pane.presence.poll();
-      if (destroyed || failed) return;
-      pane.editor.setRemote(entries.flatMap(({ clientId, selection }) => selection === null ? []
-        : [{ label: labels.get(clientId) ?? clientId, selection }]));
-    } catch (error) { presenceFailed(pane, error); }
-    finally { pane.polling = false; }
+  /** Draws the other writers' selections, but not under an active input-method composition.
+   * @param {(typeof panes)[number]} pane */
+  function showPeers(pane) {
+    if (destroyed || failed || pane.editor.isComposing()) return;
+    pane.editor.setRemote([...pane.sync.presence.peers].flatMap(([clientId, state]) => {
+      const selection = selectionOf(state);
+      return selection === null ? [] : [{ label: labels.get(clientId) ?? clientId, selection }];
+    }));
   }
 
   function destroy() {
     if (destroyed) return;
     destroyed = true;
-    clearInterval(timer);
-    // Best-effort: hide this page's carets now instead of after the relay expiry.
-    for (const pane of panes) pane.presence.publish(null).catch(() => {});
+    // stop() also tells the other writers this one left, so its caret disappears at once.
     for (const pane of panes) { pane.sync.stop(); pane.cleanup(); pane.editor.destroy(); }
   }
   try {
     for (const label of ["A", "B"]) {
       const network = createOfflineSwitch();
-      const sync = await connectSync(Board, { pollInterval: 1000,
+      const sync = await connectSync(Board, { pollInterval: 1000, presence: { schema: selectionSchema },
         transport: createHttpTransport({ url: new URL("/sync/", url), fetch: network.fetch }) });
       if (destroyed) { sync.stop(); break; }
       const clientId = sync.doc.checkpoint().clientId;
@@ -173,7 +154,9 @@ export async function mountTextEditors(root, url) {
       editor = await createTextEditor(parent, sync.doc, {
         label: "Writer " + label + " text",
         canEdit: () => !destroyed && !failed && sync.status !== "failed" && sync.status !== "gap",
-        onError: stop, onComposition() {},
+        onError: stop,
+        // Peers that changed during a composition are drawn once it ends.
+        onComposition() { const pane = panes[index]; if (pane !== undefined) showPeers(pane); },
         onLocalEdit() { details.hidden = true; refresh(); },
         onSelection() { const pane = panes[index]; if (pane !== undefined) publish(pane); },
         onRemote(statuses) {
@@ -182,6 +165,7 @@ export async function mountTextEditors(root, url) {
         },
       });
       const stopStatus = sync.on("status", syncChanged), stopPush = sync.on("push", syncChanged);
+      const stopPeers = sync.presence.on("change", () => { const pane = panes[index]; if (pane !== undefined) showPeers(pane); });
       const onOffline = () => {
         network.set(offline.checked);
         refresh();
@@ -191,9 +175,8 @@ export async function mountTextEditors(root, url) {
       const onShow = () => { const pane = panes[index]; if (pane !== undefined) inspect(pane); };
       offline.addEventListener("change", onOffline); discard.addEventListener("click", onDiscard); show.addEventListener("click", onShow);
       panes.push({ sync, editor, details,
-        presence: createPresenceChannel({ url, clientId }), presenceStatus, polling: false, published: 0,
         cleanup() {
-          stopStatus(); stopPush();
+          stopStatus(); stopPush(); stopPeers();
           clearTimeout(refreshing);
           offline.removeEventListener("change", onOffline); discard.removeEventListener("click", onDiscard); show.removeEventListener("click", onShow);
         },
@@ -201,13 +184,7 @@ export async function mountTextEditors(root, url) {
       syncChanged();
     }
     if (!destroyed) {
-      for (const pane of panes) publish(pane);
-      timer = setInterval(() => {
-        for (const pane of panes) {
-          if (Date.now() - pane.published >= PRESENCE_HEARTBEAT) publish(pane);
-          void poll(pane);
-        }
-      }, PRESENCE_INTERVAL);
+      for (const pane of panes) { publish(pane); showPeers(pane); }
       status.textContent = "Ready. Type in either writer; edits are sent and received automatically.";
     }
   } catch (error) { stop(error); }
