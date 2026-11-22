@@ -438,6 +438,11 @@ export class ListState<T extends JsonValue> {
   }
 
   /** The two states differ only by applying one move of this permanent ID. */
+  singleMoveVisibleEquals(other: ListState<T>, id: Readonly<ElementId>): boolean {
+    return !this.has(id) || this.indexOf(id) === other.indexOf(id);
+  }
+
+  /** Describes the same single-move transition to a subscriber with a matching baseline. */
   singleMoveChangesTo(other: ListState<T>, id: Readonly<ElementId>): ListChangeEvent<T> {
     if (!this.has(id)) return listChangeEvent<T>(this.length, other.length, []);
     const from = this.indexOf(id), to = other.indexOf(id);

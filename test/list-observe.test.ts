@@ -129,6 +129,9 @@ describe("List visible changes", () => {
     net.catchUp(writer.doc); net.catchUp(peer.doc);
     const view = mirror(peer.doc.state.items);
     const compare = t.mock.method(ListState.prototype, "changesTo");
+    const visibleEquals = t.mock.method(ListState.prototype, "visibleEquals");
+    let changes = 0;
+    peer.doc.on("change", ({ origin }) => { if (origin === "server") changes++; });
 
     writer.doc.state.items.move(0, 2);
     const batch = writer.batches.shift()!;
@@ -138,6 +141,7 @@ describe("List visible changes", () => {
     net.catchUp(peer.doc);
     assert.deepEqual(view.events, []);
     assert.equal(compare.mock.callCount(), 0);
+    assert.equal(visibleEquals.mock.callCount(), 0);
     net.catchUp(writer.doc);
 
     writer.doc.state.items.move(0, 2);
@@ -145,9 +149,12 @@ describe("List visible changes", () => {
     net.server.receive(peer.batches.shift()!);
     net.catchUp(peer.doc);
     const calls = compare.mock.callCount();
+    const comparisons = visibleEquals.mock.callCount();
     net.server.receive(writer.batches.shift()!);
     net.catchUp(peer.doc);
     assert.equal(compare.mock.callCount(), calls);
+    assert.equal(visibleEquals.mock.callCount(), comparisons);
+    assert.equal(changes, 0);
     assert.equal(view.events.length, 1);
     assert.deepEqual(view.elements, ["b", "c"]);
     assert.equal(peer.doc.checkpoint().snapshot.serverSeq, 4);
@@ -199,10 +206,12 @@ describe("List visible changes", () => {
 
     peer.doc.state.items.set(0, "C");
     const calls = compare.mock.callCount();
+    const visibleEquals = t.mock.method(ListState.prototype, "visibleEquals");
     writer.doc.state.items.move(3, 1);
     net.server.receive(writer.batches.shift()!);
     net.catchUp(peer.doc);
     assert.ok(compare.mock.calls.slice(calls).some(({ arguments: [, targets] }) => targets === undefined));
+    assert.equal(visibleEquals.mock.callCount(), 1);
     assert.deepEqual(early.elements, ["C", "a", "d", "b"]);
     assert.deepEqual(late.elements, early.elements);
     assert.equal(peer.doc.checkpoint().pendingBatches.length, 1);

@@ -198,7 +198,7 @@ Text observers keep a separate persistent-state baseline per subscriber. For loc
 
 `text-observe.test.ts` applies notifications to independent element-array mirrors, including seeded interleavings, surrogate boundaries, callback failures and reentrancy. Observer baselines advance before callbacks, and notification draining runs only after existing callbacks succeed. Preserve their failure ordering when changing notification scopes. Unsubscribed Text must do no target traversal or diff calculation; do not charge all clients for opt-in UI integration. Full fallback and array/string materialization remain linear costs.
 
-One remote List move with no pending work or replay conflict changes only the named element's position. An observer whose baseline matches the exact pre-move state can use the element's old and new indices directly. A deleted element or an unchanged index produces no notification. Compare the full List when pending observer work overlaps, when either state reference differs, or when the move is part of a larger commit. Document-level change detection still compares visible List order.
+One remote List move with no pending work or replay conflict changes only the named element's position. All other elements retain their relative order and payload references, so document change detection compares the moved element's old and new indices. An observer can use those indices if its baseline matches the exact pre-move state. A deleted element or an unchanged index produces no notification. Keep the full comparison for other moves and for observers with a different baseline or coalesced edits.
 
 ## CI and documentation deployment
 
