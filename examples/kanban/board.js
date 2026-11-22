@@ -1,6 +1,6 @@
 // @ts-check
 // Shared by the page, the server and the tests: no DOM and no network.
-import { defineDocument, list, map } from "../../dist/index.js";
+import { counters, defineDocument, list, map } from "../../dist/index.js";
 
 /** A card as the page shows it: its ID, which never changes, and its title. @typedef {{ id: string, title: string }} Card */
 
@@ -46,6 +46,8 @@ export const Board = defineDocument({
   order: list(cardIdSchema),
   columns: map(columnSchema),
   titles: map(titleSchema),
+  // Votes by card ID: concurrent votes all count, where a `map` of numbers would keep only the last.
+  votes: counters(),
 });
 /** @typedef {typeof Board.definition} Shape */
 /** @typedef {import("../../dist/index.js").ClientDocument<Shape>} BoardDocument */
@@ -106,7 +108,7 @@ export function renameCard(doc, cardId, title) {
   return true;
 }
 
-/** Removes the card's position, column and title in one batch.
+/** Removes the card's position, column, title and votes in one batch.
  * @param {BoardDocument} doc @param {string} cardId */
 export function deleteCard(doc, cardId) {
   const found = findCard(doc, cardId);
@@ -115,7 +117,16 @@ export function deleteCard(doc, cardId) {
     doc.state.order.delete(found.position);
     doc.state.columns.delete(cardId);
     doc.state.titles.delete(cardId);
+    doc.state.votes.delete(cardId);
   });
+  return true;
+}
+
+/** Adds one vote, or takes one back with -1. Returns false if the card is gone.
+ * @param {BoardDocument} doc @param {string} cardId @param {1 | -1} [delta] */
+export function voteCard(doc, cardId, delta = 1) {
+  if (doc.state.columns.get(cardId) === undefined) return false;
+  doc.state.votes.add(cardId, delta);
   return true;
 }
 
@@ -154,12 +165,13 @@ export function moveCard(doc, cardId, toColumn, toIndex) {
  * column change of a card that another writer deleted first. Call it with a `transform` event's
  * `dropped` operations. Same-column moves of a deleted card are reported by `discard` instead.
  * @param {readonly import("../../dist/index.js").DocumentOperation<Shape>[]} dropped
- * @returns {{ kind: "rename" | "move", id: string, title?: string }[]} In batch order, at most one of each kind per card.
+ * @returns {{ kind: "rename" | "move" | "vote", id: string, title?: string }[]} In batch order, at most one of each kind per card.
  */
 export function droppedEdits(dropped) {
-  /** @type {Map<string, { kind: "rename" | "move", id: string, title?: string }>} */
+  /** @type {Map<string, { kind: "rename" | "move" | "vote", id: string, title?: string }>} */
   const edits = new Map();
   for (const operation of dropped) {
+    if (operation.type === "counters/add") edits.set(`vote:${operation.key}`, { kind: "vote", id: operation.key });
     if (operation.type !== "map/set") continue;
     if (operation.path === "titles") edits.set(`rename:${operation.key}`, { kind: "rename", id: operation.key, title: operation.value });
     else if (operation.path === "columns" && !edits.has(`move:${operation.key}`)) edits.set(`move:${operation.key}`, { kind: "move", id: operation.key });
@@ -181,8 +193,8 @@ export function lostRename(outcome) {
 /**
  * Tells this writer, through `notify`, about its edits the server did not apply. Moves of cards
  * another writer deleted first are reported from the document's events; a cross-column move is
- * both transformed and discarded, but is reported once. Renames are reported per batch through
- * `follow()`. Edits cancelled through `cancel()` are not reported.
+ * both transformed and discarded, but is reported once. Renames and votes are reported per batch
+ * through `follow()`. Edits cancelled through `cancel()` are not reported.
  * @param {BoardDocument} doc @param {(message: string) => void} notify
  */
 export function watchDroppedEdits(doc, notify) {
@@ -203,14 +215,16 @@ export function watchDroppedEdits(doc, notify) {
   });
   return {
     /**
-     * Reports the rename a tracked batch loses, once the server has decided; from `doc.track()` or,
+     * Reports the rename or vote a tracked batch loses, once the server has decided; from `doc.track()` or,
      * for a batch restored from a checkpoint, `doc.settled(batch)`.
      * @param {Promise<import("../../dist/index.js").BatchOutcome<import("../../dist/index.js").DocumentOperation<Shape>> | undefined>} settled
      */
     follow(settled) {
       void settled.then((outcome) => {
-        const lost = outcome === undefined || cancelling ? undefined : lostRename(outcome);
+        if (outcome === undefined || cancelling) return;
+        const lost = lostRename(outcome);
         if (lost !== undefined) notify(`Not saved: “${lost.title}”. Another writer deleted this card.`);
+        if (droppedEdits(outcome.dropped).some(({ kind }) => kind === "vote")) notify("Vote not counted: another writer deleted this card.");
       });
     },
     /**

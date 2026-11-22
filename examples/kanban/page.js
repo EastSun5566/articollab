@@ -3,7 +3,8 @@ import { createUndoManager } from "../../dist/index.js";
 import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../dist/sync/index.js";
 import { createOfflineSwitch, describeSync } from "../sync-ui.js";
 import {
-  addCard, Board, cardFor, cardsIn, COLUMNS, createSelection, deleteCard, findCard, moveCard, renameCard, watchDroppedEdits,
+  addCard, Board, cardFor, cardsIn, COLUMNS, createSelection, deleteCard, findCard, moveCard, renameCard, voteCard,
+  watchDroppedEdits,
 } from "./board.js";
 
 /** @typedef {import("./board.js").Card} Card */
@@ -27,11 +28,15 @@ function element(tag, className, text) {
   return node;
 }
 
-/** @param {Card} card */
-function renderCard(card) {
+/** @param {Card} card @param {number} votes */
+function renderCard(card, votes) {
   const item = element("li", "card");
   item.draggable = true;
   const actions = element("span", "actions");
+  const vote = element("button", "vote");
+  vote.type = "button";
+  vote.dataset.action = "vote";
+  actions.append(vote);
   for (const [action, symbol] of ACTIONS) {
     const button = element("button", undefined, symbol);
     button.type = "button";
@@ -40,7 +45,17 @@ function renderCard(card) {
   }
   item.append(element("span", "title"), actions);
   updateCard(item, card);
+  updateVotes(item, votes);
   return item;
+}
+
+/** Shows a card's vote count. @param {Element} item @param {number} votes */
+function updateVotes(item, votes) {
+  const button = item.querySelector("button.vote");
+  if (!(item instanceof HTMLLIElement) || !(button instanceof HTMLButtonElement)) return;
+  item.dataset.votes = String(votes);
+  button.textContent = `👍 ${votes}`;
+  button.setAttribute("aria-label", `Vote for ${item.getAttribute("data-title") ?? "this card"}: ${votes} ${votes === 1 ? "vote" : "votes"}`);
 }
 
 /** Updates a card in place, so a focused button survives. An acknowledgement that adopts a decoded
@@ -54,8 +69,10 @@ function updateCard(item, card) {
   if (title !== null) title.textContent = card.title;
   for (const button of item.querySelectorAll("button[data-action]")) {
     const label = ACTIONS.find(([action]) => action === button.getAttribute("data-action"))?.[2];
-    button.setAttribute("aria-label", `${label}: ${card.title}`);
+    if (label !== undefined) button.setAttribute("aria-label", `${label}: ${card.title}`);
   }
+  // The vote button's label names the title too.
+  updateVotes(item, Number(item.dataset.votes ?? 0));
 }
 
 /** The drop gap: before the first card whose middle is below the pointer.
@@ -232,7 +249,7 @@ function mountWriter(parent, name, sync, network, slot, restored = 0) {
       ids.forEach((id, index) => {
         const existing = rows.get(id);
         rows.delete(id);
-        const item = existing ?? renderCard(cardFor(doc, id));
+        const item = existing ?? renderCard(cardFor(doc, id), doc.state.votes.get(id));
         if (existing !== undefined) updateCard(item, cardFor(doc, id));
         if (list.children[index] !== item) list.insertBefore(item, list.children[index] ?? null);
       });
@@ -323,6 +340,13 @@ function mountWriter(parent, name, sync, network, slot, restored = 0) {
       const position = COLUMNS.indexOf(found.column);
       const length = cardsIn(doc, found.column).length;
       if (action === "delete") { selection.select(cardId); deleteCard(doc, cardId); return; }
+      if (action === "vote") {
+        // Tracked, so a vote the server drops because the card was deleted is reported.
+        const { value: voted, settled } = doc.track(() => voteCard(doc, cardId));
+        if (voted) dropped.follow(settled);
+        refocus = { cardId, action };
+        return;
+      }
       if (action === "up" && found.index > 0) moveCard(doc, cardId, found.column, found.index - 1);
       if (action === "down" && found.index < length - 1) moveCard(doc, cardId, found.column, found.index + 2);
       const next = COLUMNS[position + (action === "left" ? -1 : action === "right" ? 1 : 0)];
@@ -444,6 +468,13 @@ function mountWriter(parent, name, sync, network, slot, restored = 0) {
       if (change.type !== "set") continue;
       const item = columns.querySelector(`li[data-card-id="${CSS.escape(change.key)}"]`);
       if (item !== null) updateCard(item, { id: change.key, title: change.value });
+    }
+  }));
+  // Votes live in `votes`: update the count in place; a concurrent vote adds to it rather than replacing it.
+  cleanups.push(doc.state.votes.observe(({ changes }) => {
+    for (const change of changes) {
+      const item = columns.querySelector(`li[data-card-id="${CSS.escape(change.key)}"]`);
+      if (item !== null) updateVotes(item, change.value);
     }
   }));
   renderColumns();
