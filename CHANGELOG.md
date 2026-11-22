@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.9.0-beta.0](https://github.com/EastSun5566/articollab/compare/v0.8.0...v0.9.0-beta.0) (2026-11-22)
+
+### Features
+
+* move List elements without changing their identity ([0015b6d](https://github.com/EastSun5566/articollab/commit/0015b6d1e252f155ed95088a8325bf16a1e48d18))
+* report when the server transforms or rejects a writer's batch ([c4aedc1](https://github.com/EastSun5566/articollab/commit/c4aedc12a038875999ee0b8d4fe25b3692c13173))
+
+### Bug Fixes
+
+* **examples:** hide the kanban rename form when no card is selected ([8e373b5](https://github.com/EastSun5566/articollab/commit/8e373b542c16799e2ba86e5467eefc798531b7f0))
+* reject a moved element's position ID as a List target ([22be679](https://github.com/EastSun5566/articollab/commit/22be679fdd38cbc9f741f1b4bddb72009d790280))
+
 ## [0.8.0](https://github.com/EastSun5566/articollab/compare/v0.7.2...v0.8.0) (2026-11-22)
 
 ### Features
