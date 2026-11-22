@@ -144,9 +144,21 @@ export function droppedEdits(dropped) {
 }
 
 /**
- * Tells this writer, through `notify`, about its edits the server did not apply: renames and moves
- * of cards another writer deleted first. A cross-column move of such a card is both transformed and
- * discarded, but is reported once. Edits cancelled through `cancel()` are not reported.
+ * The rename a batch's outcome lost, if the policy dropped it because another writer deleted the
+ * card first: the last title the batch set.
+ * @param {import("../../dist/index.js").BatchOutcome<import("../../dist/index.js").DocumentOperation<Shape>>} outcome
+ * @returns {Card | undefined}
+ */
+export function lostRename(outcome) {
+  const edit = droppedEdits(outcome.dropped).find(({ kind }) => kind === "rename");
+  return edit === undefined ? undefined : { id: edit.id, title: edit.title ?? "" };
+}
+
+/**
+ * Tells this writer, through `notify`, about its edits the server did not apply. Moves of cards
+ * another writer deleted first are reported from the document's events; a cross-column move is
+ * both transformed and discarded, but is reported once. Renames are reported per batch through
+ * `follow()`. Edits cancelled through `cancel()` are not reported.
  * @param {BoardDocument} doc @param {(message: string) => void} notify
  */
 export function watchDroppedEdits(doc, notify) {
@@ -159,16 +171,24 @@ export function watchDroppedEdits(doc, notify) {
   };
   const stopTransform = doc.on("transform", ({ commit, dropped }) => {
     if (cancelling) return;
-    for (const edit of droppedEdits(dropped)) {
-      if (edit.kind === "rename") notify(`Not saved: “${edit.title}”. Another writer deleted this card.`);
-      else notMoved(commit.serverSeq);
-    }
+    for (const edit of droppedEdits(dropped)) if (edit.kind === "move") notMoved(commit.serverSeq);
   });
   // A List move of a deleted card changed nothing; the server reports it on acknowledgement.
   const stopDiscard = doc.on("discard", ({ commit, operations }) => {
     if (!cancelling && operations.some((operation) => operation.type === "list/move")) notMoved(commit.serverSeq);
   });
   return {
+    /**
+     * Reports the rename a tracked batch loses, once the server has decided; from `doc.track()` or,
+     * for a batch restored from a checkpoint, `doc.settled(batch)`.
+     * @param {Promise<import("../../dist/index.js").BatchOutcome<import("../../dist/index.js").DocumentOperation<Shape>> | undefined>} settled
+     */
+    follow(settled) {
+      void settled.then((outcome) => {
+        const lost = outcome === undefined || cancelling ? undefined : lostRename(outcome);
+        if (lost !== undefined) notify(`Not saved: “${lost.title}”. Another writer deleted this card.`);
+      });
+    },
     /**
      * Runs the writer's own cancellation, such as `sync.rejectPending()`, without reporting it.
      * @template T @param {() => Promise<T>} cancellation @returns {Promise<T>}

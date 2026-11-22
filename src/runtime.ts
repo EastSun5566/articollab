@@ -148,6 +148,35 @@ export interface DiscardEvent<TOperation extends Operation = Operation> {
   readonly operations: readonly Extract<TOperation, { readonly type: "list/set" | "list/move" }>[];
 }
 
+/** What the server did with one of this writer's batches, once its acknowledgement was received. */
+export interface BatchOutcome<TOperation extends Operation = Operation> {
+  /** "rejected": the commit has no operations; "transformed": it is not JSON-equal to the batch. */
+  readonly status: "accepted" | "transformed" | "rejected";
+  readonly batch: ClientBatch<TOperation>;
+  readonly commit: ServerCommit<TOperation>;
+  /** Sent operations the commit lacks, in batch order, compared as JSON. */
+  readonly dropped: readonly TOperation[];
+  /** Committed operations that were not sent, in commit order, compared as JSON. */
+  readonly added: readonly TOperation[];
+  /** Committed List sets and moves whose element was already deleted, as `discard` reports them. */
+  readonly discarded: readonly Extract<TOperation, { readonly type: "list/set" | "list/move" }>[];
+}
+
+/** The result of `doc.track()`: the callback's value, the batch it recorded, and its outcome. */
+export interface TrackedChange<T, TOperation extends Operation = Operation> {
+  readonly value: T;
+  /** Undefined when the callback recorded no operation. */
+  readonly batch: ClientBatch<TOperation> | undefined;
+  /** Resolves once the batch's acknowledgement is received; to undefined when there is no batch. Never rejects. */
+  readonly settled: Promise<BatchOutcome<TOperation> | undefined>;
+}
+
+interface Waiter<TOperation extends Operation> {
+  readonly promise: Promise<BatchOutcome<TOperation>>;
+  readonly resolve: (outcome: BatchOutcome<TOperation>) => void;
+  batch?: ClientBatch<TOperation>;
+}
+
 /**
  * An own acknowledged batch whose commit differs from what this writer sent: the server transformed
  * or rejected it. `dropped` lists sent operations the commit lacks, in batch order, and `added` the
@@ -532,6 +561,8 @@ export class ClientDocument<S extends SchemaShape> {
   private readonly listeners = new Set<ChangeListener<S>>();
   private readonly discardListeners = new Set<DiscardListener<S>>();
   private readonly transformListeners = new Set<TransformListener<S>>();
+  /** Outcome promises by local sequence, created only on request. */
+  private readonly waiters = new Map<number, Waiter<DocumentOperation<S>>>();
   private readonly collections = new Map<string, RuntimeCollection>();
   private authoritativeStates: Map<string, CollectionState>;
   private readonly pendingBatches: ClientBatch<DocumentOperation<S>>[] = [];
@@ -728,6 +759,54 @@ export class ClientDocument<S extends SchemaShape> {
     if (this.transactionDepth === 0) this.commit();
   }
 
+  /**
+   * Like `transact()`, and also returns the batch it recorded and a promise of its outcome. The
+   * promise resolves when the acknowledgement is received and never rejects.
+   */
+  track<T>(
+    callback: () => T,
+    ...mustBeSynchronous: [T] extends [never]
+      ? []
+      : T extends PromiseLike<unknown>
+        ? [never]
+        : []
+  ): TrackedChange<T, DocumentOperation<S>>;
+  track<T>(callback: () => T): TrackedChange<T, DocumentOperation<S>> {
+    if (this.transactionDepth !== 0) throw new Error("Cannot track inside a transaction");
+    // Wait before committing: a synchronous transport may acknowledge the batch inside onBatch.
+    const seq = this.nextSeq;
+    const waiter = this.waiter(seq);
+    let value: T;
+    try {
+      value = this.runTransaction(callback);
+    } finally {
+      if (waiter.batch === undefined) this.waiters.delete(seq);
+    }
+    const batch = waiter.batch;
+    return Object.freeze({ value, batch, settled: batch === undefined ? Promise.resolve(undefined) : waiter.promise });
+  }
+
+  /** The outcome of a pending batch of this document, such as one restored from a checkpoint. Never rejects. */
+  settled(batch: ClientBatch<DocumentOperation<S>>): Promise<BatchOutcome<DocumentOperation<S>>> {
+    const pending = typeof batch === "object" && batch !== null && batch.clientId === this.clientId
+      ? this.pendingBatches.find(({ seq }) => seq === batch.seq) : undefined;
+    if (pending === undefined) throw new Error("The batch is not pending in this document");
+    const waiter = this.waiter(pending.seq);
+    waiter.batch ??= pending;
+    return waiter.promise;
+  }
+
+  private waiter(seq: number): Waiter<DocumentOperation<S>> {
+    let waiter = this.waiters.get(seq);
+    if (waiter === undefined) {
+      let resolve!: (outcome: BatchOutcome<DocumentOperation<S>>) => void;
+      const promise = new Promise<BatchOutcome<DocumentOperation<S>>>((settle) => { resolve = settle; });
+      waiter = { promise, resolve };
+      this.waiters.set(seq, waiter);
+    }
+    return waiter;
+  }
+
   /** Groups all synchronous mutations in callback into one client batch. */
   transact<T>(
     callback: () => T,
@@ -738,6 +817,10 @@ export class ClientDocument<S extends SchemaShape> {
         : []
   ): T;
   transact<T>(callback: () => T): T {
+    return this.runTransaction(callback);
+  }
+
+  private runTransaction<T>(callback: () => T): T {
     this.assertReplayable();
     const isOuterTransaction = this.transactionDepth === 0;
     if (isOuterTransaction) {
@@ -792,8 +875,20 @@ export class ClientDocument<S extends SchemaShape> {
   receive(commit: ServerCommit<DocumentOperation<S>>): void {
     this.notificationDepth++;
     try {
-      const { discarded, transform } = this.receiveCommit(commit);
-      if (transform !== undefined) {
+      const { discarded, transform, ownBatch } = this.receiveCommit(commit);
+      // Before listeners run, so a throwing listener cannot leave the outcome unresolved.
+      const waiter = ownBatch === undefined ? undefined : this.waiters.get(ownBatch.seq);
+      if (ownBatch !== undefined && waiter !== undefined) {
+        this.waiters.delete(ownBatch.seq);
+        waiter.resolve(Object.freeze({
+          status: commit.operations.length === 0 ? "rejected" : transform === undefined ? "accepted" : "transformed",
+          batch: ownBatch, commit,
+          dropped: transform?.dropped ?? Object.freeze([]),
+          added: transform?.added ?? Object.freeze([]),
+          discarded: Object.freeze([...discarded]),
+        }));
+      }
+      if (transform !== undefined && this.transformListeners.size !== 0) {
         for (const listener of [...this.transformListeners]) listener(transform);
       }
       if (discarded.length !== 0) {
@@ -810,6 +905,7 @@ export class ClientDocument<S extends SchemaShape> {
   private receiveCommit(commit: ServerCommit<DocumentOperation<S>>): {
     readonly discarded: Extract<DocumentOperation<S>, { readonly type: "list/set" | "list/move" }>[];
     readonly transform: TransformEvent<DocumentOperation<S>> | undefined;
+    readonly ownBatch: ClientBatch<DocumentOperation<S>> | undefined;
   } {
     if (this.transactionDepth !== 0) {
       throw new Error("Cannot receive a server commit during a transaction");
@@ -855,7 +951,7 @@ export class ClientDocument<S extends SchemaShape> {
       this.pendingBatches.shift();
       this.lastServerSeq = commit.serverSeq;
       this.checkpointSnapshot = undefined;
-      return { discarded, transform: undefined };
+      return { discarded, transform: undefined, ownBatch };
     }
 
     const remainingBatches = isOwnCommit
@@ -943,10 +1039,11 @@ export class ClientDocument<S extends SchemaShape> {
       this.emitChange(Object.freeze({ origin: "server", commit }));
     }
     // Decoded commits carry copies of own payloads, so equality is by JSON value, not reference.
-    // Without transform listeners, skip the comparison.
-    const transform = ownBatch === undefined || this.transformListeners.size === 0 ||
+    // Without transform listeners or a waiter for this batch, skip the comparison.
+    const transform = ownBatch === undefined ||
+      (this.transformListeners.size === 0 && !this.waiters.has(ownBatch.seq)) ||
       jsonEquals(ownBatch.operations, commit.operations) ? undefined : transformEvent(ownBatch, commit);
-    return { discarded, transform };
+    return { discarded, transform, ownBatch };
   }
 
   private currentStates(): Map<string, CollectionState> {
@@ -968,6 +1065,8 @@ export class ClientDocument<S extends SchemaShape> {
     });
 
     this.pendingBatches.push(batch);
+    const waiter = this.waiters.get(batch.seq);
+    if (waiter !== undefined) waiter.batch = batch;
     this.trackObservedOperations(operations);
     if (before !== undefined && this.historyRecorder !== undefined) {
       this.historyRecorder(Object.freeze({ batch, before, after: this.currentStates() }));
