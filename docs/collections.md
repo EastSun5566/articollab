@@ -1,6 +1,6 @@
-# Value, List, Text and Map
+# Value, List, Text, Map and Counter
 
-Choose a Value for whole immutable JSON replacements, a List for stable elements, Text for plain-text range edits, and a Map for values under string keys. Schema property keys are fixed wire paths.
+Choose a Value for whole immutable JSON replacements, a List for stable elements, Text for plain-text range edits, a Map for values under string keys, and a Counter for integers that several writers add to. Schema property keys are fixed wire paths.
 
 ```ts
 const Board = defineDocument({
@@ -111,6 +111,55 @@ Each key is decided on its own, by server order: the last `set` or `delete` the 
 - A Map snapshot is a JSON object from key to value, so a server `resolve` policy can read `snapshot.data.settings["theme"]` directly.
 
 Map updates have no `discard` event: a `set` is never a no-op, because it recreates a deleted key. If an application should not recreate a key, for example a deleted record's field, its server policy must drop that `set`; the writer learns of it through [`transform`](server-wire.md#accept-transform-or-reject). To follow changes, subscribe with `observe()`; see [Update a view from a Map](transactions.md#update-a-view-from-a-map).
+
+## Counter: additions that all count
+
+Counters require Articollab 0.10 or later. When adding one to a shared document, [upgrade its readers first](recovery.md#upgrading-from-09-to-010).
+
+A Value records the number a writer set, so two writers who each turn 1 into 2 leave 2: one increment is lost. A Counter records what each writer added, and the server adds every addition in order, so pending additions replay on top of everyone else's. `counter(initialValue = 0)` holds one integer; `counters()` holds one integer per string key, such as votes per card:
+
+```ts
+import { counter, counters, defineDocument } from "articollab";
+
+const Shop = defineDocument({ stock: counter(5), likes: counters() });
+```
+
+With a client `doc` created from this schema:
+
+```ts
+const stock = doc.state.stock;
+stock.add(-2);
+console.log(stock.value); // 3
+
+const likes = doc.state.likes;
+likes.add("post-1", 1);
+likes.add("post-2", 2);
+console.log(likes.get("post-1"), likes.get("post-3")); // 1 0
+console.log(likes.toObject()); // { "post-1": 1, "post-2": 2 }
+likes.add("post-1", -1);
+console.log([...likes.keys()]); // ["post-2"]: a total of 0 removes the key
+```
+
+- Counts, additions and totals are safe integers. `add()` throws `TypeError` for anything else and `RangeError` when this writer's total would leave the safe integer range; adding 0 records nothing. If writers together push a total out of range, the server refuses that batch and a writer replaying it is [blocked](recovery.md#blocked-pending).
+- A Counter has no `set`. To bring one back to 0, add minus its current value; additions other writers make meanwhile still count.
+- In `counters()`, an absent key counts as 0 and a total of 0 removes the key, so `size`, `keys()`, `values()`, `entries()` and snapshots list only nonzero counts, sorted by UTF-16 code unit. `delete(key)` resets a key to 0, recorded even when it is 0 here; additions the server applies after it count again. `observe()` reports each key's `value` and `previous`, with 0 for an absent key.
+- [Undo](transactions.md#undo-and-redo) adds the opposite of this writer's additions, so other writers' additions stay. Undoing `delete(key)` adds back what it removed.
+
+A server policy can bound a counter by changing an addition. This one never lets stock go below 0; a writer whose removal was cut learns of it through [`transform`](server-wire.md#accept-transform-or-reject):
+
+```ts
+const server = createServer(Shop, {
+  resolve: ({ batch, snapshot }) => {
+    let stock = snapshot.data.stock;
+    return batch.operations.flatMap((operation) => {
+      if (operation.type !== "counter/add") return [operation];
+      const delta = Math.max(operation.delta, -stock);
+      stock += delta;
+      return delta === 0 ? [] : [{ ...operation, delta }];
+    });
+  },
+});
+```
 
 ## Text: Unicode code points
 

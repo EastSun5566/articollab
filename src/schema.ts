@@ -1,6 +1,7 @@
 import type { ListSnapshotData } from "./list.ts";
 import type { MapSnapshotData } from "./map.ts";
 import type { TextSnapshotData } from "./text.ts";
+import type { CounterMapSnapshotData } from "./counter.ts";
 import { validateJsonValue } from "./json.ts";
 import { checkPayload, type PayloadOf, type PayloadSchema } from "./payload.ts";
 
@@ -40,7 +41,17 @@ export interface MapSchema<T extends JsonValue = JsonValue> {
   readonly payload?: PayloadSchema<T>;
 }
 
-export type CollectionSchema = ValueSchema | ListSchema | TextSchema | MapSchema;
+export interface CounterSchema {
+  readonly kind: "counter";
+  /** A safe integer. */
+  readonly initialValue: number;
+}
+
+export interface CounterMapSchema {
+  readonly kind: "counters";
+}
+
+export type CollectionSchema = ValueSchema | ListSchema | TextSchema | MapSchema | CounterSchema | CounterMapSchema;
 
 export type SchemaShape = Record<string, CollectionSchema>;
 
@@ -103,6 +114,22 @@ function requirePayloadSchema(schema: unknown): void {
   }
 }
 
+/**
+ * Defines an integer that writers add to rather than set, so concurrent additions all count.
+ * `initialValue` and every total must be safe integers.
+ */
+export function counter(initialValue = 0): CounterSchema {
+  if (typeof initialValue !== "number" || !Number.isSafeInteger(initialValue)) {
+    throw new TypeError(`A counter's initial value must be a safe integer: ${String(initialValue)}`);
+  }
+  return Object.freeze({ kind: "counter", initialValue });
+}
+
+/** Defines an initially empty set of counters by string key; an absent key counts as 0. */
+export function counters(): CounterMapSchema {
+  return Object.freeze({ kind: "counters" });
+}
+
 /** Defines an initially empty collaborative plain-text string. */
 export function text(): TextSchema {
   return Object.freeze({ kind: "text" });
@@ -136,4 +163,8 @@ export type SnapshotType<D> = D extends ValueSchema<infer T>
       ? TextSnapshotData
       : D extends MapSchema<infer T>
         ? MapSnapshotData<T>
-        : never;
+        : D extends CounterSchema
+          ? number
+          : D extends CounterMapSchema
+            ? CounterMapSnapshotData
+            : never;

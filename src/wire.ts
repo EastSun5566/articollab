@@ -18,6 +18,7 @@ import type {
   SchemaShape,
 } from "./schema.ts";
 import { MapState, type MapSnapshotData } from "./map.ts";
+import { CounterMapState, type CounterMapSnapshotData } from "./counter.ts";
 import {
   TextState,
   type TextIdRange,
@@ -358,9 +359,45 @@ function decodeOperation<S extends SchemaShape>(
         key: decodeString(record.key, [...path, "key"], "Map key"),
       }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; map operations carry no IDs.
     }
+    case "counter/add": {
+      requireExactFields(record, path, ["type", "path", "delta"]);
+      requireKind(descriptor.kind, "counter", [...path, "path"]);
+      return Object.freeze({
+        type,
+        path: descriptor.path,
+        delta: decodeDelta(record.delta, [...path, "delta"]),
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; counters carry only a delta.
+    }
+    case "counters/add": {
+      requireExactFields(record, path, ["type", "path", "key", "delta"]);
+      requireKind(descriptor.kind, "counters", [...path, "path"]);
+      return Object.freeze({
+        type,
+        path: descriptor.path,
+        key: decodeString(record.key, [...path, "key"], "Counter key"),
+        delta: decodeDelta(record.delta, [...path, "delta"]),
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; counters carry only a key and delta.
+    }
+    case "counters/delete": {
+      requireExactFields(record, path, ["type", "path", "key"]);
+      requireKind(descriptor.kind, "counters", [...path, "path"]);
+      return Object.freeze({
+        type,
+        path: descriptor.path,
+        key: decodeString(record.key, [...path, "key"], "Counter key"),
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; counters carry only a key.
+    }
     default:
       return fail([...path, "type"], `unknown operation type: ${type}`);
   }
+}
+
+/** A counter delta: a nonzero safe integer, since adding 0 is never recorded. */
+function decodeDelta(input: unknown, path: readonly PathSegment[]): number {
+  if (typeof input !== "number" || !Number.isSafeInteger(input) || input === 0) {
+    fail(path, "Counter delta must be a nonzero safe integer");
+  }
+  return input;
 }
 
 function decodeOperations<S extends SchemaShape>(
@@ -503,8 +540,16 @@ function decodeSnapshotCollection(
   kind: CollectionKind,
   input: unknown,
   path: readonly PathSegment[]
-): JsonValue | ListSnapshotData | TextSnapshotData | MapSnapshotData {
+): JsonValue | ListSnapshotData | TextSnapshotData | MapSnapshotData | CounterMapSnapshotData {
   if (kind === "value") return decodeJsonValue(input, path);
+  if (kind === "counter") return decodeSafeInteger(input, path, "Counter", Number.MIN_SAFE_INTEGER);
+  if (kind === "counters") {
+    const record = decodeRecord(input, path, "counters snapshot");
+    const snapshot: CounterMapSnapshotData = Object.freeze(Object.fromEntries(Object.keys(record).map((key) =>
+      [key, decodeDelta(record[key], [...path, key])])));
+    decodedCollectionStates.set(snapshot, CounterMapState.load(snapshot));
+    return snapshot;
+  }
   if (kind === "map") {
     const record = decodeRecord(input, path, "map snapshot");
     // fromEntries defines own properties, so "__proto__" stays an ordinary key.

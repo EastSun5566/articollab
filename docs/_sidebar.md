@@ -1,7 +1,7 @@
 - [Overview](README.md)
 - [Counter quick start](quick-start.md)
 - [Concepts](concepts.md)
-- [Value, List, Text and Map](collections.md)
+- [Value, List, Text, Map and Counter](collections.md)
 - [Transactions and events](transactions.md)
 - [Server policy and wire data](server-wire.md)
 - [Recovery](recovery.md)

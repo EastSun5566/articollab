@@ -3,6 +3,7 @@ import { historyWriter } from "./history-access.ts";
 import { jsonEquals } from "./json.ts";
 import { RuntimeList, type ListState } from "./list.ts";
 import { RuntimeMap, type MapState } from "./map.ts";
+import { RuntimeCounter, RuntimeCounterMap, type CounterMapState } from "./counter.ts";
 import { attachHistory, isTransacting, type ClientDocument, type LocalStep, type Value } from "./runtime.ts";
 import type { JsonValue, SchemaShape } from "./schema.ts";
 import type { CollectionState } from "./state.ts";
@@ -57,13 +58,16 @@ interface PathStep {
   readonly keys: Set<string>;
   readonly ids: Readonly<ElementId>[];
   readonly ranges: TextIdRange[];
+  /** Counter paths: the net amount each key changed, summed over the step's batches ("" for a Counter). */
+  readonly deltas: Map<string, number>;
 }
 
 interface Step {
   readonly paths: Map<string, PathStep>;
 }
 
-type Collection = RuntimeList<JsonValue> | RuntimeText | RuntimeMap<JsonValue> | Value<JsonValue>;
+type Collection =
+  | RuntimeList<JsonValue> | RuntimeText | RuntimeMap<JsonValue> | RuntimeCounter | RuntimeCounterMap | Value<JsonValue>;
 
 function idKey(id: Readonly<ElementId>): string {
   return JSON.stringify([id.bunchId, id.counter]);
@@ -158,7 +162,7 @@ export function createUndoManager<S extends SchemaShape>(
       let entry = entries.get(operation.path);
       if (entry === undefined) {
         entry = { before: step.before.get(operation.path)!, after: step.after.get(operation.path)!,
-          keys: new Set(), ids: [], ranges: [] };
+          keys: new Set(), ids: [], ranges: [], deltas: new Map() };
         entries.set(operation.path, entry);
       }
       switch (operation.type) {
@@ -167,7 +171,21 @@ export function createUndoManager<S extends SchemaShape>(
         // oxlint-disable-next-line typescript/no-misused-spread -- Text elements are Unicode code points.
         case "text/insert": entry.ranges.push({ start: operation.id, count: [...operation.value].length }); break;
         case "text/delete": entry.ranges.push(...operation.ranges); break;
+        case "counter/add": entry.keys.add(""); break;
+        case "counters/add": case "counters/delete": entry.keys.add(operation.key); break;
         case "value/set": break;
+      }
+    }
+    // A batch's net effect on a counter is its after state less its before state: additions commute.
+    for (const [path, entry] of entries) {
+      const collection = collections[path];
+      if (collection instanceof RuntimeCounter) {
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Counter paths keep their total as state.
+        entry.deltas.set("", (entry.after as number) - (entry.before as number));
+      } else if (collection instanceof RuntimeCounterMap) {
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- CounterMap paths keep CounterMapState snapshots.
+        const before = entry.before as CounterMapState, after = entry.after as CounterMapState;
+        for (const key of entry.keys) entry.deltas.set(key, after.get(key) - before.get(key));
       }
     }
     return entries.size === 0 ? undefined : { paths: entries };
@@ -181,6 +199,7 @@ export function createUndoManager<S extends SchemaShape>(
       for (const key of entry.keys) existing.keys.add(key);
       existing.ids.push(...entry.ids);
       existing.ranges.push(...entry.ranges);
+      for (const [key, delta] of entry.deltas) existing.deltas.set(key, (existing.deltas.get(key) ?? 0) + delta);
     }
   }
 
@@ -213,6 +232,14 @@ export function createUndoManager<S extends SchemaShape>(
         writes.push(...listReverts(path, collection, entry));
       } else if (collection instanceof RuntimeText) {
         writes.push(...textReverts(path, collection, entry));
+      } else if (collection instanceof RuntimeCounter) {
+        // Additions commute, so the inverse applies whatever other writers added since.
+        const delta = entry.deltas.get("") ?? 0;
+        if (delta !== 0) writes.push(() => { collection.add(-delta); });
+      } else if (collection instanceof RuntimeCounterMap) {
+        for (const [key, delta] of entry.deltas) {
+          if (delta !== 0) writes.push(() => { collection.add(key, -delta); });
+        }
       } else if (collection instanceof RuntimeMap) {
         // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Map paths keep MapState snapshots.
         const before = entry.before as MapState<JsonValue>, after = entry.after as MapState<JsonValue>;
