@@ -59,6 +59,17 @@ const sync = await connectSync(Board, { transport, store });
 
 The store restores the same writer and pending edits after a reload. If another tab holds the store's Web Lock, opening it throws `CheckpointLockedError`. Call `sync.stop()` when the writer is done to release the store.
 
+### Open the same key in several tabs
+
+One stored writer belongs to one tab at a time. To let several tabs edit, give the key `slots`:
+
+```ts
+const store = await openIndexedDbStore({ database: "my-app", key: `${documentId}:writer`, slots: 8 });
+console.log(store.slot); // 0 in the first tab, 1 in the second, …
+```
+
+Each tab takes a free slot and is its own writer, with its own session, pending edits, undo history and presence. Tabs see each other's edits through the server, as other devices do, so not while offline. When a tab closes, the browser releases its lock and the next tab that opens takes that slot over, including edits the closed tab had not sent yet: free slots with pending edits are taken first, then slots with a saved checkpoint, then the lowest. Opening throws `CheckpointLockedError` only when every slot is held. A key registers at most `slots` server sessions per browser profile. Slot 0 is the key itself, so a writer saved without `slots` is kept.
+
 Include the document's identity in the storage key, and verify that it matches the server document before calling `connectSync`. The same rule applies to file paths. The lock coordinates access to one stored writer; your application binds that writer's checkpoint to its [document lineage](recovery.md#persistence-and-lineage).
 
 For a Node.js client, open a file store.
