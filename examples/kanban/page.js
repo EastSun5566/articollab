@@ -1,4 +1,5 @@
 // @ts-check
+import { createUndoManager } from "../../dist/index.js";
 import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../dist/sync/index.js";
 import { createOfflineSwitch, describeSync } from "../sync-ui.js";
 import {
@@ -246,9 +247,14 @@ function mountWriter(parent, name, sync, network, restored = 0) {
   const offline = element("input");
   offline.type = "checkbox";
   offlineLabel.append(offline, " Offline");
+  const undoButton = element("button", undefined, "Undo");
+  const redoButton = element("button", undefined, "Redo");
+  undoButton.type = "button"; redoButton.type = "button";
+  undoButton.setAttribute("aria-keyshortcuts", "Control+Z Meta+Z");
+  redoButton.setAttribute("aria-keyshortcuts", "Control+Shift+Z Meta+Shift+Z Control+Y");
   const discard = element("button", undefined, "Discard blocked edits");
   discard.type = "button"; discard.hidden = true;
-  controls.append(offlineLabel, discard);
+  controls.append(undoButton, redoButton, offlineLabel, discard);
   const message = element("p", "message");
   message.setAttribute("aria-live", "polite");
   const notices = element("ul", "notices");
@@ -257,6 +263,8 @@ function mountWriter(parent, name, sync, network, restored = 0) {
   parent.append(section);
 
   const selection = createSelection(doc);
+  // This writer's own edits only: undo never reverts what the other writer changed since.
+  const history = createUndoManager(doc);
   let stopped = false, scheduled = false;
   /** Restores keyboard focus to a card's button after its row was re-created by a move. */
   /** @type {{cardId: string, action: string} | undefined} */
@@ -388,6 +396,8 @@ function mountWriter(parent, name, sync, network, restored = 0) {
     badge.dataset.state = shown.state;
     discard.hidden = sync.status !== "blocked";
     board.disabled = ["blocked", "gap", "failed", "stopped"].includes(sync.status);
+    undoButton.disabled = board.disabled || !history.canUndo;
+    redoButton.disabled = board.disabled || !history.canRedo;
     if (sync.status === "failed") {
       message.textContent = "Sync failed: " + describeError(sync.error) + ". Inspect and preserve the checkpoint.";
       return;
@@ -423,6 +433,19 @@ function mountWriter(parent, name, sync, network, restored = 0) {
   }));
   renderColumns();
   const stopStatus = sync.on("status", refresh), stopPush = sync.on("push", refresh);
+  const onUndo = () => { act(() => { history.undo(); }); };
+  const onRedo = () => { act(() => { history.redo(); }); };
+  /** Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z or Ctrl+Y redoes, except in text fields, which keep their own undo. */
+  const onKeyDown = (/** @type {KeyboardEvent} */ event) => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.target instanceof HTMLInputElement) return;
+    const key = event.key.toLowerCase();
+    const redo = (key === "z" && event.shiftKey) || (key === "y" && event.ctrlKey && !event.shiftKey);
+    if (key !== "z" && !redo) return;
+    event.preventDefault();
+    if (board.disabled) return;
+    if (redo) onRedo(); else onUndo();
+  };
+  const stopHistory = history.on("change", refresh);
   const onOffline = () => {
     network.set(offline.checked);
     refresh();
@@ -431,6 +454,9 @@ function mountWriter(parent, name, sync, network, restored = 0) {
   // Edits this writer cancels itself are not news.
   const onDiscard = () => { dropped.cancel(() => sync.rejectPending()).catch(() => {}).finally(refresh); };
   columns.addEventListener("click", onClick);
+  undoButton.addEventListener("click", onUndo);
+  redoButton.addEventListener("click", onRedo);
+  section.addEventListener("keydown", onKeyDown);
   columns.addEventListener("dragstart", onDragStart);
   columns.addEventListener("dragover", onDragOver);
   columns.addEventListener("drop", onDrop);
@@ -445,9 +471,12 @@ function mountWriter(parent, name, sync, network, restored = 0) {
     stopped = true;
     sync.stop();
     for (const cleanup of cleanups) cleanup();
-    stopChange(); dropped.stop(); stopStatus(); stopPush();
+    stopChange(); dropped.stop(); stopHistory(); history.destroy(); stopStatus(); stopPush();
     clearTimeout(refreshing);
     columns.removeEventListener("click", onClick);
+    undoButton.removeEventListener("click", onUndo);
+    redoButton.removeEventListener("click", onRedo);
+    section.removeEventListener("keydown", onKeyDown);
     columns.removeEventListener("dragstart", onDragStart);
     columns.removeEventListener("dragover", onDragOver);
     columns.removeEventListener("drop", onDrop);

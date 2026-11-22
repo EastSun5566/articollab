@@ -72,7 +72,8 @@
       <p>A move is a List move plus a column change, and a rename touches only the title, so they never conflict: when
         two writers move the same card, the later move wins and the card never appears twice. Moving or renaming a card
         someone else deleted is not saved, and the writer is told. Turn a writer <strong>Offline</strong> to try these
-        races.</p>
+        races. <strong>Undo</strong> and <strong>Redo</strong> revert only that writer's own edits, and never the other
+        writer's later ones.</p>
       <p>Each writer saves its edits in this browser as you make them, so reloading the page keeps edits that were not
         sent yet. A writer open in another tab stays locked there. This localhost prototype has no authentication, and
         the server keeps the document in memory: restarting it starts a new document.</p>

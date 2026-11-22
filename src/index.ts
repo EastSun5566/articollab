@@ -98,3 +98,4 @@ export {
 } from "./wire.ts";
 
 export { assertClientBatchNamespace } from "./namespace.ts";
+export { createUndoManager, type UndoManager, type UndoManagerOptions } from "./undo.ts";
