@@ -114,6 +114,18 @@ Each worker has a 30-second timeout, one warm-up and five fresh-fixture samples.
 
 JSON includes raw samples, settings, Node/V8, system information, versions and Git SHA/dirty status. Save results outside the checkout. Compare repeated runs on the same machine, Node version and workload without unrelated load; five samples do not support p95 claims. There is no CI latency threshold, SLA or browser-performance promise.
 
+### List moves
+
+```sh
+pnpm bench --list-move
+pnpm --silent bench --list-move --json
+pnpm bench --list-move --smoke
+```
+
+This separate matrix swaps the last two elements of a single-bunch List with unique values. It times the local move, an unobserved peer receive and an observed peer receive. The observer collects each event during receive and applies it to an array mirror after timing. Fixture creation, JSON round trips, decoding, server submission, writer acknowledgements, explicit GC and assertions are outside the timer.
+
+The three workloads use the default sizes and sampling settings, for nine full rows and three smoke rows. Snapshot and checkpoint bytes describe the starting fixture. Run the mode twice in sequence on the same machine and save the JSON outside Git. The observed receive measures library notification work and event collection. Browser rendering and mirror updates have their own costs.
+
 ### Fragmented Text and bounded history
 
 The opt-in extended matrix is separate from the default 105 workloads:
@@ -185,6 +197,8 @@ Decoded List/Text snapshots reuse the persistent states loaded during validation
 Text observers keep a separate persistent-state baseline per subscriber. For local operations and conflict-free remote commits, removing all accumulated target IDs leaves the same ordered, unchanged elements on both sides. Sort the targets' old/new positions, skip untouched gaps and replace adjacent target runs; discard element-identical replacements. Equal-length edits with unequal insertion/deletion counts across separate regions require a full element-prefix/suffix comparison: changed IDs can merely redistribute repeated characters without changing content. Coalescing uses the union of targets until all subscriber baselines catch up. Conflicts on either side and structurally transformed/rejected own batches also use the full fallback. Diff the optimistic views, never just the authoritative operations. Revisit this proof for move, undelete or intent-based replay.
 
 `text-observe.test.ts` applies notifications to independent element-array mirrors, including seeded interleavings, surrogate boundaries, callback failures and reentrancy. Observer baselines advance before callbacks, and notification draining runs only after existing callbacks succeed. Preserve their failure ordering when changing notification scopes. Unsubscribed Text must do no target traversal or diff calculation; do not charge all clients for opt-in UI integration. Full fallback and array/string materialization remain linear costs.
+
+One remote List move with no pending work or replay conflict changes only the named element's position. All other elements retain their relative order and payload references, so document change detection compares the moved element's old and new indices. An observer can use those indices if its baseline matches the exact pre-move state. A deleted element or an unchanged index produces no notification. Keep the full comparison for other moves and for observers with a different baseline or coalesced edits.
 
 ## CI and documentation deployment
 

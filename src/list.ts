@@ -443,6 +443,19 @@ export class ListState<T extends JsonValue> {
     }
   }
 
+  /** The two states differ only by applying one move of this permanent ID. */
+  singleMoveVisibleEquals(other: ListState<T>, id: Readonly<ElementId>): boolean {
+    return !this.has(id) || this.indexOf(id) === other.indexOf(id);
+  }
+
+  /** Describes the same single-move transition to a subscriber with a matching baseline. */
+  singleMoveChangesTo(other: ListState<T>, id: Readonly<ElementId>): ListChangeEvent<T> {
+    if (!this.has(id)) return listChangeEvent<T>(this.length, other.length, []);
+    const from = this.indexOf(id), to = other.indexOf(id);
+    const moves = from === to ? [] : [moveChange(from, to, this.valueFor(id))];
+    return listChangeEvent<T>(this.length, other.length, [], moves);
+  }
+
   /**
    * Visible changes to a later state. With targets, every other element must keep its ID, value
    * and relative order on both sides; inconsistent targets fall back to the full comparison.
@@ -913,8 +926,14 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
     return this.values();
   }
 
-  restore(state: ListState<T>): void {
+  restore(state: ListState<T>, singleMoveId?: Readonly<ElementId>): void {
+    const previous = this.current;
     this.current = state;
+    if (singleMoveId !== undefined && this.observers.hasPending) {
+      const id = ownId(singleMoveId);
+      this.observers.requireFullComparison((before, after) =>
+        before === previous && after === state ? before.singleMoveChangesTo(after, id) : undefined);
+    }
   }
 
   visibleEquals(state: ListState<T>): boolean {

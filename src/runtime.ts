@@ -453,11 +453,12 @@ function runtimeVisibleEquals(
 function restoreRuntime(
   runtime: RuntimeCollection,
   state: CollectionState,
-  path: string
+  path: string,
+  singleMoveId?: Readonly<ElementId>
 ): void {
   if (runtime instanceof RuntimeList) {
     if (!(state instanceof ListState)) throw wrongCollectionKind(path);
-    runtime.restore(state);
+    runtime.restore(state, singleMoveId);
   } else if (runtime instanceof RuntimeText) {
     if (!(state instanceof TextState)) throw wrongCollectionKind(path);
     runtime.restore(state);
@@ -977,8 +978,13 @@ export class ClientDocument<S extends SchemaShape> {
     // Both replays must be conflict-free; otherwise compare the entire visible prefix.
     const compareOwnPayloads = isOwnCommit && previous === null && conflict === null &&
       sameOperations(commit.operations, this.pendingBatches[0]!.operations, true);
-    // shortcut: complete fixed-ID replay preserves untouched IDs/values; moved paths compare in full below.
+    // shortcut: complete fixed-ID replay preserves untouched IDs/values. General moves compare in full.
     const compareRemoteTargets = !isOwnCommit && previous === null && conflict === null;
+    // shortcut: one remote move with no pending replay changes only the named element's position.
+    const commitOperations: readonly Operation[] = commit.operations;
+    const onlyOperation = commitOperations[0];
+    const singleRemoteMove = compareRemoteTargets && remainingBatches.length === 0 &&
+      commitOperations.length === 1 && onlyOperation?.type === "list/move" ? onlyOperation : undefined;
     const listComparisonIds = compareOwnPayloads || compareRemoteTargets
       ? new Map<string, Readonly<ElementId>[]>() : undefined;
     const textComparisonOperations = compareRemoteTargets
@@ -1011,7 +1017,11 @@ export class ClientDocument<S extends SchemaShape> {
       if (nextState === undefined) {
         throw new Error(`Missing document path: ${path}`);
       }
-      // A move reorders untouched elements, so a remote move needs the whole List compared.
+      if (singleRemoteMove?.path === path && runtime instanceof RuntimeList && nextState instanceof ListState) {
+        if (!changed) changed = !runtime.state.singleMoveVisibleEquals(nextState, singleRemoteMove.id);
+        continue;
+      }
+      // For general moves, testing only affected IDs and values cannot establish order equality.
       const ids = listComparisonIds === undefined || (compareRemoteTargets && movedPaths.has(path))
         ? undefined : listComparisonIds.get(path) ?? [];
       const textOperations = textComparisonOperations === undefined ? undefined : textComparisonOperations.get(path) ?? [];
@@ -1026,13 +1036,14 @@ export class ClientDocument<S extends SchemaShape> {
     this.currentReplayConflict = sameConflict ? previous : conflict;
 
     for (const [path, runtime] of this.collections) {
-      restoreRuntime(runtime, nextOptimisticStates.get(path)!, path);
+      restoreRuntime(runtime, nextOptimisticStates.get(path)!, path,
+        this.observerCount > 0 && singleRemoteMove?.path === path ? singleRemoteMove.id : undefined);
       if ((runtime instanceof RuntimeText || runtime instanceof RuntimeList || runtime instanceof RuntimeMap) &&
         (previous !== null || conflict !== null || (isOwnCommit && !compareOwnPayloads))) {
         runtime.requireFullComparison();
       }
     }
-    this.trackObservedOperations(commit.operations);
+    if (singleRemoteMove === undefined) this.trackObservedOperations(commit.operations);
     if (ownBatch !== undefined) this.trackObservedOperations(ownBatch.operations);
 
     if (changed) {

@@ -39,6 +39,9 @@ function view(doc: Doc) {
   const items = states.get("items"), body = states.get("body"), count = states.get("count");
   assert.ok(items instanceof ListState && body instanceof TextState && typeof count === "number");
   const listSnapshot = items.save(), textSnapshot = body.save();
+  const permanentIds = new Map(listSnapshot.moves?.map(({ id, position }) => [
+    JSON.stringify([position.bunchId, position.counter]), JSON.stringify([id.bunchId, id.counter]),
+  ]));
   const visible = doc.state.items.toArray();
   assert.equal(visible.length, listSnapshot.values.length);
   for (const [index, payload] of visible.entries()) assert.ok(Object.is(payload, listSnapshot.values[index]));
@@ -46,7 +49,8 @@ function view(doc: Doc) {
   assert.ok(Object.is(doc.state.count.value, count));
   const meta = states.get("meta");
   assert.ok(Object.is(doc.state.meta.value, meta));
-  return { count, meta, items: listSnapshot.values, itemIds: visibleIds(listSnapshot.idList),
+  return { count, meta, items: listSnapshot.values,
+    itemIds: visibleIds(listSnapshot.idList).map((position) => permanentIds.get(position) ?? position),
     body: textSnapshot.value, textIds: visibleIds(textSnapshot.idList), conflict: doc.replayConflict };
 }
 
@@ -145,6 +149,34 @@ function random(seed: number) {
 }
 
 describe("full visible change comparison", () => {
+  it("detects a lone remote move by permanent identity and ignores a position-only change", (t) => {
+    const network = setup();
+    const [writer, peer] = network.clients;
+    assert.ok(writer !== undefined && peer !== undefined);
+    writer.doc.transact(() => { writer.doc.state.items.push(1); writer.doc.state.items.push(1); writer.doc.state.items.push(2); });
+    const seed = network.submit(writer, "accept")!;
+    network.receive(writer, seed); network.receive(peer, seed);
+    const compare = t.mock.method(ListState.prototype, "visibleEquals");
+    const changes = peer.changes;
+
+    writer.doc.state.items.move(0, 1);
+    const moved = network.submit(writer, "accept")!;
+    network.receive(peer, moved);
+    assert.deepEqual(peer.doc.state.items.toArray(), [1, 1, 2]);
+    assert.equal(peer.changes, changes + 1);
+    assert.equal(compare.mock.callCount(), 0);
+    network.receive(writer, moved);
+
+    writer.doc.state.items.move(0, 2);
+    const batch = writer.doc.checkpoint().pendingBatches[0]!;
+    const operation = batch.operations[0]!;
+    assert.ok(operation.type === "list/move");
+    const sameIndex = network.server.receive({ ...batch, operations: [{ ...operation, before: null }] }).commit;
+    network.receive(peer, sameIndex);
+    assert.equal(peer.changes, changes + 1);
+    assert.equal(compare.mock.callCount(), 0);
+  });
+
   it("matches the oracle for remote sets and replacements with masking and disjoint pending", () => {
     for (const kind of ["list", "text"] as const) for (const overlap of [false, true]) {
       const network = setup();
