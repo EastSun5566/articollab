@@ -12,6 +12,6 @@ Choose [collections](collections.md) for whole JSON values, ordered items, plain
 
 Use the [HTTP sync adapter](sync.md) to deliver commits and resume after a disconnect, or provide your own transport.
 
-Your application authenticates writers, stores server checkpoints and binds each writer to the right document. For saved documents, read the [upgrade guide](recovery.md#upgrading-from-07-to-08) before using new operations.
+Your application authenticates writers, stores server checkpoints and binds each writer to the right document. For saved documents, read the [upgrade guide](recovery.md#upgrading-from-08-to-09) before using List moves.
 
 [Next: Counter quick start](quick-start.md)
