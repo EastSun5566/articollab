@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createClient, createUndoManager, type DocumentOperation, type ServerCommit, type ServerDocument } from "../../../dist/index.js";
+import { createClient, createUndoManager, decodeClientCheckpoint, type DocumentOperation, type ServerCommit, type ServerDocument } from "../../../dist/index.js";
 import {
   addCard, Board, cardsIn, COLUMNS, deleteCard, droppedEdits, findCard, moveCard, renameCard, watchDroppedEdits, type Shape,
 } from "../board.js";
@@ -19,6 +19,12 @@ function network(server: ServerDocument<Shape> = createBoardServer()) {
     const watcher = watchDroppedEdits(doc, (message) => notices.push(message));
     return {
       doc, notices, discarded, watcher,
+      /** Renames as the page does: tracked, so a rename the server drops is reported. */
+      rename(cardId: string, title: string) {
+        const tracked = doc.track(() => renameCard(doc, cardId, title));
+        watcher.follow(tracked.settled);
+        return tracked;
+      },
       /** Sends the next unsent pending batch, as the sync engine does: never past a replay conflict. */
       send() {
         const batch = doc.checkpoint().pendingBatches.find(({ seq }) => seq > sent);
@@ -82,21 +88,54 @@ describe("Kanban board under concurrent edits", () => {
     assert.deepEqual([a.notices, b.notices], [[], []]);
   });
 
-  it("drops a rename of a card another writer deleted, leaves no orphan data, and reports it on acknowledgement", () => {
+  it("drops a rename of a card another writer deleted, leaves no orphan data, and reports it on acknowledgement", async () => {
     const n = network(), a = n.writer(), b = n.writer();
     assert.ok(deleteCard(a.doc, "seed-sketch"));
-    assert.ok(renameCard(b.doc, "seed-sketch", "Too late"));
+    const renamed = b.rename("seed-sketch", "Too late");
+    assert.ok(renamed.value);
     a.send();
     b.receive();
     assert.deepEqual(b.notices, [], "nothing is reported before the server decides");
     assert.deepEqual(b.send().operations, []);
     a.receive(); b.receive();
+    assert.equal((await renamed.settled)?.status, "rejected");
     assert.deepEqual([a.notices, b.notices], [[], ["Not saved: “Too late”. Another writer deleted this card."]]);
     for (const writer of [a, b]) {
       assert.equal(findCard(writer.doc, "seed-sketch"), undefined);
       assert.equal(writer.doc.state.titles.has("seed-sketch"), false);
       assert.deepEqual(writer.board(), serverBoard(n.server));
     }
+  });
+
+  it("reports a column-only move of a deleted card, which only the transform shows", () => {
+    const n = network(), a = n.writer(), b = n.writer();
+    assert.ok(deleteCard(a.doc, "seed-tests"));
+    // seed-tests already sits right before seed-drag in order: moving it to the top of doing changes only its column.
+    assert.ok(moveCard(b.doc, "seed-tests", "doing", 0));
+    assert.deepEqual(b.doc.checkpoint().pendingBatches[0]?.operations.map(({ type }) => type), ["map/set"]);
+    a.send(); b.send();
+    a.receive(); b.receive();
+    assert.deepEqual([b.discarded, b.notices], [[], ["Not moved: another writer deleted that card."]]);
+  });
+
+  it("reports a lost rename restored from a checkpoint through settled(batch)", async () => {
+    const n = network(), a = n.writer(), b = n.writer();
+    assert.ok(deleteCard(a.doc, "seed-tests"));
+    renameCard(b.doc, "seed-tests", "Typed before the reload");
+    a.send();
+    // The page reloads: a new client from B's checkpoint follows each restored pending batch.
+    const saved = decodeClientCheckpoint(Board, JSON.parse(JSON.stringify(b.doc.checkpoint())));
+    const restored = createClient(Board, { clientId: saved.clientId, checkpoint: saved, onBatch() {} });
+    const notices: string[] = [];
+    const watcher = watchDroppedEdits(restored, (message) => notices.push(message));
+    const outcomes = restored.checkpoint().pendingBatches.map((batch) => restored.settled(batch));
+    for (const settled of outcomes) watcher.follow(settled);
+    for (const commit of [n.server.commitsSince(saved.snapshot.serverSeq)!, [n.server.receive(saved.pendingBatches[0]!).commit]].flat()) {
+      restored.receive(commit);
+    }
+    await Promise.all(outcomes);
+    assert.deepEqual(notices, ["Not saved: “Typed before the reload”. Another writer deleted this card."]);
+    watcher.stop();
   });
 
   it("reports a move of a card another writer deleted through discard, with no orphan column", () => {
@@ -120,7 +159,7 @@ describe("Kanban board under concurrent edits", () => {
     const n = network(), a = n.writer(), b = n.writer();
     assert.ok(deleteCard(a.doc, "seed-sketch"));
     assert.ok(moveCard(b.doc, "seed-sketch", "todo", 2)); // A List move only: seed-sketch is already in todo.
-    assert.ok(renameCard(b.doc, "seed-drag", "Cancelled rename"));
+    const renamed = b.rename("seed-drag", "Cancelled rename");
     a.send();
     b.send();
     b.receive();
@@ -128,6 +167,7 @@ describe("Kanban board under concurrent edits", () => {
     b.notices.length = 0;
     const pending = b.doc.checkpoint().pendingBatches[0]!;
     await b.watcher.cancel(async () => { b.doc.receive(n.server.reject(pending).commit); });
+    assert.equal((await renamed.settled)?.status, "rejected");
     assert.deepEqual(b.notices, [], "the writer's own cancellation is not reported");
     assert.equal(findCard(b.doc, "seed-drag")?.card.title, "Drag cards between columns");
     b.watcher.stop();

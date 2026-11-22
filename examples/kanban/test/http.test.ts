@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { IDBFactory } from "fake-indexeddb";
 import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../../dist/sync/index.js";
 import { createOfflineSwitch } from "../../sync-ui.js";
-import { addCard, Board, cardsIn, COLUMNS, deleteCard, droppedEdits, findCard, moveCard, renameCard } from "../board.js";
+import { addCard, Board, cardsIn, COLUMNS, deleteCard, findCard, lostRename, moveCard, renameCard } from "../board.js";
 import { createBoardServer, SEED_CARDS, startKanbanServer } from "../server.ts";
 
 /** Waits for `condition` with real timers: writers synchronize on their own. */
@@ -36,15 +36,16 @@ async function fixture(t: TestContext) {
     const network = createOfflineSwitch();
     const sync = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 },
       transport: createHttpTransport({ url: host.url + "/sync/", fetch: network.fetch }) });
-    // The page's check: the server dropped a rename of a card a peer deleted first.
+    // The page's check: a tracked rename the server dropped because a peer deleted the card first.
     const lost: string[] = [];
-    const stopTransform = sync.doc.on("transform", ({ dropped }) => {
-      for (const edit of droppedEdits(dropped)) if (edit.kind === "rename") lost.push(edit.title ?? "");
-    });
-    stops.push(() => { stopTransform(); sync.stop(); });
+    const rename = (cardId: string, title: string) => {
+      const { settled } = sync.doc.track(() => renameCard(sync.doc, cardId, title));
+      void settled.then((outcome) => { const card = outcome && lostRename(outcome); if (card !== undefined) lost.push(card.title); });
+    };
+    stops.push(() => { sync.stop(); });
     await sync.sync();
     await until(() => sync.push === "open", "the push channel");
-    return { sync, network, lost,
+    return { sync, network, lost, rename,
       board: () => [sync.doc.state.order.toArray(), sync.doc.state.columns.toObject(), sync.doc.state.titles.toObject()],
       settled: () => sync.doc.checkpoint().pendingBatches.length === 0 && sync.doc.checkpoint().snapshot.serverSeq === server.snapshot().serverSeq,
     };
@@ -70,7 +71,7 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
   it("applies an offline rename to a card another writer moved meanwhile", async (t) => {
     const f = await fixture(t), a = await f.connect(), b = await f.connect();
     a.network.set(true);
-    renameCard(a.sync.doc, "seed-tests", "Renamed offline");
+    a.rename("seed-tests", "Renamed offline");
     await until(() => a.sync.status === "retrying", "A to notice it is offline");
     moveCard(b.sync.doc, "seed-tests", "done", 1);
     await until(() => b.settled(), "B's move");
@@ -88,7 +89,7 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
   it("reports an offline rename of a card another writer deleted meanwhile, leaving no orphan data", async (t) => {
     const f = await fixture(t), a = await f.connect(), b = await f.connect();
     a.network.set(true);
-    renameCard(a.sync.doc, "seed-sketch", "Lost rename");
+    a.rename("seed-sketch", "Lost rename");
     deleteCard(b.sync.doc, "seed-sketch");
     await until(() => b.settled(), "B's delete");
     a.network.set(false);

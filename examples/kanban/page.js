@@ -339,7 +339,11 @@ function mountWriter(parent, name, sync, network, restored = 0) {
     event.preventDefault();
     const cardId = selection.cardId;
     if (cardId === undefined) return;
-    act(() => { if (!renameCard(doc, cardId, titleInput.value)) message.textContent = "That card no longer exists."; });
+    act(() => {
+      // Tracked, so a rename the server drops is reported for this very edit.
+      const { value: renamed, settled } = doc.track(() => renameCard(doc, cardId, titleInput.value));
+      if (renamed) dropped.follow(settled); else message.textContent = "That card no longer exists.";
+    });
   }
 
   // Native drag and drop within this writer's board.
@@ -422,6 +426,8 @@ function mountWriter(parent, name, sync, network, restored = 0) {
   const stopChange = doc.on("change", () => { refresh(); schedule(); });
   // The server dropped this writer's rename or move of a card a peer deleted first.
   const dropped = watchDroppedEdits(doc, notify);
+  // Renames restored from before a reload are followed too, by their pending batches.
+  for (const batch of doc.checkpoint().pendingBatches) dropped.follow(doc.settled(batch));
   cleanups.push(doc.state.order.observe(schedule), doc.state.columns.observe(schedule));
   // Titles live in `titles`: update the card's row in place, wherever it is.
   cleanups.push(doc.state.titles.observe(({ changes }) => {
