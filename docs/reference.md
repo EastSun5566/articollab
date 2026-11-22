@@ -4,7 +4,7 @@ Look up the public API and exact collaboration contracts here. For a runnable in
 
 ## Compatibility
 
-These docs cover the public API. Install `articollab` and upgrade all participating runtimes before exchanging new operations or snapshot formats. See the [0.8 upgrade guide](recovery.md#upgrading-from-07-to-08) for Map and checkpoint stores, or check the [0.4](recovery.md#upgrading-from-03-to-04), [0.3](recovery.md#upgrading-from-02-to-03) and [0.1](recovery.md#upgrading-from-01) upgrade guides for earlier changes.
+Upgrade all participating runtimes before exchanging new operations or snapshot formats. See the [0.9 upgrade guide](recovery.md#upgrading-from-08-to-09) for List moves and the [0.8 upgrade guide](recovery.md#upgrading-from-07-to-08) for Map and checkpoint stores.
 
 Private implementation details, exact runtime error wording, performance figures and example helpers are not compatibility guarantees. `WireDecodeError` promises its documented `name`, JSON Pointer `path` and readable message, not exact wording.
 
@@ -22,7 +22,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.on("discard", listener)` | Subscribes to this writer's List `set()` and `move()` operations that the server applied after their element was deleted. |
 | `doc.on("transform", listener)` | Subscribes to this writer's batches that the server transformed or rejected. |
 | `doc.state.body.observe(listener)` | Opt-in visible Text edits; returns an unsubscribe function. |
-| `doc.state.items.observe(listener)` | Opt-in visible List splices and in-place sets; returns an unsubscribe function. |
+| `doc.state.items.observe(listener)` | Opt-in visible List moves, splices and in-place sets; returns an unsubscribe function. |
 | `doc.state.settings.observe(listener)` | Opt-in visible Map sets and deletes, with previous values; returns an unsubscribe function. |
 | `cursorAt(index, bind?)`, `cursorIndex(cursor)` on Text and List | Stable gap positions: create a frozen cursor, then resolve its current index or `undefined`. |
 | `doc.receive(commit)` | Applies the next authoritative commit, acknowledges own pending work and replays the rest. |
@@ -50,8 +50,9 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `ClientBatchRef`, `ClientBatch`, `ServerCommit`, `ServerReceipt`, `ServerReplayEntry` | Batch identity, authoritative result, local routing metadata and retry entries. |
 | `LocalChangeEvent`, `ServerChangeEvent`, `ChangeEvent`, `PendingReplayConflict` | Local/server notifications and the first blocked pending operation. |
 | `DiscardEvent` | This writer's List sets and moves that had no effect because their element was already deleted. |
+| `TransformEvent` | This writer's original batch, the acknowledged commit and the operations the server dropped. |
 | `TextChange`, `TextChangeEvent` | Visible Text element edits from an opt-in subscription. |
-| `ListChange`, `ListChangeEvent` | Visible List splices and in-place sets from an opt-in subscription. |
+| `ListChange`, `ListChangeEvent` | Visible List moves, splices and in-place sets from an opt-in subscription. |
 | `MapChange`, `MapChangeEvent` | Visible Map sets and deletes, with previous values, from an opt-in subscription. |
 | `Cursor` | A stable Text or List gap position: `{ anchor, bind }`. |
 | `DocumentSnapshotData`, `DocumentSnapshot`, `ListSnapshotData`, `ListMoveEntry`, `TextSnapshotData`, `MapSnapshotData`, `SavedIdRange` | Typed snapshot payloads, including List/Text tombstones. |

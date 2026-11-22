@@ -137,9 +137,17 @@ Your storage and subscription handoff are application responsibilities. Same URL
 
 The repository's browser recovery demo uses document-ID envelopes/headers and session storage. Those are application examples, not core wire fields or authentication. Neither ordinary checkpoint containers nor these examples promise power-loss durability or cross-file transactions.
 
-## Upgrading to List moves
+## Upgrading from 0.8 to 0.9
 
-`List.move()` adds the `list/move` operation and, once a visible element has moved, an optional `moves` field in List snapshots. Snapshots without moved elements keep the old format, and new runtimes accept existing snapshots and checkpoints without conversion. Older runtimes reject both the operation and the field, so upgrade the server, every client and every other snapshot/checkpoint reader before any writer moves an element, following the same coordinated steps as the [0.4 upgrade](#upgrading-from-03-to-04). Once a saved snapshot or pending batch contains a move, a package downgrade is not enough: preserve the data and use compatible readers. Do not strip `moves` or rewrite moves as delete + insert to make old readers load it; that changes element identities.
+Articollab 0.9 introduces [List moves](collections.md#move-an-element). The new runtime can restore valid 0.8 snapshots and checkpoints with the same schema and document lineage. Existing pending batches retain their original operations and sequence numbers.
+
+1. Stop the old writers and preserve matching client and server checkpoint backups.
+2. Upgrade the server, every client and every snapshot or checkpoint reader, including offline clients that may restore later. Restore writers with their original session IDs, then catch up.
+3. Enable `List.move()` once all readers are ready. If you maintain a List view with `observe()`, add a `move` handler and apply changes in the supplied order. See the [List view example](transactions.md#update-a-list-view-incrementally).
+
+A 0.8 runtime rejects `list/move` in batches, commits, pending work, retry records or history. It also rejects the `moves` field in snapshots that contain moved elements. Keep a copy of the original data for rollback planning. Removing the field or converting a move to delete and insert can lose position or element identity.
+
+The [`transform` event](reference.md#mutations-transactions-and-events) is a local notification for the writer whose batch was changed or rejected. It uses the original batch and the acknowledged commit without adding fields to either.
 
 ## Upgrading from 0.7 to 0.8
 
