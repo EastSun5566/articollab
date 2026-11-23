@@ -11,6 +11,15 @@ export interface HttpTransportOptions {
   readonly headers?: () => HeadersInit | Promise<HeadersInit>;
 }
 
+/** Checks a registration answer, from either transport. */
+export function readRegistration(input: unknown): { readonly clientId: string; readonly snapshot: unknown } {
+  if (input === null || typeof input !== "object" || Array.isArray(input) ||
+    !("clientId" in input) || typeof input.clientId !== "string" || !("snapshot" in input)) {
+    throw new SyncResponseError("Invalid registration response");
+  }
+  return { clientId: input.clientId, snapshot: input.snapshot };
+}
+
 function parse(message: string, what: string): unknown {
   try { return JSON.parse(message); }
   catch (cause) { throw new SyncResponseError(`Invalid ${what} JSON`, { cause }); }
@@ -35,14 +44,7 @@ export function createHttpTransport(options: HttpTransportOptions): SyncTranspor
     request(path, status, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
   return {
-    async register() {
-      const input = parse(await post("clients", 201, {}), "registration");
-      if (input === null || typeof input !== "object" || Array.isArray(input) ||
-        !("clientId" in input) || typeof input.clientId !== "string" || !("snapshot" in input)) {
-        throw new SyncResponseError("Invalid registration response");
-      }
-      return { clientId: input.clientId, snapshot: input.snapshot };
-    },
+    async register() { return readRegistration(parse(await post("clients", 201, {}), "registration")); },
     async submit(batch: ClientBatch) { await post("batches", 204, batch); },
     async reject(batch: ClientBatch) { await post("rejections", 204, batch); },
     async publishPresence(clientId: string, state: JsonValue | null) { await post("presence", 204, { clientId, state }); },

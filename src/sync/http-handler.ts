@@ -11,6 +11,17 @@ import { jsonEquals, validateJsonValue } from "../json.ts";
 import { integerOption } from "../options.ts";
 import { checkPayload, type PayloadSchema } from "../payload.ts";
 import type { JsonValue } from "../schema.ts";
+import {
+  acceptSocket,
+  failure,
+  type Allow,
+  type PushEvent,
+  type Reply,
+  type Subscriber,
+  type SyncConnection,
+  type SyncCore,
+  type SyncSocket,
+} from "./socket-handler.ts";
 
 export type SyncAction = "register" | "submit" | "reject" | "catchUp" | "presence";
 
@@ -34,25 +45,32 @@ export interface SyncHandlerOptions<S extends SchemaShape> {
   ) => boolean | Promise<boolean>;
   /** Enables `POST rejections`, which cancels pending work. Default false. */
   readonly allowRejections?: boolean;
-  /** Maximum request body size in bytes. Default 1 MiB. */
+  /** Maximum request body or socket message size in bytes. Default 1 MiB. */
   readonly maxBodySize?: number;
-  /** Milliseconds between heartbeat comments on event streams. Default 15000. */
+  /** Milliseconds between heartbeats on event streams and subscribed sockets. Default 15000. */
   readonly heartbeatInterval?: number;
-  /** Maximum open event streams; more are answered with 503. Default 1000. */
+  /** Maximum event streams and socket subscriptions open at once; more are answered with 503. Default 1000. */
   readonly maxEventStreams?: number;
   /**
-   * Enables `POST presence`: writers' ephemeral states, kept in memory only and pushed to every
-   * event stream as `presence` events until they are cleared or expire.
+   * Enables `POST presence` and socket `presence` messages: writers' ephemeral states, kept in
+   * memory only and pushed to every subscriber until they are cleared, expire, or the socket that
+   * sent them closes.
    */
   readonly presence?: SyncHandlerPresenceOptions;
 }
 
-/** A Fetch API handler that can also push commits made outside it to open event streams. */
+/** A Fetch API handler that also serves WebSockets and can push commits made outside it. */
 export interface SyncHandler {
   (request: Request): Promise<Response>;
   /**
+   * Serves one WebSocket with the same server, queue and presence as the HTTP routes. `request` is
+   * the upgrade request, passed to `authorize` for every message. Pass each received message to the
+   * returned connection's `message()`, and call its `close()` when the socket closes.
+   */
+  accept(socket: SyncSocket, request: Request): SyncConnection;
+  /**
    * Sends commits that were applied to the server without this handler, such as by a direct
-   * `server.receive()`, to open event streams. Call it after those commits are saved.
+   * `server.receive()`, to open event streams and sockets. Call it after those commits are saved.
    */
   notify(): Promise<void>;
 }
@@ -97,17 +115,25 @@ async function readBody(request: Request, limit: number): Promise<string | null>
 
 const WATERMARK = /^(0|[1-9]\d*)$/;
 const MAX_EVENT_STREAM_BUFFER_BYTES = 4 * 1024 * 1024;
+const STORAGE_FAILED = "Checkpoint storage failed; restart this host";
 
-interface EventStream {
-  /** The last server sequence queued for delivery. */
-  sent: number;
-  send(text: string): boolean;
-  close(): void;
+/** Formats a push event as one server-sent event. */
+function eventFrame(event: PushEvent): string {
+  switch (event.type) {
+    case "commits": return `event: commits\nid: ${event.last}\ndata: ${JSON.stringify(event.commits)}\n\n`;
+    case "presence": return `event: presence\ndata: ${JSON.stringify({ clientId: event.clientId, state: event.state })}\n\n`;
+    case "gap": return "event: gap\ndata: null\n\n";
+    default: return ": ping\n\n";
+  }
 }
 
+const toResponse = ({ status, body }: Reply): Response =>
+  body === undefined ? new Response(null, { status, headers: { "Cache-Control": "no-store" } }) : json(status, body);
+
 /**
- * A Fetch API handler for the routes `createHttpTransport` uses. It matches the last path segment,
- * so mount it under any prefix. It does not authenticate: use `authorize` to bind requests to writers.
+ * A Fetch API handler for the routes `createHttpTransport` uses, which also serves sockets for
+ * `createWebSocketTransport` through `accept`. It matches the last path segment, so mount it under
+ * any prefix. It does not authenticate: use `authorize` to bind requests to writers.
  */
 export function createSyncHandler<S extends SchemaShape>(
   schema: DocumentSchema<S>,
@@ -118,11 +144,13 @@ export function createSyncHandler<S extends SchemaShape>(
   const heartbeatInterval = integerOption(options.heartbeatInterval ?? 15_000, "heartbeatInterval", 0);
   const maxEventStreams = integerOption(options.maxEventStreams ?? 1000, "maxEventStreams", 0);
   const presenceTtl = options.presence === undefined ? 0 : integerOption(options.presence.ttl ?? 30_000, "presence.ttl", 1);
-  /** Writers' current presence, in memory only. */
-  const presence = new Map<string, { readonly state: JsonValue; expiresAt: number }>();
+  /** Writers' current presence, in memory only, with the socket that sent it, if any. */
+  const presence = new Map<string, { readonly state: JsonValue; readonly owner: object | undefined; expiresAt: number }>();
   let sweeper: ReturnType<typeof setInterval> | undefined;
   const encoder = new TextEncoder();
-  const streams = new Set<EventStream>();
+  /** Open event streams and subscribed sockets. */
+  const subscribers = new Set<Subscriber>();
+  const sockets = new Set<{ fail(): void }>();
   let failed = false;
   // Writes, their saves and every read of commits run one at a time, so no unsaved commit is served.
   let queue: Promise<unknown> = Promise.resolve();
@@ -132,33 +160,32 @@ export function createSyncHandler<S extends SchemaShape>(
     queue = result.catch(() => {});
     return result;
   }
-  function closeStreams(): void {
-    for (const stream of [...streams]) stream.close();
-  }
   async function saved(): Promise<boolean> {
     try { await options.saveCheckpoint?.(server.checkpoint()); return true; }
-    catch { failed = true; closeStreams(); return false; }
-  }
-  /** Sends each stream the saved commits it has not sent; runs inside the queue. */
-  function broadcast(): void {
-    for (const stream of [...streams]) {
-      const commits = server.commitsSince(stream.sent);
-      if (commits === null) { stream.send("event: gap\ndata: null\n\n"); stream.close(); continue; }
-      const last = commits.at(-1);
-      if (last === undefined) continue;
-      if (stream.send(`event: commits\nid: ${last.serverSeq}\ndata: ${JSON.stringify(commits)}\n\n`)) {
-        stream.sent = last.serverSeq;
-      } else {
-        // Finish after the queued frames so the client can catch up from what it received.
-        stream.close();
-      }
+    catch {
+      failed = true;
+      for (const subscriber of [...subscribers]) subscriber.close();
+      for (const socket of [...sockets]) socket.fail();
+      return false;
     }
   }
-  const presenceFrame = (clientId: string, state: JsonValue | null) =>
-    `event: presence\ndata: ${JSON.stringify({ clientId, state })}\n\n`;
+  /** Sends `subscriber` the saved commits it has not received; runs inside the queue. */
+  function deliver(subscriber: Subscriber): void {
+    const commits = server.commitsSince(subscriber.sent);
+    if (commits === null) { subscriber.push({ type: "gap" }); subscriber.close(); return; }
+    const last = commits.at(-1);
+    if (last === undefined) return;
+    if (subscriber.push({ type: "commits", commits, last: last.serverSeq })) subscriber.sent = last.serverSeq;
+    // Finish after the queued frames so the client can catch up from what it received.
+    else subscriber.close();
+  }
+  function broadcast(): void {
+    for (const subscriber of [...subscribers]) deliver(subscriber);
+  }
   function broadcastPresence(clientId: string, state: JsonValue | null): void {
-    const frame = presenceFrame(clientId, state);
-    for (const stream of [...streams]) if (!stream.send(frame)) stream.close();
+    for (const subscriber of [...subscribers]) {
+      if (!subscriber.push({ type: "presence", clientId, state })) subscriber.close();
+    }
   }
   /** Removes expired states; runs only while some exist. */
   function sweep(): void {
@@ -170,14 +197,14 @@ export function createSyncHandler<S extends SchemaShape>(
     }
     if (presence.size === 0 && sweeper !== undefined) { clearInterval(sweeper); sweeper = undefined; }
   }
-  function setPresence(clientId: string, state: JsonValue | null): void {
+  function setPresence(clientId: string, state: JsonValue | null, owner?: object): void {
     const previous = presence.get(clientId);
     if (state === null) {
       if (previous === undefined) return;
       presence.delete(clientId);
       broadcastPresence(clientId, null);
     } else {
-      presence.set(clientId, { state, expiresAt: Date.now() + presenceTtl });
+      presence.set(clientId, { state, owner, expiresAt: Date.now() + presenceTtl });
       // A re-send of the same state only extends it.
       if (previous === undefined || !jsonEquals(previous.state, state)) broadcastPresence(clientId, state);
     }
@@ -188,61 +215,151 @@ export function createSyncHandler<S extends SchemaShape>(
     } else if (presence.size === 0 && sweeper !== undefined) { clearInterval(sweeper); sweeper = undefined; }
   }
 
-  async function allowed(request: Request, action: SyncAction, clientId?: string): Promise<boolean> {
-    if (options.authorize === undefined) return true;
-    return await options.authorize(request, clientId === undefined ? { action } : { action, clientId });
-  }
+  const core: SyncCore = {
+    maxMessageSize: maxBodySize,
+    heartbeatInterval,
+    maxBufferedBytes: MAX_EVENT_STREAM_BUFFER_BYTES,
+    rejections: options.allowRejections === true,
+    presence: options.presence !== undefined,
+    get failed() { return failed; },
+    allow(request) {
+      const { authorize } = options;
+      return async (action, clientId) => authorize === undefined ||
+        await authorize(request, clientId === undefined ? { action } : { action, clientId });
+    },
+    async register(allowed) {
+      if (!(await allowed("register"))) return failure(403, "Forbidden");
+      return serialize(async () => {
+        if (failed) return failure(503, STORAGE_FAILED);
+        let clientId: string;
+        try { clientId = server.openClient(); } catch { return failure(409, "Client session could not be opened"); }
+        if (!(await saved())) return failure(500, "Checkpoint could not be saved");
+        return { status: 201, body: { clientId, snapshot: server.snapshot() } };
+      });
+    },
+    async write(kind, input, allowed) {
+      let batch: ClientBatch<DocumentOperation<S>>;
+      try { batch = decodeClientBatch(schema, input); } catch { return failure(400, "Invalid batch"); }
+      if (!(await allowed(kind, batch.clientId))) return failure(403, "Forbidden");
+      return serialize(async () => {
+        if (failed) return failure(503, STORAGE_FAILED);
+        let replayed: boolean;
+        try { ({ replayed } = kind === "reject" ? server.reject(batch) : server.receive(batch)); }
+        catch { return failure(409, "Batch could not be applied"); }
+        if (!replayed) {
+          if (!(await saved())) return failure(500, "Checkpoint could not be saved");
+          broadcast(); // Still inside the queue: only saved commits are pushed.
+        }
+        // Acceptance is not an acknowledgement: the writer confirms it through catch-up.
+        return { status: 204 };
+      });
+    },
+    async catchUp(watermark, allowed) {
+      if (!(await allowed("catchUp"))) return failure(403, "Forbidden");
+      return serialize(() => {
+        if (failed) return failure(503, STORAGE_FAILED);
+        // Read inside the queue: a write that is still saving cannot have its commit served.
+        try { return { status: 200, body: server.commitsSince(watermark) }; }
+        catch { return failure(400, "Invalid catch-up watermark"); }
+      });
+    },
+    async publish(clientId, state, allowed, owner) {
+      if (state !== null) {
+        try {
+          validateJsonValue(state, ["state"]);
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- validateJsonValue has just accepted it as JSON.
+          checkPayload(options.presence?.schema, state as JsonValue, ["state"]);
+        } catch { return failure(400, "Invalid presence state"); }
+      }
+      if (!(await allowed("presence", clientId))) return failure(403, "Forbidden");
+      if (!server.listClients().some((session) => session.clientId === clientId)) return failure(409, "Unknown client session");
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Checked to be JSON above.
+      setPresence(clientId, state as JsonValue | null, owner);
+      return { status: 204 };
+    },
+    async subscribe(watermark, allowed, create) {
+      if (!(await allowed("catchUp"))) return failure(403, "Forbidden");
+      return serialize(() => {
+        if (failed) return failure(503, STORAGE_FAILED);
+        // Admission and creation share this queue, so concurrent subscribes cannot exceed the limit.
+        if (subscribers.size >= maxEventStreams) return failure(503, "Too many event streams");
+        try { server.commitsSince(watermark); } catch { return failure(400, "Invalid catch-up watermark"); }
+        const subscriber = create();
+        if (subscriber.closed) return undefined;
+        subscribers.add(subscriber);
+        // Commits already saved past the watermark go first; an uncovered watermark ends the subscription.
+        deliver(subscriber);
+        // Then everyone's current presence, which the client rebuilds from on every new subscription.
+        for (const [clientId, { state }] of presence) {
+          if (subscriber.closed) break;
+          if (!subscriber.push({ type: "presence", clientId, state })) subscriber.close();
+        }
+        return undefined;
+      });
+    },
+    drop(subscriber) { subscribers.delete(subscriber); },
+    release(owner) {
+      for (const [clientId, entry] of [...presence]) if (entry.owner === owner) setPresence(clientId, null);
+    },
+    track(socket) {
+      sockets.add(socket);
+      return () => { sockets.delete(socket); };
+    },
+  };
 
-  function openStream(request: Request, watermark: number): Response {
-    let stream: EventStream | undefined;
-    let heartbeat: ReturnType<typeof setInterval> | undefined;
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        let open = true;
-        const close = (): void => {
+  /** Opens an event stream as a subscriber; the response, or the reason it was refused. */
+  async function openStream(request: Request, watermark: number, allowed: Allow): Promise<Response> {
+    let response: Response | undefined;
+    const refused = await core.subscribe(watermark, allowed, () => {
+      let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+      const body = new ReadableStream<Uint8Array>({
+        start(started) { controller = started; },
+        cancel() { stream.close(); },
+      }, new ByteLengthQueuingStrategy({ highWaterMark: MAX_EVENT_STREAM_BUFFER_BYTES }));
+      let open = true;
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
+      const send = (text: string): boolean => {
+        const remaining = controller?.desiredSize ?? null;
+        // UTF-16 length is a lower bound on UTF-8 bytes, so skip encoding if already too large.
+        if (!open || remaining === null || text.length > remaining) return false;
+        try {
+          const bytes = encoder.encode(text);
+          if (bytes.byteLength > remaining) return false;
+          controller?.enqueue(bytes);
+          return true;
+        } catch {
+          stream.close();
+          return false;
+        }
+      };
+      const stream: Subscriber = {
+        sent: watermark,
+        get closed() { return !open; },
+        push: (event) => send(eventFrame(event)),
+        close() {
           if (!open) return;
           open = false;
-          if (stream !== undefined) streams.delete(stream);
+          subscribers.delete(stream);
           if (heartbeat !== undefined) clearInterval(heartbeat);
-          request.signal.removeEventListener("abort", close);
-          try { controller.close(); } catch { /* The reader already went away. */ }
-        };
-        const send = (text: string): boolean => {
-          const remaining = controller.desiredSize;
-          // UTF-16 length is a lower bound on UTF-8 bytes, so skip encoding if already too large.
-          if (!open || remaining === null || text.length > remaining) return false;
-          try {
-            const bytes = encoder.encode(text);
-            if (bytes.byteLength > remaining) return false;
-            controller.enqueue(bytes);
-            return true;
-          } catch {
-            close();
-            return false;
-          }
-        };
-        stream = { sent: watermark, send, close };
-        streams.add(stream);
-        request.signal.addEventListener("abort", close);
-        // Abort may have happened before authorization or while waiting in the queue.
-        if (request.signal.aborted) { close(); return; }
-        if (heartbeatInterval > 0) heartbeat = setInterval(() => { send(": ping\n\n"); }, heartbeatInterval);
-      },
-      cancel() { stream?.close(); },
-    }, new ByteLengthQueuingStrategy({ highWaterMark: MAX_EVENT_STREAM_BUFFER_BYTES }));
-    // Commits already saved past the watermark go first; an uncovered watermark ends the stream.
-    broadcast();
-    // Then everyone's current presence, which the client rebuilds from on every new stream.
-    for (const [clientId, { state }] of presence) {
-      if (stream !== undefined && !stream.send(presenceFrame(clientId, state))) { stream.close(); break; }
-    }
-    return new Response(body, { status: 200, headers: {
-      "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", "X-Accel-Buffering": "no",
-    } });
+          request.signal.removeEventListener("abort", onAbort);
+          try { controller?.close(); } catch { /* The reader already went away. */ }
+        },
+      };
+      const onAbort = (): void => { stream.close(); };
+      request.signal.addEventListener("abort", onAbort);
+      response = new Response(body, { status: 200, headers: {
+        "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", "X-Accel-Buffering": "no",
+      } });
+      // Abort may have happened before authorization or while waiting in the queue.
+      if (request.signal.aborted) stream.close();
+      else if (heartbeatInterval > 0) heartbeat = setInterval(() => { send(eventFrame({ type: "ping" })); }, heartbeatInterval);
+      return stream;
+    });
+    return refused === undefined && response !== undefined ? response : toResponse(refused ?? failure(500, "Internal server error"));
   }
 
   async function handle(request: Request): Promise<Response> {
-    if (failed) return error(503, "Checkpoint storage failed; restart this host");
+    if (failed) return error(503, STORAGE_FAILED);
     const url = new URL(request.url);
     const route = url.pathname.slice(url.pathname.lastIndexOf("/") + 1);
     const method = routeMethod(route);
@@ -251,6 +368,7 @@ export function createSyncHandler<S extends SchemaShape>(
       return error(404, "Unknown route");
     }
     if (request.method !== method) return error(405, "Method not allowed", { Allow: method });
+    const allowed = core.allow(request);
 
     if (route === "commits" || route === "events") {
       const since = url.searchParams.getAll("since");
@@ -260,16 +378,7 @@ export function createSyncHandler<S extends SchemaShape>(
       const resumed = request.headers.get("last-event-id");
       if (route === "events" && resumed !== null && WATERMARK.test(resumed)) watermark = Math.max(watermark, Number(resumed));
       if (!Number.isSafeInteger(watermark)) return error(400, "Invalid catch-up watermark");
-      if (!(await allowed(request, "catchUp"))) return error(403, "Forbidden");
-      return serialize(() => {
-        if (failed) return error(503, "Checkpoint storage failed; restart this host");
-        // Admission and stream creation share this queue, so concurrent requests cannot exceed the limit.
-        if (route === "events" && streams.size >= maxEventStreams) return error(503, "Too many event streams");
-        // Read inside the queue: a write that is still saving cannot have its commit served.
-        let commits: ReturnType<typeof server.commitsSince>;
-        try { commits = server.commitsSince(watermark); } catch { return error(400, "Invalid catch-up watermark"); }
-        return route === "commits" ? json(200, commits) : openStream(request, watermark);
-      });
+      return route === "commits" ? toResponse(await core.catchUp(watermark, allowed)) : openStream(request, watermark, allowed);
     }
 
     if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
@@ -285,52 +394,15 @@ export function createSyncHandler<S extends SchemaShape>(
         !("clientId" in input) || typeof input.clientId !== "string" || !("state" in input)) {
         return error(400, "Expected { clientId, state }");
       }
-      const { clientId } = input;
-      const state = input.state;
-      if (state !== null) {
-        try {
-          validateJsonValue(state, ["state"]);
-          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- validateJsonValue has just accepted it as JSON.
-          checkPayload(options.presence?.schema, state as JsonValue, ["state"]);
-        } catch { return error(400, "Invalid presence state"); }
-      }
-      if (!(await allowed(request, "presence", clientId))) return error(403, "Forbidden");
-      if (!server.listClients().some((session) => session.clientId === clientId)) return error(409, "Unknown client session");
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Checked to be JSON above.
-      setPresence(clientId, state as JsonValue | null);
-      return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+      return toResponse(await core.publish(input.clientId, input.state, allowed));
     }
-
     if (route === "clients") {
       if (input === null || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== 0) {
         return error(400, "Expected an empty registration object");
       }
-      if (!(await allowed(request, "register"))) return error(403, "Forbidden");
-      return serialize(async () => {
-        if (failed) return error(503, "Checkpoint storage failed; restart this host");
-        let clientId: string;
-        try { clientId = server.openClient(); } catch { return error(409, "Client session could not be opened"); }
-        if (!(await saved())) return error(500, "Checkpoint could not be saved");
-        return json(201, { clientId, snapshot: server.snapshot() });
-      });
+      return toResponse(await core.register(allowed));
     }
-
-    let batch: ClientBatch<DocumentOperation<S>>;
-    try { batch = decodeClientBatch(schema, input); } catch { return error(400, "Invalid batch"); }
-    const reject = route === "rejections";
-    if (!(await allowed(request, reject ? "reject" : "submit", batch.clientId))) return error(403, "Forbidden");
-    return serialize(async () => {
-      if (failed) return error(503, "Checkpoint storage failed; restart this host");
-      let replayed: boolean;
-      try { ({ replayed } = reject ? server.reject(batch) : server.receive(batch)); }
-      catch { return error(409, "Batch could not be applied"); }
-      if (!replayed) {
-        if (!(await saved())) return error(500, "Checkpoint could not be saved");
-        broadcast(); // Still inside the queue: only saved commits are pushed.
-      }
-      // Acceptance is not an acknowledgement: the writer confirms it through catch-up.
-      return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
-    });
+    return toResponse(await core.write(route === "rejections" ? "reject" : "submit", input, allowed));
   }
 
   const handler = async (request: Request): Promise<Response> => {
@@ -338,6 +410,10 @@ export function createSyncHandler<S extends SchemaShape>(
     catch { return error(500, "Internal server error"); }
   };
   return Object.assign(handler, {
-    notify: () => serialize(() => { if (failed) closeStreams(); else broadcast(); }),
+    accept: (socket: SyncSocket, request: Request) => acceptSocket(core, socket, request),
+    notify: () => serialize(() => {
+      if (!failed) { broadcast(); return; }
+      for (const subscriber of [...subscribers]) subscriber.close();
+    }),
   });
 }

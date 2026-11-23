@@ -35,7 +35,7 @@ The example opens a writer session, submits one edit and delivers the server com
 ## Documentation
 
 - [Follow an edit from client to server](docs/quick-start.md)
-- [Connect clients over HTTP](docs/sync.md)
+- [Connect clients over HTTP or WebSocket](docs/sync.md)
 - [Read the API reference](docs/reference.md)
 
 Visit the [documentation site](https://eastsun5566.github.io/articollab/) or read the [contributor guide](CONTRIBUTING.md).

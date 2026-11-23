@@ -24,6 +24,8 @@ export {
 
 export { createHttpTransport, type HttpTransportOptions } from "./http-client.ts";
 
+export { createWebSocketTransport, type WebSocketLike, type WebSocketTransportOptions } from "./socket-client.ts";
+
 export { SyncRequestError } from "./errors.ts";
 
 export {
@@ -33,3 +35,5 @@ export {
   type SyncHandlerOptions,
   type SyncHandlerPresenceOptions,
 } from "./http-handler.ts";
+
+export { type SyncConnection, type SyncSocket } from "./socket-handler.ts";

@@ -73,11 +73,13 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.2",
     "commit-and-tag-version": "^13.2.1",
     "fake-indexeddb": "^6.2.7",
     "knip": "^6.39.0",
     "oxlint": "^1.87.0",
     "oxlint-tsgolint": "^7.0.2003",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "ws": "^8.23.0"
   }
 }

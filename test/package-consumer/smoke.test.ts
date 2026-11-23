@@ -51,7 +51,9 @@ import {
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeCursor, counter, counterMap,
   CollectionConflictError,
 } from "articollab";
-import { CheckpointLockedError, connectSync, createHttpTransport, createSyncHandler, openIndexedDbStore } from "articollab/sync";
+import {
+  CheckpointLockedError, connectSync, createHttpTransport, createSyncHandler, createWebSocketTransport, openIndexedDbStore, SyncRequestError,
+} from "articollab/sync";
 import { openFileStore, CheckpointLockedError as NodeLockedError } from "articollab/sync/node";
 
 const Board = defineDocument({ count: value(0), items: list(), body: text() });
@@ -326,6 +328,30 @@ for (let tries = 0; syncA.doc.state.items.length < 2; tries++) {
 }
 assert.deepEqual(syncA.doc.state.items.toArray(), ["synced", "pushed"]);
 syncA.close(); syncB.close();
+
+// The WebSocket transport, looped back in-process to handle.accept().
+class LoopbackSocket {
+  listeners = new Map();
+  constructor(url) {
+    setTimeout(() => {
+      this.connection = handle.accept({
+        send: (message) => { setTimeout(() => { this.emit("message", { data: message }); }); },
+        close: () => { this.emit("close", {}); },
+      }, new Request(url.replace("ws:", "http:")));
+      this.emit("open", {});
+    });
+  }
+  addEventListener(type, listener) { this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]); }
+  emit(type, event) { for (const listener of this.listeners.get(type) ?? []) listener(event); }
+  send(data) { setTimeout(() => { this.connection.message(data); }); }
+  close() { this.connection?.close(); this.emit("close", {}); }
+}
+const overSocket = await connectSync(Board, { pollInterval: 0, push: false,
+  transport: createWebSocketTransport({ url: "ws://sync.local/socket", WebSocket: LoopbackSocket }) });
+assert.equal(await overSocket.sync(), true);
+assert.deepEqual(overSocket.doc.state.items.toArray(), ["synced", "pushed"]);
+overSocket.close();
+assert.equal(new SyncRequestError(503).retryable, true);
 
 assert.equal(NodeLockedError, CheckpointLockedError, "both entrypoints share one error class");
 assert.equal(typeof openIndexedDbStore, "function");

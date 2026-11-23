@@ -1,6 +1,6 @@
 # Sync adapter
 
-Use `articollab/sync` to submit edits and receive ordered commits over HTTP. The client catches up before resubmitting and waits for each batch's acknowledgement before sending the next.
+Use `articollab/sync` to submit edits and receive ordered commits over HTTP or a WebSocket. The client catches up before resubmitting and waits for each batch's acknowledgement before sending the next.
 
 ## Serve the routes
 
@@ -100,6 +100,54 @@ If you use `EventSource` directly, fetch and apply `GET /commits` from the last 
 
 When committing outside the handler, save the checkpoint before calling `await handleSync.notify()`.
 
+## Use WebSocket
+
+WebSocket requires [Articollab 0.10 or later](reference.md#compatibility).
+
+Over a WebSocket, a writer's requests and pushes share one connection. That suits frequent presence updates, such as carets, and hosts built around sockets. HTTP with SSE stays the simpler default: it passes through proxies and CDNs that stream responses, and headers carry authorization.
+
+The same handler serves both. Give `accept` each socket with its upgrade request. With Node.js and the [`ws`](https://github.com/websockets/ws) package:
+
+```ts
+import { WebSocketServer } from "ws";
+
+const sockets = new WebSocketServer({ noServer: true });
+httpServer.on("upgrade", (incoming, socket, head) => {
+  sockets.handleUpgrade(incoming, socket, head, (ws) => {
+    const request = new Request(new URL(incoming.url ?? "/", "https://example.com"), {
+      headers: { cookie: incoming.headers.cookie ?? "" },
+    });
+    const connection = handleSync.accept(ws, request);
+    ws.on("message", (data) => connection.message(Array.isArray(data) ? Buffer.concat(data) : data));
+    ws.on("close", () => connection.close());
+  });
+});
+```
+
+Deno, Bun and Cloudflare Workers sockets also have `send` and `close`. In Deno:
+
+```ts
+Deno.serve((request) => {
+  if (request.headers.get("upgrade") !== "websocket") return handleSync(request);
+  const { socket, response } = Deno.upgradeWebSocket(request);
+  const connection = handleSync.accept(socket, request);
+  socket.onmessage = (event) => connection.message(event.data);
+  socket.onclose = () => connection.close();
+  return response;
+});
+```
+
+On the client, swap the transport:
+
+```ts
+import { connectSync, createWebSocketTransport } from "articollab/sync";
+
+const transport = createWebSocketTransport({ url: () => `wss://example.com/sync/socket?token=${token}` });
+const sync = await connectSync(Board, { transport });
+```
+
+Browsers cannot set headers on a WebSocket, so authenticate with a cookie or a token in the URL; a function `url` is read before each connection. `authorize` receives the upgrade request for every message. The socket opens on first use and reopens after it drops, and `sync.close()` closes it. Errors use the same statuses as HTTP, as `SyncRequestError`.
+
 ## Share presence
 
 Presence requires [Articollab 0.10 or later](reference.md#compatibility).
@@ -117,7 +165,7 @@ sync.presence.on("change", (peers) => {
 });
 ```
 
-`peers` holds every other writer's latest state, never your own. A state is any JSON value; pass a `schema` to either side to validate it, as with [payloads](collections.md#validate-payloads). The client sends its state again every 10 seconds, and the handler drops a state it has not received for 30 seconds, so a closed tab disappears on its own; `set(null)` or `sync.close()` removes it at once. To share a text selection, send [cursors](collections.md#stable-positions-with-cursors) and resolve them with `decodeCursor()` and `cursorIndex()` on arrival.
+`peers` holds every other writer's latest state, never your own. A state is any JSON value; pass a `schema` to either side to validate it, as with [payloads](collections.md#validate-payloads). The client sends its state again every 10 seconds, and the handler drops a state it has not received for 30 seconds, so a closed tab disappears on its own; `set(null)` or `sync.close()` removes it at once, and so does a WebSocket closing. To share a text selection, send [cursors](collections.md#stable-positions-with-cursors) and resolve them with `decodeCursor()` and `cursorIndex()` on arrival.
 
 Presence lives only in the handler's memory: it is not saved, not part of checkpoints or history, and not shared between server instances. Delivery is best-effort, and while the push channel is down `peers` is empty.
 
