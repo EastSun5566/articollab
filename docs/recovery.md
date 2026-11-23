@@ -151,7 +151,7 @@ Upgrade the server, every client and every snapshot or checkpoint reader before 
 | `createSyncHandler(schema, server, { bodyLimit })` | `createSyncHandler(schema, server, { maxBodySize })` |
 | `sync.stop()` and status `"stopped"` | `sync.close()` and status `"closed"` |
 
-Numeric options now throw `TypeError` when they are not numbers and `RangeError` when they are numbers out of range or not integers; some threw `TypeError` or `Error` before. List and Text indices out of range throw `RangeError` instead of `Error`.
+Numeric options now throw `TypeError` when they are not numbers and `RangeError` when they are numbers out of range or not integers; some threw `TypeError` or `Error` before. List and Text indices and counts follow the same rule: `TypeError` for a non-number, `RangeError` when out of range, instead of `Error`.
 
 ## Upgrading from 0.8 to 0.9
 

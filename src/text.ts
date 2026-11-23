@@ -12,6 +12,7 @@ import { jsonArray, jsonPointer, type JsonPathSegment } from "./json.ts";
 import { CollectionObservers, elementTargets } from "./observe.ts";
 import { cursorAt, cursorIndex, type Cursor } from "./cursor.ts";
 import { historyWriter } from "./history-access.ts";
+import { requireNumber } from "./options.ts";
 
 export interface TextSnapshotData {
   readonly idList: readonly SavedIdRange[];
@@ -538,6 +539,7 @@ export class RuntimeText implements Text {
   }
 
   insert(index: number, value: string): void {
+    requireNumber(index, "Index");
     if (!Number.isSafeInteger(index) || index < 0 || index > this.length) {
       throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
     }
@@ -558,6 +560,8 @@ export class RuntimeText implements Text {
   }
 
   delete(index: number, count = 1): void {
+    requireNumber(index, "Index");
+    requireNumber(count, "Delete count");
     if (!Number.isSafeInteger(index) || index < 0 || index > this.length) {
       throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
     }

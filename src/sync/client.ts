@@ -122,7 +122,6 @@ function isRetryable(error: unknown): boolean {
     !(typeof error === "object" && error !== null && "retryable" in error && error.retryable === false);
 }
 
-
 /** A sync client with presence enabled. */
 export interface PresenceSyncClient<S extends SchemaShape, P extends JsonValue = JsonValue> extends SyncClient<S> {
   readonly presence: SyncPresence<P>;

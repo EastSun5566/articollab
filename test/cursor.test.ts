@@ -210,6 +210,8 @@ describe("Cursors", () => {
     const items = doc.state.items;
     for (const index of [-1, 2, 0.5, Number.NaN]) assert.throws(() => items.cursorAt(index), RangeError);
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Exercises untyped JavaScript callers.
+    assert.throws(() => items.cursorAt("0" as unknown as number), TypeError);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Exercises untyped JavaScript callers.
     assert.throws(() => items.cursorAt(0, "up" as "left"), (error) => error instanceof RangeError && /bind/.test(error.message));
     for (const cursor of [null, {}, { anchor: null, bind: "up" }, { bind: "left" },
       { anchor: { bunchId: "", counter: 0 }, bind: "left" }, { anchor: { bunchId: "b", counter: -1 }, bind: "left" }]) {

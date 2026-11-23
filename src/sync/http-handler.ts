@@ -98,7 +98,6 @@ async function readBody(request: Request, limit: number): Promise<string | null>
 const WATERMARK = /^(0|[1-9]\d*)$/;
 const MAX_EVENT_STREAM_BUFFER_BYTES = 4 * 1024 * 1024;
 
-
 interface EventStream {
   /** The last server sequence queued for delivery. */
   sent: number;

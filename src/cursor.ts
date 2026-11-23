@@ -1,4 +1,5 @@
 import type { ElementId, IdList } from "articulated";
+import { requireNumber } from "./options.ts";
 
 /**
  * A stable position in the gap between two elements of one Text or List.
@@ -37,6 +38,7 @@ function requireCursor(cursor: unknown): asserts cursor is Cursor {
 /** A frozen cursor for the gap before `index`, bound to the element on the `bind` side. */
 export function cursorAt(idList: IdList, index: number, bind: Cursor["bind"] = "left"): Cursor {
   requireBind(bind);
+  requireNumber(index, "Index");
   if (!Number.isSafeInteger(index) || index < 0 || index > idList.length) {
     throw new RangeError(`Index out of bounds: ${index} (length: ${idList.length})`);
   }
