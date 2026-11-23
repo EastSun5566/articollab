@@ -1,25 +1,7 @@
 import type { ClientBatch, JsonValue } from "../index.ts";
 import type { SyncSubscription, SyncTransport } from "./client.ts";
+import { SyncRequestError, SyncResponseError } from "./errors.ts";
 import { readServerSentEvents } from "./sse.ts";
-
-/** An unexpected HTTP status from a sync endpoint. */
-export class SyncHttpError extends Error {
-  readonly status: number;
-  /** Timeouts, rate limits and server errors may succeed later; other statuses will not. */
-  readonly retryable: boolean;
-
-  constructor(status: number) {
-    super(`Unexpected HTTP status: ${status}`);
-    this.name = "SyncHttpError";
-    this.status = status;
-    this.retryable = status === 408 || status === 429 || status >= 500;
-  }
-}
-
-/** A response that is not the expected JSON. Retrying cannot repair it. */
-class SyncResponseError extends Error {
-  readonly retryable = false;
-}
 
 export interface HttpTransportOptions {
   /** Base URL of the sync handler; `clients`, `batches`, `rejections`, `commits`, `events` and `presence` resolve under it. */
@@ -27,6 +9,15 @@ export interface HttpTransportOptions {
   readonly fetch?: typeof globalThis.fetch;
   /** Extra request headers, such as authorization, read before every request. */
   readonly headers?: () => HeadersInit | Promise<HeadersInit>;
+}
+
+/** Checks a registration answer, from either transport. */
+export function readRegistration(input: unknown): { readonly clientId: string; readonly snapshot: unknown } {
+  if (input === null || typeof input !== "object" || Array.isArray(input) ||
+    !("clientId" in input) || typeof input.clientId !== "string" || !("snapshot" in input)) {
+    throw new SyncResponseError("Invalid registration response");
+  }
+  return { clientId: input.clientId, snapshot: input.snapshot };
 }
 
 function parse(message: string, what: string): unknown {
@@ -46,21 +37,14 @@ export function createHttpTransport(options: HttpTransportOptions): SyncTranspor
     new Headers(init.headers).forEach((value, name) => { headers.set(name, value); });
     const response = await fetch(new URL(path, base), { ...init, headers });
     const message = await response.text(); // Consume every body, including errors.
-    if (response.status !== status) throw new SyncHttpError(response.status);
+    if (response.status !== status) throw new SyncRequestError(response.status);
     return message;
   }
   const post = (path: string, status: number, body: unknown) =>
     request(path, status, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
   return {
-    async register() {
-      const input = parse(await post("clients", 201, {}), "registration");
-      if (input === null || typeof input !== "object" || Array.isArray(input) ||
-        !("clientId" in input) || typeof input.clientId !== "string" || !("snapshot" in input)) {
-        throw new SyncResponseError("Invalid registration response");
-      }
-      return { clientId: input.clientId, snapshot: input.snapshot };
-    },
+    async register() { return readRegistration(parse(await post("clients", 201, {}), "registration")); },
     async submit(batch: ClientBatch) { await post("batches", 204, batch); },
     async reject(batch: ClientBatch) { await post("rejections", 204, batch); },
     async publishPresence(clientId: string, state: JsonValue | null) { await post("presence", 204, { clientId, state }); },
@@ -75,7 +59,7 @@ export function createHttpTransport(options: HttpTransportOptions): SyncTranspor
         const response = await fetch(new URL(`events?since=${watermark}`, base), { headers, signal: abort.signal });
         if (response.status !== 200 || response.body === null) {
           await response.text();
-          throw new SyncHttpError(response.status);
+          throw new SyncRequestError(response.status);
         }
         handlers.onOpen();
         await readServerSentEvents(response.body, (event) => {

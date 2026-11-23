@@ -6,7 +6,7 @@ import {
   createServer, decodeServerCommit, decodeSnapshot, defineDocument, list, value, type ServerCheckpoint,
 } from "../src/index.ts";
 import {
-  connectSync, createHttpTransport, createSyncHandler, SyncHttpError,
+  connectSync, createHttpTransport, createSyncHandler, SyncRequestError,
   type SyncAction, type SyncHandlerOptions,
 } from "../src/sync/index.ts";
 import { runSyncAdapterDemo, serveFetch } from "../examples/sync-adapter.ts";
@@ -179,7 +179,7 @@ describe("createSyncHandler", () => {
 
     const denied = await connectSync(Board, { pollInterval: 0,
       transport: createHttpTransport({ url, headers: () => ({ authorization: "bad" }) }), checkpoint: b.doc.checkpoint() });
-    await assert.rejects(denied.sync(), (error) => error instanceof SyncHttpError && error.status === 401 && !error.retryable);
+    await assert.rejects(denied.sync(), (error) => error instanceof SyncRequestError && error.status === 401 && !error.retryable);
     assert.equal(denied.status, "failed");
     for (const client of [a, b]) client.close();
   });

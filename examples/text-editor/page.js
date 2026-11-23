@@ -1,5 +1,5 @@
 // @ts-check
-import { connectSync, createHttpTransport } from "../../dist/sync/index.js";
+import { connectSync, createWebSocketTransport } from "../../dist/sync/index.js";
 import { Note } from "./schema.js";
 import { createTextEditor } from "./editor.js";
 import { selectionOf, selectionSchema } from "./presence.js";
@@ -38,6 +38,9 @@ export async function mountTextEditors(root, url) {
    * editor: Awaited<ReturnType<typeof createTextEditor>>, details: HTMLPreElement, cleanup: () => void}[]} */
   const panes = [];
   let destroyed = false, failed = false;
+  // Each writer's requests, commits and carets share one socket.
+  const socketUrl = new URL("/sync/socket", url);
+  socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
   /** @type {unknown} */
   let failure;
   /** Writer labels by client ID, for naming remote carets. @type {Map<string, string>} */
@@ -72,14 +75,14 @@ export async function mountTextEditors(root, url) {
   function destroy() {
     if (destroyed) return;
     destroyed = true;
-    // stop() also tells the other writers this one left, so its caret disappears at once.
+    // close() also tells the other writers this one left, so its caret disappears at once.
     for (const pane of panes) { pane.sync.close(); pane.cleanup(); pane.editor.destroy(); }
   }
   try {
     for (const label of ["A", "B"]) {
       const network = createOfflineSwitch();
       const sync = await connectSync(Note, { pollInterval: 1000, presence: { schema: selectionSchema },
-        transport: createHttpTransport({ url: new URL("/sync/", url), fetch: network.fetch }) });
+        transport: createWebSocketTransport({ url: socketUrl, WebSocket: network.WebSocket }) });
       if (destroyed) { sync.close(); break; }
       const clientId = sync.doc.checkpoint().clientId;
       const section = document.createElement("section");

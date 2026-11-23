@@ -17,13 +17,16 @@ export function describeSync(status, push, offline) {
 }
 
 /**
- * A fetch that can be taken offline: new requests fail and open event streams are aborted.
+ * A fetch and a WebSocket that can be taken offline: new requests and sockets fail, and open event
+ * streams and sockets close.
  * @param {typeof globalThis.fetch} [base]
  */
 export function createOfflineSwitch(base = globalThis.fetch) {
   let offline = false;
   /** @type {Set<AbortController>} */
   const streams = new Set();
+  /** @type {Set<WebSocket>} */
+  const sockets = new Set();
   /** @type {typeof globalThis.fetch} */
   const fetch = async (input, init) => {
     if (offline) throw new TypeError("Network unavailable (simulated offline)");
@@ -35,8 +38,40 @@ export function createOfflineSwitch(base = globalThis.fetch) {
     signal?.addEventListener("abort", () => { streams.delete(controller); controller.abort(); }, { once: true });
     return base(input, { ...init, signal: controller.signal });
   };
+  /** @typedef {(event: unknown) => void} Listener */
+  /** A WebSocket that fails to connect while offline, without trying the network. */
+  class SwitchedWebSocket {
+    /** @type {WebSocket | undefined} */
+    #socket;
+    /** @type {[string, Listener][]} */
+    #listeners = [];
+    /** @param {string} url */
+    constructor(url) {
+      if (offline) {
+        setTimeout(() => { for (const [type, listener] of this.#listeners) if (type === "close") listener({}); });
+        return;
+      }
+      const socket = new WebSocket(url);
+      this.#socket = socket;
+      sockets.add(socket);
+      socket.addEventListener("close", () => { sockets.delete(socket); });
+    }
+    /** @param {"open" | "message" | "close" | "error"} type @param {Listener} listener */
+    addEventListener(type, listener) {
+      if (this.#socket === undefined) this.#listeners.push([type, listener]);
+      else this.#socket.addEventListener(type, listener);
+    }
+    /** @param {string} data */
+    send(data) {
+      if (this.#socket === undefined) throw new TypeError("Network unavailable (simulated offline)");
+      this.#socket.send(data);
+    }
+    /** @param {number} [code] @param {string} [reason] */
+    close(code, reason) { this.#socket?.close(code, reason); }
+  }
   return {
     fetch,
+    WebSocket: SwitchedWebSocket,
     get offline() { return offline; },
     /** @param {boolean} next */
     set(next) {
@@ -44,6 +79,8 @@ export function createOfflineSwitch(base = globalThis.fetch) {
       if (!next) return;
       for (const controller of streams) controller.abort();
       streams.clear();
+      for (const socket of sockets) socket.close(4000, "Offline");
+      sockets.clear();
     },
   };
 }

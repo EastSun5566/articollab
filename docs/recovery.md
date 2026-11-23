@@ -149,6 +149,7 @@ Upgrade the server, every client and every snapshot or checkpoint reader before 
 | --- | --- |
 | `createServer(schema, { historyLimit })` | `createServer(schema, { maxHistory })` |
 | `createSyncHandler(schema, server, { bodyLimit })` | `createSyncHandler(schema, server, { maxBodySize })` |
+| `SyncHttpError` | `SyncRequestError`, with the same `status` and `retryable` |
 | `sync.stop()` and status `"stopped"` | `sync.close()` and status `"closed"` |
 
 Numeric options now throw `TypeError` when they are not numbers and `RangeError` when they are numbers out of range or not integers; some threw `TypeError` or `Error` before. List and Text indices and counts follow the same rule: `TypeError` for a non-number, `RangeError` when out of range, instead of `Error`.

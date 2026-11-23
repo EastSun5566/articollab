@@ -36,6 +36,8 @@ export interface SyncTransport {
   subscribe?(watermark: number, handlers: SyncSubscription): () => void;
   /** Optional presence: shares a writer's ephemeral state, or null to leave. Needed for `presence`. */
   publishPresence?(clientId: string, state: JsonValue | null): Promise<void>;
+  /** Optional: releases a connection the transport holds. `close()` calls it; the transport is not used again. */
+  close?(): void;
 }
 
 /** Callbacks a transport's push channel reports to. */
@@ -106,7 +108,7 @@ export interface SyncClient<S extends SchemaShape> {
   restartFromSnapshot(): Promise<SyncClient<S>>;
   on(event: "status", listener: (status: SyncStatus) => void): () => void;
   on(event: "push", listener: (push: SyncPushState) => void): () => void;
-  /** Stops polling, retries and push and closes the store; final. Responses that arrive later are ignored. */
+  /** Stops polling, retries and push and closes the store and transport; final. Responses that arrive later are ignored. */
   close(): void;
 }
 
@@ -166,6 +168,7 @@ async function start<S extends SchemaShape>(
   }
   const save = store === undefined ? options.save : (checkpoint: ClientCheckpoint<S>) => store.save(checkpoint);
   let ownsStore = store !== undefined;
+  let ownsTransport = true;
   const subscribe = options.push === false ? undefined : transport.subscribe?.bind(transport);
 
   let doc: ClientDocument<S> | undefined;
@@ -545,9 +548,10 @@ async function start<S extends SchemaShape>(
         throw new Error("restartFromSnapshot() would discard pending work; preserve the checkpoint instead");
       }
       const { checkpoint: _previous, ...rest } = options;
-      // The new client takes over the store; its first save replaces this session's checkpoint.
+      // The new client takes over the store and transport; its first save replaces this session's checkpoint.
       const next = await start(schema, rest, true);
       ownsStore = false;
+      ownsTransport = false;
       client.close();
       return next;
     },
@@ -560,9 +564,12 @@ async function start<S extends SchemaShape>(
     },
     close() {
       if (ownsStore) { ownsStore = false; store?.close(); }
-      if (status === "closed") return;
-      clearTimer();
-      if (status !== "failed") setStatus("closed");
+      if (status !== "closed") {
+        clearTimer();
+        if (status !== "failed") setStatus("closed");
+      }
+      // Last, once the push channel and presence have ended.
+      if (ownsTransport) { ownsTransport = false; transport.close?.(); }
     },
   };
 

@@ -5,7 +5,7 @@ import { describe, it, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { EditorSelection, type EditorState, type TransactionSpec } from "@codemirror/state";
 import { createServer } from "../../../dist/index.js";
-import { connectSync, createHttpTransport } from "../../../dist/sync/index.js";
+import { connectSync, createHttpTransport, createWebSocketTransport } from "../../../dist/sync/index.js";
 import { Note } from "../schema.js";
 import { createTextBinding, remoteRanges } from "../binding.js";
 import { createOfflineSwitch, describeSync } from "../../shared/sync-ui.js";
@@ -25,11 +25,14 @@ async function fixture(t: TestContext, server = createServer(Note), presenceTtl?
   const host = await startTextEditorServer(server, presenceTtl);
   const cleanups: (() => void)[] = [];
   t.after(async () => { for (const cleanup of cleanups) cleanup(); await host.close(); });
-  async function connect(options: { fetch?: typeof fetch } = {}) {
+  /** A writer over WebSocket, as on the page, or over HTTP with `http` or a custom `fetch`. */
+  async function connect(options: { http?: boolean; fetch?: typeof fetch } = {}) {
     const network = createOfflineSwitch(options.fetch);
+    const transport = options.http === true || options.fetch !== undefined
+      ? createHttpTransport({ url: host.url + "/sync/", fetch: network.fetch })
+      : createWebSocketTransport({ url: host.url.replace("http:", "ws:") + "/sync/socket", WebSocket: network.WebSocket });
     const sync = await connectSync(Note, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 },
-      presence: { schema: selectionSchema },
-      transport: createHttpTransport({ url: host.url + "/sync/", fetch: network.fetch }) });
+      presence: { schema: selectionSchema }, transport });
     let rendered: EditorState | undefined;
     const errors: unknown[] = [];
     const binding = createTextBinding(sync.doc, {
@@ -215,7 +218,8 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
   });
 
   it("drops the caret of a writer that stops sending presence once its TTL passes", async (t) => {
-    const f = await fixture(t, createServer(Note), 200), a = await f.connect(), b = await f.connect();
+    // Over HTTP: a WebSocket writer's caret goes when its socket closes, before any TTL.
+    const f = await fixture(t, createServer(Note), 200), a = await f.connect(), b = await f.connect({ http: true });
     await until(() => a.sync.push === "open" && b.sync.push === "open", "both push channels");
     b.sync.presence.set({ selection: null });
     b.sync.presence.set({ selection: b.binding.selectionCursors() });
@@ -223,6 +227,20 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
     // B's page goes away without leaving: its re-sends stop, and the host expires its state.
     b.network.set(true);
     await until(() => a.sync.presence.peers.size === 0, "B's state to expire", 5000);
+  });
+
+  it("drops a WebSocket writer's caret as soon as its socket closes, and an HTTP writer edits alongside", async (t) => {
+    const f = await fixture(t), a = await f.connect({ http: true }), b = await f.connect();
+    await until(() => a.sync.push === "open" && b.sync.push === "open", "both push channels");
+    b.sync.presence.set({ selection: b.binding.selectionCursors() });
+    await until(() => a.sync.presence.peers.size === 1, "B's caret over the socket");
+    b.network.set(true); // Closes B's socket; the 30-second TTL never comes into play.
+    await until(() => a.sync.presence.peers.size === 0, "B's caret to go with its socket", 2000);
+    b.edit({ changes: { from: 0, insert: "offline " } });
+    a.edit({ changes: { from: 0, insert: "http" } });
+    b.network.set(false);
+    await until(() => a.text() === b.text() && a.text().length === 12 && a.pending() === 0 && b.pending() === 0, "convergence");
+    a.check(); b.check();
   });
 
   it("refuses a malformed cursor on the host", async (t) => {

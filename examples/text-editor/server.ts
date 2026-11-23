@@ -3,6 +3,7 @@ import { createServer as createHttpServer } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { WebSocketServer } from "ws";
 import { createServer, type ServerDocument } from "../../dist/index.js";
 import { createSyncHandler } from "../../dist/sync/index.js";
 import { Note } from "./schema.js";
@@ -10,7 +11,10 @@ import { createBrowserAssetHandler } from "../shared/assets.ts";
 import { toNodeListener } from "../shared/fetch-bridge.ts";
 import { selectionSchema } from "./presence.js";
 
-/** Localhost host: the sync handler with presence under /sync/, plus the page's fixed assets. */
+/**
+ * Localhost host: the sync handler with presence, as WebSocket /sync/socket and as HTTP routes under
+ * /sync/, plus the page's fixed assets.
+ */
 export async function startTextEditorServer(
   server: ServerDocument<typeof Note.definition> = createServer(Note), presenceTtl = 30_000
 ) {
@@ -35,9 +39,11 @@ export async function startTextEditorServer(
   for (const [name, file] of modules) entries.set(`/codemirror/${name}.js`, { file, type: "text/javascript; charset=utf-8" });
   const assets = createBrowserAssetHandler(entries);
   // Rejections let a blocked writer discard its pending work.
-  const sync = toNodeListener(createSyncHandler(Note, server, {
+  const handle = createSyncHandler(Note, server, {
     allowRejections: true, presence: { schema: selectionSchema, ttl: presenceTtl },
-  }));
+  });
+  const sync = toNodeListener(handle);
+  const sockets = new WebSocketServer({ noServer: true });
 
   const http = createHttpServer((request, response) => {
     const path = (request.url ?? "/").split("?", 1)[0]!;
@@ -46,6 +52,15 @@ export async function startTextEditorServer(
     request.resume();
     response.writeHead(404, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
     response.end(JSON.stringify({ error: "Unknown route" }));
+  });
+  http.on("upgrade", (incoming, socket, head) => {
+    if ((incoming.url ?? "/").split("?", 1)[0] !== "/sync/socket") { socket.destroy(); return; }
+    sockets.handleUpgrade(incoming, socket, head, (ws) => {
+      // The upgrade request is what authorize() would see for every message.
+      const connection = handle.accept(ws, new Request(new URL(incoming.url ?? "/", "http://127.0.0.1")));
+      ws.on("message", (data) => { connection.message(Array.isArray(data) ? Buffer.concat(data) : data); });
+      ws.on("close", () => { connection.close(); });
+    });
   });
   await new Promise<void>((resolve, reject) => {
     http.once("error", reject);
@@ -60,6 +75,8 @@ export async function startTextEditorServer(
       return closing ??= new Promise<void>((resolve, reject) => {
         http.close((error) => { if (error) reject(error); else resolve(); });
         http.closeAllConnections(); // Event streams never end on their own.
+        for (const ws of sockets.clients) ws.terminate();
+        sockets.close();
       });
     },
   };
