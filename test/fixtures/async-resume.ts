@@ -14,7 +14,7 @@ import {
   type DocumentOperation,
   type ServerCheckpoint,
   type ServerDocument,
-} from "../src/index.ts";
+} from "../../src/index.ts";
 import { Board } from "./resume.ts";
 
 type Shape = typeof Board.definition;

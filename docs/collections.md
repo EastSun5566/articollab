@@ -181,6 +181,8 @@ One string insertion uses a continuous ID range. One delete produces one operati
 
 ## Validate payloads
 
+Payload schemas require [Articollab 0.10 or later](reference.md#compatibility).
+
 Value, List and Map payloads are only checked to be JSON unless you give the collection a schema. Pass any [Standard Schema](https://standardschema.dev), such as one from Zod, Valibot or ArkType, and the payload type comes from it:
 
 ```ts

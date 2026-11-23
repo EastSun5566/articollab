@@ -61,6 +61,8 @@ The store restores the same writer and pending edits after a reload. If another 
 
 ### Open the same key in several tabs
 
+`slots` requires [Articollab 0.10 or later](reference.md#compatibility).
+
 One stored writer belongs to one tab at a time. To let several tabs edit, give the key `slots`:
 
 ```ts
@@ -99,6 +101,8 @@ If you use `EventSource` directly, fetch and apply `GET /commits` from the last 
 When committing outside the handler, save the checkpoint before calling `await handleSync.notify()`.
 
 ## Share presence
+
+Presence requires [Articollab 0.10 or later](reference.md#compatibility).
 
 Presence is what each writer wants the others to see right now, such as a name and a selection, but that is not part of the document. Enable it on the handler and the client, and it travels over the same push channel:
 

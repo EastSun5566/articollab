@@ -4,11 +4,11 @@ import { readFileSync } from "node:fs";
 import { describe, it, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { EditorSelection, type EditorState, type TransactionSpec } from "@codemirror/state";
-import { createServer } from "../../../src/index.ts";
-import { connectSync, createHttpTransport } from "../../../src/sync/index.ts";
-import { Board } from "../../resume.ts";
+import { createServer } from "../../../dist/index.js";
+import { connectSync, createHttpTransport } from "../../../dist/sync/index.js";
+import { Note } from "../schema.js";
 import { createTextBinding, remoteRanges } from "../binding.js";
-import { createOfflineSwitch, describeSync } from "../../sync-ui.js";
+import { createOfflineSwitch, describeSync } from "../../shared/sync-ui.js";
 import { selectionOf, selectionSchema } from "../presence.js";
 import { startTextEditorServer } from "../server.ts";
 
@@ -21,13 +21,13 @@ async function until(condition: () => boolean, what: string, timeout = 5000): Pr
   }
 }
 
-async function fixture(t: TestContext, server = createServer(Board), presenceTtl?: number) {
+async function fixture(t: TestContext, server = createServer(Note), presenceTtl?: number) {
   const host = await startTextEditorServer(server, presenceTtl);
   const cleanups: (() => void)[] = [];
   t.after(async () => { for (const cleanup of cleanups) cleanup(); await host.close(); });
   async function connect(options: { fetch?: typeof fetch } = {}) {
     const network = createOfflineSwitch(options.fetch);
-    const sync = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 },
+    const sync = await connectSync(Note, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 },
       presence: { schema: selectionSchema },
       transport: createHttpTransport({ url: host.url + "/sync/", fetch: network.fetch }) });
     let rendered: EditorState | undefined;
@@ -57,25 +57,22 @@ async function fixture(t: TestContext, server = createServer(Board), presenceTtl
 }
 
 describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
-  for (const samePath of [false, true]) {
-    it(`converges ${samePath ? "same" : "disjoint"}-path edits automatically, without observer echo`, async (t) => {
-      const f = await fixture(t), a = await f.connect(), b = await f.connect();
-      await until(() => a.sync.push === "open" && b.sync.push === "open", "both push channels");
-      a.edit({ changes: { from: 0, insert: "Hello😀\r\n" } });
-      if (samePath) b.edit({ changes: { from: 0, insert: "中文" } });
-      else b.sync.doc.state.count.value = 7;
-      // Nobody calls sync(): local edits are sent and remote commits are pushed.
-      await until(() => f.server.snapshot().serverSeq === 2 && a.pending() === 0 && b.pending() === 0 &&
-        a.sync.doc.checkpoint().snapshot.serverSeq === 2 && b.sync.doc.checkpoint().snapshot.serverSeq === 2, "convergence");
-      a.check(); b.check();
-      assert.equal(a.text(), b.text());
-      assert.equal(a.sync.doc.checkpoint().lastLocalSeq, 1, "receiving did not send anything back");
-      assert.equal(b.sync.doc.checkpoint().lastLocalSeq, 1);
-    });
-  }
+  it("converges concurrent edits automatically, without observer echo", async (t) => {
+    const f = await fixture(t), a = await f.connect(), b = await f.connect();
+    await until(() => a.sync.push === "open" && b.sync.push === "open", "both push channels");
+    a.edit({ changes: { from: 0, insert: "Hello😀\r\n" } });
+    b.edit({ changes: { from: 0, insert: "中文" } });
+    // Nobody calls sync(): local edits are sent and remote commits are pushed.
+    await until(() => f.server.snapshot().serverSeq === 2 && a.pending() === 0 && b.pending() === 0 &&
+      a.sync.doc.checkpoint().snapshot.serverSeq === 2 && b.sync.doc.checkpoint().snapshot.serverSeq === 2, "convergence");
+    a.check(); b.check();
+    assert.equal(a.text(), b.text());
+    assert.equal(a.sync.doc.checkpoint().lastLocalSeq, 1, "receiving did not send anything back");
+    assert.equal(b.sync.doc.checkpoint().lastLocalSeq, 1);
+  });
 
   it("adopts authoritative transformations with no extra batches", async (t) => {
-    const server = createServer(Board, { resolve: ({ batch }) => batch.operations.map((operation) =>
+    const server = createServer(Note, { resolve: ({ batch }) => batch.operations.map((operation) =>
       operation.type === "text/insert" ? { ...operation, value: operation.value.replaceAll("x", "X") } : operation) });
     const f = await fixture(t, server), a = await f.connect(), b = await f.connect();
     a.edit({ changes: { from: 0, insert: "xx😀" } });
@@ -87,7 +84,7 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
   });
 
   it("blocks dependent work after a rejection, then resumes once it is discarded", async (t) => {
-    const server = createServer(Board, { resolve: ({ batch }) => batch.operations.some((operation) =>
+    const server = createServer(Note, { resolve: ({ batch }) => batch.operations.some((operation) =>
       operation.type === "text/insert" && operation.value === "discard") ? [] : batch.operations });
     const f = await fixture(t, server), a = await f.connect(), b = await f.connect();
     a.edit({ changes: { from: 0, insert: "discard" } });
@@ -107,7 +104,7 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
   });
 
   it("keeps pending work and the editor when history cannot fill a gap", async (t) => {
-    const f = await fixture(t, createServer(Board, { historyLimit: 0 }));
+    const f = await fixture(t, createServer(Note, { historyLimit: 0 }));
     const a = await f.connect(), b = await f.connect();
     a.network.set(true);
     a.edit({ changes: { from: 0, insert: "unsent" } });
@@ -160,7 +157,7 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
 
   it("fails the writer when a document listener throws, after applying the commit", async (t) => {
     const failure = new Error("listener stopped delivery");
-    const server = createServer(Board, { resolve: ({ batch }) => batch.operations.map((operation) =>
+    const server = createServer(Note, { resolve: ({ batch }) => batch.operations.map((operation) =>
       operation.type === "text/insert" ? { ...operation, value: operation.value.toUpperCase() } : operation) });
     const f = await fixture(t, server), a = await f.connect();
     a.sync.doc.on("change", (event) => { if (event.origin === "server") throw failure; });
@@ -218,7 +215,7 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
   });
 
   it("drops the caret of a writer that stops sending presence once its TTL passes", async (t) => {
-    const f = await fixture(t, createServer(Board), 200), a = await f.connect(), b = await f.connect();
+    const f = await fixture(t, createServer(Note), 200), a = await f.connect(), b = await f.connect();
     await until(() => a.sync.push === "open" && b.sync.push === "open", "both push channels");
     b.sync.presence.set({ selection: null });
     b.sync.presence.set({ selection: b.binding.selectionCursors() });
@@ -249,8 +246,8 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Parses this example's fixed import map, which is independently checked by fetching every target.
     const map = JSON.parse(match[1]!) as { imports: Record<string, string> };
     for (const route of [...Object.values(map.imports), "/dist/sync/index.js", "/text-editor/page.js", "/text-editor/editor.js",
-      "/text-editor/binding.js", "/text-editor/changes.js", "/text-editor/presence.js",
-      "/browser-http-smoke/smoke.js", "/http-sync-controller.js", "/sync-ui.js"]) {
+      "/text-editor/binding.js", "/text-editor/changes.js", "/text-editor/presence.js", "/text-editor/schema.js",
+      "/shared/sync-ui.js"]) {
       const asset = await fetch(f.host.url + route);
       assert.equal(asset.status, 200, route);
       assert.equal(asset.headers.get("Content-Type"), "text/javascript; charset=utf-8");
@@ -258,7 +255,7 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
       assert.equal(asset.headers.get("Cache-Control"), "no-store");
       assert.ok((await asset.text()).length > 0);
     }
-    for (const route of ["/src/index.ts", "/server.ts", "/presence-relay.ts", "/presence", "/text-editor/actions.js", "/package.json",
+    for (const route of ["/src/index.ts", "/server.ts", "/presence-relay.ts", "/presence", "/sync-ui.js", "/browser-http-smoke/smoke.js", "/text-editor/actions.js", "/package.json",
       "/pnpm-lock.yaml", "/node_modules/@codemirror/view/dist/index.js", "/dist/index.js.map", "/dist/index.d.ts", "/sync/unknown"]) {
       const asset = await fetch(f.host.url + route); assert.equal(asset.status, 404, route); await asset.text();
     }

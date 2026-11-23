@@ -1,7 +1,7 @@
 // @ts-check
 import { createUndoManager } from "../../dist/index.js";
 import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../dist/sync/index.js";
-import { createOfflineSwitch, describeSync } from "../sync-ui.js";
+import { createOfflineSwitch, describeSync } from "../shared/sync-ui.js";
 import {
   addCard, Board, cardFor, cardsIn, COLUMNS, createSelection, deleteCard, findCard, moveCard, renameCard, voteCard,
   watchDroppedEdits,
@@ -36,14 +36,15 @@ function renderCard(card, votes) {
   const vote = element("button", "vote");
   vote.type = "button";
   vote.dataset.action = "vote";
-  actions.append(vote);
   for (const [action, symbol] of ACTIONS) {
     const button = element("button", undefined, symbol);
     button.type = "button";
     button.dataset.action = action;
     actions.append(button);
   }
-  item.append(element("span", "title"), actions);
+  const head = element("span", "head");
+  head.append(element("span", "title"), vote);
+  item.append(head, actions);
   updateCard(item, card);
   updateVotes(item, votes);
   return item;
@@ -176,8 +177,7 @@ export async function mountKanban(root, url) {
     }
     if (!destroyed) {
       status.textContent = locked === LABELS.length ? `Both writers are open in ${SLOTS} other tabs.`
-        : "Ready. Drag cards or use their buttons; both writers update automatically. Unsent edits survive a reload, " +
-          "and another tab runs its own writers.";
+        : "Ready.";
     }
   } catch (error) {
     status.textContent = "Stopped: " + describeError(error);
@@ -188,9 +188,7 @@ export async function mountKanban(root, url) {
 }
 
 /**
- * One writer's board. Observers of `order` and `columns` schedule one render per microtask, which
- * places each card's row in its column and reuses rows, so a moved card keeps its row; titles update
- * in place. The selection is re-read after each render.
+ * One writer's board. Rows are reused across renders, so a moved card keeps its row and focus.
  * @param {HTMLElement} parent @param {string} name @param {BoardSync} sync
  * @param {ReturnType<typeof createOfflineSwitch>} network
  * @param {number} slot The store slot this tab took for the writer.

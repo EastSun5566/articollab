@@ -10,7 +10,7 @@ import {
   type SyncAction, type SyncHandlerOptions,
 } from "../src/sync/index.ts";
 import { runSyncAdapterDemo, serveFetch } from "../examples/sync-adapter.ts";
-import { toNodeListener } from "../examples/fetch-bridge.ts";
+import { toNodeListener } from "../examples/shared/fetch-bridge.ts";
 import { readServerSentEvents, type ServerSentEvent } from "../src/sync/sse.ts";
 
 const Board = defineDocument({ items: list<string>(), count: value(0) });

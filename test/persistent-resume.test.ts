@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 
-import { createAsyncExampleNetwork } from "../examples/async-resume.ts";
-import { createCheckpointStore } from "../examples/persistent-resume.ts";
-import { Board } from "../examples/resume.ts";
+import { createAsyncExampleNetwork } from "./fixtures/async-resume.ts";
+import { createCheckpointStore } from "./fixtures/persistent-resume.ts";
+import { Board } from "./fixtures/resume.ts";
 import {
   createClient, createServer, WireDecodeError,
   type ClientDocument, type CreateServerOptions,
@@ -47,7 +47,7 @@ function converged(store: Store, server: ReturnType<typeof createServer<Shape>>,
 
 describe("file-backed checkpoint recovery example", () => {
   it("imports without demo side effects and rejects async saving callbacks at type check", () => {
-    const url = new URL("../examples/persistent-resume.ts", import.meta.url).href;
+    const url = new URL("./fixtures/persistent-resume.ts", import.meta.url).href;
     const result = spawnSync(process.execPath, ["--unhandled-rejections=strict", "--input-type=module",
       "-e", "await import(" + JSON.stringify(url) + ")"], { encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
@@ -154,9 +154,9 @@ describe("file-backed checkpoint recovery example", () => {
 
   it("saves pending before a subprocess exits without waiting for delivery", async (t) => {
     const root = directory(t);
-    const example = new URL("../examples/persistent-resume.ts", import.meta.url).href;
-    const asyncExample = new URL("../examples/async-resume.ts", import.meta.url).href;
-    const syncExample = new URL("../examples/resume.ts", import.meta.url).href;
+    const example = new URL("./fixtures/persistent-resume.ts", import.meta.url).href;
+    const asyncExample = new URL("./fixtures/async-resume.ts", import.meta.url).href;
+    const syncExample = new URL("./fixtures/resume.ts", import.meta.url).href;
     const entry = new URL("../src/index.ts", import.meta.url).href;
     const code = [
       "import { createCheckpointStore } from " + JSON.stringify(example),

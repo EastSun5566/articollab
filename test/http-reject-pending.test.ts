@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 
-import { connectHttpExampleClient, startHttpExampleServer } from "../examples/http-sync.ts";
-import { createCheckpointStore } from "../examples/persistent-resume.ts";
-import { Board } from "../examples/resume.ts";
+import { connectHttpExampleClient, startHttpExampleServer } from "./fixtures/http-sync.ts";
+import { createCheckpointStore } from "./fixtures/persistent-resume.ts";
+import { Board } from "./fixtures/resume.ts";
 import { createServer, type ClientCheckpoint, type ServerDocument, type ServerResolver } from "../src/index.ts";
 
 type Shape = typeof Board.definition;
@@ -40,7 +40,7 @@ function gate() {
 
 describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
   it("imports the demo without opening a socket or printing", async (t) => {
-    const url = new URL("../examples/http-reject-pending.ts", import.meta.url).href;
+    const url = new URL("./fixtures/http-reject-pending.ts", import.meta.url).href;
     const child = spawn(process.execPath, ["--unhandled-rejections=strict", "--input-type=module", "-e",
       "await import(" + JSON.stringify(url) + ")"]);
     t.after(async () => {

@@ -43,7 +43,7 @@ const stop = doc.on("transform", ({ commit, added }) => {
 });
 ```
 
-To follow one change rather than every batch, make it with `doc.track()`. It works like `transact()` and also returns the batch and a promise of what the server did with it:
+To follow one change rather than every batch, make it with `doc.track()`, which requires [Articollab 0.10 or later](reference.md#compatibility). It works like `transact()` and also returns the batch and a promise of what the server did with it:
 
 ```ts
 const { settled } = doc.track(() => { doc.state.count.value = 12; });

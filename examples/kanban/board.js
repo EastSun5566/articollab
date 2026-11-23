@@ -10,8 +10,7 @@ export const COLUMNS = /** @type {const} */ (["todo", "doing", "done"]);
 export const MAX_TITLE_LENGTH = 200;
 
 /**
- * A hand-written Standard Schema: `check` returns why a value is invalid, or undefined. Zod,
- * Valibot or ArkType schemas work the same way; this example avoids the dependency.
+ * A hand-written Standard Schema; Zod, Valibot or ArkType schemas work the same way.
  * @template {import("../../dist/index.js").JsonValue} T
  * @param {(input: unknown) => input is T} accepts @param {string} message
  * @returns {import("../../dist/index.js").StandardSchemaV1<T>}
@@ -36,11 +35,8 @@ const titleSchema = standardSchema(
   `A card title needs 1–${MAX_TITLE_LENGTH} characters, without surrounding spaces`);
 
 /**
- * One List orders every card, a Map records each card's column and another its title. Each column
- * shows the cards of that column in `order`. Moving a card is a List move plus, between columns, a
- * column change; renaming touches only `titles`. Each part is decided by server order on its own,
- * so concurrent moves, column changes and renames never conflict or duplicate a card. The schemas
- * validate every value written, here and on the server, so no writer can store a bad column or title.
+ * `order` lists every card; each column shows its cards in that order. Moves, column changes and
+ * renames touch different collections, so concurrent edits never conflict or duplicate a card.
  */
 export const Board = defineDocument({
   order: list(cardIdSchema),
@@ -131,10 +127,8 @@ export function voteCard(doc, cardId, delta = 1) {
 }
 
 /**
- * Moves a card to gap `toIndex` of `toColumn`, counted in that column's view before the move. The
- * card keeps its List element: one List move places it before the card now at that gap (or after
- * the column's last card), and a column change follows if it changes column.
- * Returns false if the card is gone or would not move.
+ * Moves a card to gap `toIndex` of `toColumn`, counted before the move: a List move, plus a column
+ * change between columns. Returns false if the card is gone or would not move.
  * @param {BoardDocument} doc @param {string} cardId @param {Column} toColumn @param {number} toIndex
  */
 export function moveCard(doc, cardId, toColumn, toIndex) {
@@ -161,9 +155,8 @@ export function moveCard(doc, cardId, toColumn, toIndex) {
 }
 
 /**
- * The edits the server dropped from this writer's batch, by card: the policy drops a rename or a
- * column change of a card that another writer deleted first. Call it with a `transform` event's
- * `dropped` operations. Same-column moves of a deleted card are reported by `discard` instead.
+ * The renames, moves and votes the policy dropped because another writer deleted the card first,
+ * from a `transform` event's or outcome's `dropped` operations.
  * @param {readonly import("../../dist/index.js").DocumentOperation<Shape>[]} dropped
  * @returns {{ kind: "rename" | "move" | "vote", id: string, title?: string }[]} In batch order, at most one of each kind per card.
  */
@@ -180,8 +173,7 @@ export function droppedEdits(dropped) {
 }
 
 /**
- * The rename a batch's outcome lost, if the policy dropped it because another writer deleted the
- * card first: the last title the batch set.
+ * The rename a batch's outcome lost because another writer deleted the card first.
  * @param {import("../../dist/index.js").BatchOutcome<import("../../dist/index.js").DocumentOperation<Shape>>} outcome
  * @returns {Card | undefined}
  */
@@ -191,10 +183,8 @@ export function lostRename(outcome) {
 }
 
 /**
- * Tells this writer, through `notify`, about its edits the server did not apply. Moves of cards
- * another writer deleted first are reported from the document's events; a cross-column move is
- * both transformed and discarded, but is reported once. Renames and votes are reported per batch
- * through `follow()`. Edits cancelled through `cancel()` are not reported.
+ * Tells this writer about edits the server did not apply: moves from document events, renames and
+ * votes per batch through `follow()`. Edits cancelled through `cancel()` are not reported.
  * @param {BoardDocument} doc @param {(message: string) => void} notify
  */
 export function watchDroppedEdits(doc, notify) {
@@ -240,8 +230,8 @@ export function watchDroppedEdits(doc, notify) {
 }
 
 /**
- * The writer's selected card. It follows the card by ID, including after a move; once the card is
- * deleted, a cursor bound to its old place in `order` selects the nearest card of the same column.
+ * The selected card, followed by ID; once it is deleted, a cursor at its old place picks the
+ * nearest card of the same column.
  * @param {BoardDocument} doc
  */
 export function createSelection(doc) {

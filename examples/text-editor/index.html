@@ -61,13 +61,8 @@
   <main>
     <header>
       <h1>Two writers, one live document.</h1>
-      <p>Two CodeMirror editors share one authoritative document through <code>articollab/sync</code>. Edits are sent as
-        you type and the other writer receives them over a push channel; there is no Sync button.</p>
-      <p>Turn a writer <strong>Offline</strong> to keep editing without a network: its edits wait, and are sent when it
-        comes back. Shared cursors follow the text they point at; a cursor in text this writer has not received yet is
-        listed below the editor instead of drawn.</p>
-      <p>This localhost prototype has no authentication, persistence or reload recovery. Inspect checkpoints to see
-        pending work.</p>
+      <p>Two editors share one document. Type in either, select text to show your cursor in the other, and turn a
+        writer <strong>Offline</strong> to keep editing until it reconnects.</p>
     </header>
     <div id="app"></div>
   </main>

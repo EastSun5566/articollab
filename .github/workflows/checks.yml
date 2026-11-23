@@ -81,7 +81,7 @@ jobs:
         run: pnpm --dir examples/kanban test
 
       - name: Check browser smoke JSDoc
-        run: pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext examples/browser-smoke/smoke.js examples/http-sync-controller.js examples/browser-http-smoke/smoke.js examples/browser-reload-recovery/recovery.js
+        run: pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext test/fixtures/browser-smoke/smoke.js test/fixtures/http-sync-controller.js test/fixtures/browser-http-smoke/smoke.js test/fixtures/browser-reload-recovery/recovery.js
 
       - name: Test installed package consumer
         run: pnpm test:package

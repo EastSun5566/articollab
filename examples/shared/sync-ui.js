@@ -2,8 +2,8 @@
 // Browser helpers shared by the live examples. Types only: importing this module loads no runtime code.
 
 /** What a writer's status badge says, from its sync status and push channel.
- * @param {import("../dist/sync/index.js").SyncStatus} status
- * @param {import("../dist/sync/index.js").SyncPushState} push
+ * @param {import("../../dist/sync/index.js").SyncStatus} status
+ * @param {import("../../dist/sync/index.js").SyncPushState} push
  * @param {boolean} offline
  */
 export function describeSync(status, push, offline) {
@@ -17,8 +17,7 @@ export function describeSync(status, push, offline) {
 }
 
 /**
- * A fetch whose writer can be taken offline: new requests fail like a dropped network, and open
- * event streams are aborted. Only stream requests are tracked; others finish on their own.
+ * A fetch that can be taken offline: new requests fail and open event streams are aborted.
  * @param {typeof globalThis.fetch} [base]
  */
 export function createOfflineSwitch(base = globalThis.fetch) {

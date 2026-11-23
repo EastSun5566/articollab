@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 
-import { createServer } from "../src/index.ts";
+import { createServer } from "../../src/index.ts";
 import { connectHttpExampleClient, startHttpExampleServer } from "./http-sync.ts";
 import { Board } from "./resume.ts";
 

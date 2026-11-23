@@ -6,8 +6,8 @@ import {
   createClient, createServer, decodeClientBatch, decodeClientCheckpoint, decodeServerCheckpoint,
   type ClientBatch, type DocumentOperation, type ServerReceipt,
 } from "../src/index.ts";
-import { Board } from "../examples/resume.ts";
-import { rejectPending } from "../examples/reject-pending.ts";
+import { Board } from "./fixtures/resume.ts";
+import { rejectPending } from "./fixtures/reject-pending.ts";
 
 type Mutable<T> = T extends object ? { -readonly [K in keyof T]: Mutable<T[K]> } : T;
 
@@ -407,7 +407,7 @@ describe("manual pending rejection example", () => {
   });
 
   it("has no demo side effects when imported", () => {
-    const url = new URL("../examples/reject-pending.ts", import.meta.url).href;
+    const url = new URL("./fixtures/reject-pending.ts", import.meta.url).href;
     const result = spawnSync(process.execPath, [
       "--input-type=module", "-e", "await import(" + JSON.stringify(url) + ")",
     ], { encoding: "utf8", timeout: 10_000 });

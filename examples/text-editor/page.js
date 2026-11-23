@@ -1,9 +1,9 @@
 // @ts-check
 import { connectSync, createHttpTransport } from "../../dist/sync/index.js";
-import { Board } from "../browser-http-smoke/smoke.js";
+import { Note } from "./schema.js";
 import { createTextEditor } from "./editor.js";
 import { selectionOf, selectionSchema } from "./presence.js";
-import { createOfflineSwitch, describeSync } from "../sync-ui.js";
+import { createOfflineSwitch, describeSync } from "../shared/sync-ui.js";
 
 /** @param {readonly import("./binding.js").RemoteStatus[]} statuses @param {readonly string[]} labels */
 function describePresence(statuses, labels) {
@@ -33,7 +33,7 @@ export async function mountTextEditors(root, url) {
   const columns = document.createElement("div");
   columns.className = "editors";
   root.append(status, columns);
-  /** @type {{sync: import("../../dist/sync/index.js").PresenceSyncClient<typeof Board.definition,
+  /** @type {{sync: import("../../dist/sync/index.js").PresenceSyncClient<typeof Note.definition,
    *   import("./presence.js").SelectionPresence>,
    * editor: Awaited<ReturnType<typeof createTextEditor>>, details: HTMLPreElement, cleanup: () => void}[]} */
   const panes = [];
@@ -78,7 +78,7 @@ export async function mountTextEditors(root, url) {
   try {
     for (const label of ["A", "B"]) {
       const network = createOfflineSwitch();
-      const sync = await connectSync(Board, { pollInterval: 1000, presence: { schema: selectionSchema },
+      const sync = await connectSync(Note, { pollInterval: 1000, presence: { schema: selectionSchema },
         transport: createHttpTransport({ url: new URL("/sync/", url), fetch: network.fetch }) });
       if (destroyed) { sync.stop(); break; }
       const clientId = sync.doc.checkpoint().clientId;
@@ -185,7 +185,7 @@ export async function mountTextEditors(root, url) {
     }
     if (!destroyed) {
       for (const pane of panes) { publish(pane); showPeers(pane); }
-      status.textContent = "Ready. Type in either writer; edits are sent and received automatically.";
+      status.textContent = "Ready.";
     }
   } catch (error) { stop(error); }
   return { destroy };
