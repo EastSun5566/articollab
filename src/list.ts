@@ -14,6 +14,7 @@ import { CollectionObservers, elementTargets } from "./observe.ts";
 import { cursorAt, cursorIndex, type Cursor } from "./cursor.ts";
 import { historyWriter } from "./history-access.ts";
 import { checkPayload, type PayloadSchema } from "./payload.ts";
+import { requireNumber } from "./options.ts";
 
 export interface SavedIdRange {
   readonly bunchId: string;
@@ -772,12 +773,17 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
   }
 
   get(index: number): T {
+    requireNumber(index, "Index");
+    if (!Number.isSafeInteger(index) || index < 0 || index >= this.length) {
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
+    }
     return this.current.get(index);
   }
 
   set(index: number, value: T): void {
+    requireNumber(index, "Index");
     if (!Number.isSafeInteger(index) || index < 0 || index >= this.length) {
-      throw new Error(`Index out of bounds: ${index} (length: ${this.length})`);
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
     }
 
     this.beforeMutation();
@@ -791,8 +797,9 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
   }
 
   insert(index: number, value: T): void {
+    requireNumber(index, "Index");
     if (!Number.isSafeInteger(index) || index < 0 || index > this.length) {
-      throw new Error(`Index out of bounds: ${index} (length: ${this.length})`);
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
     }
 
     this.beforeMutation();
@@ -815,8 +822,9 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
   }
 
   delete(index: number): void {
+    requireNumber(index, "Index");
     if (!Number.isSafeInteger(index) || index < 0 || index >= this.length) {
-      throw new Error(`Index out of bounds: ${index} (length: ${this.length})`);
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
     }
 
     this.beforeMutation();
@@ -831,8 +839,9 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
 
   move(from: number, to: number): void {
     for (const [name, index] of [["from", from], ["to", to]] as const) {
+      requireNumber(index, name);
       if (!Number.isSafeInteger(index) || index < 0 || index >= this.length) {
-        throw new Error(`Index out of bounds: ${name} ${index} (length: ${this.length})`);
+        throw new RangeError(`Index out of bounds: ${name} ${index} (length: ${this.length})`);
       }
     }
     if (from === to) return;

@@ -112,13 +112,13 @@ export function applyOperations(
         }
         states.set(operation.path, addCount(current, operation.delta, operation.path));
         break;
-      case "counters/add":
+      case "counterMap/add":
         if (!(current instanceof CounterMapState)) {
           throw wrongCollectionKind(operation.path);
         }
         states.set(operation.path, current.add(operation));
         break;
-      case "counters/delete":
+      case "counterMap/delete":
         if (!(current instanceof CounterMapState)) {
           throw wrongCollectionKind(operation.path);
         }
@@ -239,7 +239,7 @@ export function initialStates<S extends SchemaShape>(
         throw new Error(`Counter snapshot must be a safe integer: ${path}`);
       }
       states.set(path, count);
-    } else if (descriptor.kind === "counters") {
+    } else if (descriptor.kind === "counterMap") {
       states.set(
         path,
         snapshotData === undefined

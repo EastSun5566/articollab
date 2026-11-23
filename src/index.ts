@@ -1,6 +1,6 @@
 export {
   counter,
-  counters,
+  counterMap,
   defineDocument,
   DocumentSchema,
   list,
@@ -116,6 +116,7 @@ export {
 } from "./wire.ts";
 
 export { assertClientBatchNamespace } from "./namespace.ts";
+export { CollectionConflictError } from "./conflict.ts";
 export { createUndoManager, type UndoManager, type UndoManagerOptions } from "./undo.ts";
 export {
   PayloadValidationError,

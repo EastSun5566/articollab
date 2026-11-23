@@ -314,7 +314,7 @@ describe("in-memory resume example", () => {
 
   it("keeps pending work disconnected when retained history cannot fill the gap", () => {
     let calls = 0;
-    const server = createServer(Board, { historyLimit: 0, resolve: ({ batch }) => {
+    const server = createServer(Board, { maxHistory: 0, resolve: ({ batch }) => {
       calls++;
       return batch.operations;
     } });

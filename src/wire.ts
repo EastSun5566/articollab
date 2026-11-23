@@ -368,9 +368,9 @@ function decodeOperation<S extends SchemaShape>(
         delta: decodeDelta(record.delta, [...path, "delta"]),
       }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; counters carry only a delta.
     }
-    case "counters/add": {
+    case "counterMap/add": {
       requireExactFields(record, path, ["type", "path", "key", "delta"]);
-      requireKind(descriptor.kind, "counters", [...path, "path"]);
+      requireKind(descriptor.kind, "counterMap", [...path, "path"]);
       return Object.freeze({
         type,
         path: descriptor.path,
@@ -378,9 +378,9 @@ function decodeOperation<S extends SchemaShape>(
         delta: decodeDelta(record.delta, [...path, "delta"]),
       }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; counters carry only a key and delta.
     }
-    case "counters/delete": {
+    case "counterMap/delete": {
       requireExactFields(record, path, ["type", "path", "key"]);
-      requireKind(descriptor.kind, "counters", [...path, "path"]);
+      requireKind(descriptor.kind, "counterMap", [...path, "path"]);
       return Object.freeze({
         type,
         path: descriptor.path,
@@ -543,8 +543,8 @@ function decodeSnapshotCollection(
 ): JsonValue | ListSnapshotData | TextSnapshotData | MapSnapshotData | CounterMapSnapshotData {
   if (kind === "value") return decodeJsonValue(input, path);
   if (kind === "counter") return decodeSafeInteger(input, path, "Counter", Number.MIN_SAFE_INTEGER);
-  if (kind === "counters") {
-    const record = decodeRecord(input, path, "counters snapshot");
+  if (kind === "counterMap") {
+    const record = decodeRecord(input, path, "counterMap snapshot");
     const snapshot: CounterMapSnapshotData = Object.freeze(Object.fromEntries(Object.keys(record).map((key) =>
       [key, decodeDelta(record[key], [...path, key])])));
     decodedCollectionStates.set(snapshot, CounterMapState.load(snapshot));

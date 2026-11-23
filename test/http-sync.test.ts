@@ -314,7 +314,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
   });
 
   it("returns false permanently on a history gap without submitting or replacing pending", async (t) => {
-    const server = createServer(Board, { historyLimit: 0 });
+    const server = createServer(Board, { maxHistory: 0 });
     const { url } = await host(t, server);
     let requests = 0;
     const a = await connectHttpExampleClient(url, { fetch: (input, init) => {
@@ -612,7 +612,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
 
   it("does not loop when POST succeeds without a catch-up ack, or history expires after POST", async (t) => {
     for (const mode of ["missing-ack", "history-gap"] as const) {
-      const server = createServer(Board, mode === "history-gap" ? { historyLimit: 0 } : {});
+      const server = createServer(Board, mode === "history-gap" ? { maxHistory: 0 } : {});
       const { url } = await host(t, server);
       let submitted = false;
       let posts = 0;
@@ -844,7 +844,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
   });
 
   it("keeps restored pending unchanged when retained history is insufficient", async (t) => {
-    const server = createServer(Board, { historyLimit: 0 });
+    const server = createServer(Board, { maxHistory: 0 });
     const { url } = await host(t, server);
     const original = await connectHttpExampleClient(url);
     original.doc.state.items.push("Keep pending");

@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
-  counter, counters, createClient, createServer, createUndoManager, decodeClientBatch, decodeClientCheckpoint,
+  CollectionConflictError, counter, counterMap, createClient, createServer, createUndoManager, decodeClientBatch, decodeClientCheckpoint,
   decodeServerCommit, decodeSnapshot, defineDocument, value, WireDecodeError,
   type ClientBatch, type ClientDocument, type CounterMapChangeEvent, type DocumentOperation, type ServerCommit,
 } from "../src/index.ts";
 
-const Board = defineDocument({ likes: counter(), stock: counter(10), votes: counters(), title: value("") });
+const Board = defineDocument({ likes: counter(), stock: counter(10), votes: counterMap(), title: value("") });
 type Shape = typeof Board.definition;
 type Operation = DocumentOperation<Shape>;
 type Batch = ClientBatch<Operation>;
@@ -59,7 +59,7 @@ describe("Counter collection", () => {
     const { client, server } = setup();
     const { doc, batches } = client();
     for (const delta of [1.5, Number.NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
-      assert.throws(() => { doc.state.likes.add(delta); }, TypeError, String(delta));
+      assert.throws(() => { doc.state.likes.add(delta); }, RangeError, String(delta));
     }
     // @ts-expect-error A delta is a number.
     assert.throws(() => { doc.state.likes.add("1"); }, TypeError);
@@ -69,14 +69,17 @@ describe("Counter collection", () => {
     assert.throws(() => { doc.state.likes.add(1); }, RangeError);
     assert.equal(doc.state.likes.value, Number.MAX_SAFE_INTEGER, "a refused addition changes nothing");
     assert.equal(batches.length, 1);
-    for (const initial of [1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => counter(initial), TypeError);
+    for (const initial of [1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => counter(initial), RangeError);
+    // @ts-expect-error An initial value is a number.
+    assert.throws(() => counter("1"), TypeError);
 
     // Two writers that each stay in range can overflow together: a replay conflict, and the server refuses it.
     const other = createClient(Board, { clientId: server.openClient(), onBatch() {} });
     other.state.likes.add(1);
     const otherBatch = wire({ clientId: other.checkpoint().clientId, seq: 1, operations: [{ type: "counter/add", path: "likes", delta: 1 }] });
     server.receive(decodeClientBatch(Board, otherBatch));
-    assert.throws(() => server.receive(decodeClientBatch(Board, wire(batches[0]))), /safe integer range/);
+    assert.throws(() => server.receive(decodeClientBatch(Board, wire(batches[0]))),
+      (error) => error instanceof CollectionConflictError && error.name === "CollectionConflictError" && /safe integer range/.test(error.message));
   });
 
   it("reports a replay that would leave the safe integer range as a conflict", () => {
@@ -100,12 +103,30 @@ describe("CounterMap collection", () => {
     votes.add("card", 2);
     votes.add("other", 1);
     b.doc.state.votes.add("card", -2);
-    assert.deepEqual(a.batches[0]!.operations, [{ type: "counters/add", path: "votes", key: "card", delta: 2 }]);
+    assert.deepEqual(a.batches[0]!.operations, [{ type: "counterMap/add", path: "votes", key: "card", delta: 2 }]);
     assert.deepEqual([votes.size, [...votes.keys()], [...votes.values()], votes.toObject()],
       [2, ["card", "other"], [2, 1], { card: 2, other: 1 }]);
     submit(a, a.doc, b.doc); submit(a, a.doc, b.doc); submit(b, a.doc, b.doc);
     assert.deepEqual([votes.has("card"), votes.get("card"), [...votes]], [false, 0, [["other", 1]]]);
     assert.deepEqual(server.snapshot().data.votes, { other: 1 }, "a snapshot never stores 0");
+  });
+
+  it("clears every counted key in one batch, keeping concurrent additions", () => {
+    const { client, submit, server } = setup();
+    const a = client(), b = client();
+    a.doc.state.votes.add("x", 2);
+    a.doc.state.votes.add("y", 3);
+    submit(a, a.doc, b.doc); submit(a, a.doc, b.doc);
+    a.doc.state.votes.clear();
+    b.doc.state.votes.add("x", 1); // Concurrent with the clear.
+    assert.deepEqual(a.batches[0]!.operations, [
+      { type: "counterMap/delete", path: "votes", key: "x" }, { type: "counterMap/delete", path: "votes", key: "y" },
+    ], "one batch, in key order");
+    submit(a, a.doc, b.doc); submit(b, a.doc, b.doc);
+    assert.deepEqual(server.snapshot().data.votes, { x: 1 });
+    const before = a.batches.length;
+    createClient(Board, { clientId: server.openClient(), onBatch() { assert.fail("an empty clear records nothing"); } }).state.votes.clear();
+    assert.equal(a.batches.length, before);
   });
 
   it("resets a key with delete, and later additions in server order count again", () => {
@@ -116,7 +137,7 @@ describe("CounterMap collection", () => {
     b.doc.state.votes.delete("card"); // B saw 5.
     a.doc.state.votes.add("card", 1); // Concurrent with the reset.
     assert.equal(a.doc.state.votes.delete("never"), false, "delete reports whether the key was counted here");
-    assert.deepEqual(b.batches[0]!.operations, [{ type: "counters/delete", path: "votes", key: "card" }]);
+    assert.deepEqual(b.batches[0]!.operations, [{ type: "counterMap/delete", path: "votes", key: "card" }]);
     submit(b, a.doc, b.doc);
     assert.equal(a.doc.state.votes.get("card"), 1, "A's pending addition replays after the reset");
     submit(a, a.doc, b.doc); submit(a, a.doc, b.doc);
@@ -147,8 +168,8 @@ describe("Counter wire format", () => {
   it("decodes exact operations and refuses malformed ones", () => {
     assert.deepEqual(decodeClientBatch(Board, batch({ type: "counter/add", path: "likes", delta: -4 })).operations,
       [{ type: "counter/add", path: "likes", delta: -4 }]);
-    assert.deepEqual(decodeClientBatch(Board, batch({ type: "counters/delete", path: "votes", key: "" })).operations,
-      [{ type: "counters/delete", path: "votes", key: "" }]);
+    assert.deepEqual(decodeClientBatch(Board, batch({ type: "counterMap/delete", path: "votes", key: "" })).operations,
+      [{ type: "counterMap/delete", path: "votes", key: "" }]);
     for (const operation of [
       { type: "counter/add", path: "likes", delta: 0 },
       { type: "counter/add", path: "likes", delta: 1.5 },
@@ -156,9 +177,9 @@ describe("Counter wire format", () => {
       { type: "counter/add", path: "likes", delta: Number.MAX_SAFE_INTEGER + 1 },
       { type: "counter/add", path: "likes", delta: 1, extra: true },
       { type: "counter/add", path: "votes", delta: 1 },
-      { type: "counters/add", path: "votes", key: 1, delta: 1 },
-      { type: "counters/add", path: "likes", key: "k", delta: 1 },
-      { type: "counters/delete", path: "votes", key: "k", delta: 1 },
+      { type: "counterMap/add", path: "votes", key: 1, delta: 1 },
+      { type: "counterMap/add", path: "likes", key: "k", delta: 1 },
+      { type: "counterMap/delete", path: "votes", key: "k", delta: 1 },
       { type: "value/set", path: "likes", value: 3 },
     ]) assert.throws(() => decodeClientBatch(Board, batch(operation)), WireDecodeError, JSON.stringify(operation));
   });
@@ -186,15 +207,15 @@ describe("Counter outcomes and undo", () => {
   it("reports a delta the server changed as a transform", async () => {
     // The server allows at most 3 votes per batch.
     const { client, submit } = setup((batch) => batch.operations.map((operation) =>
-      operation.type === "counters/add" && operation.delta > 3 ? { ...operation, delta: 3 } : operation));
+      operation.type === "counterMap/add" && operation.delta > 3 ? { ...operation, delta: 3 } : operation));
     const a = client();
     const tracked = a.doc.track(() => { a.doc.state.votes.add("card", 5); });
     submit(a, a.doc);
     const outcome = await tracked.settled;
     assert.equal(outcome?.status, "transformed");
     assert.deepEqual([outcome?.dropped, outcome?.added], [
-      [{ type: "counters/add", path: "votes", key: "card", delta: 5 }],
-      [{ type: "counters/add", path: "votes", key: "card", delta: 3 }],
+      [{ type: "counterMap/add", path: "votes", key: "card", delta: 5 }],
+      [{ type: "counterMap/add", path: "votes", key: "card", delta: 3 }],
     ]);
     assert.equal(a.doc.state.votes.get("card"), 3);
   });

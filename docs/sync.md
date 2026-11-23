@@ -57,7 +57,7 @@ const store = await openIndexedDbStore({ database: "my-app", key: `${documentId}
 const sync = await connectSync(Board, { transport, store });
 ```
 
-The store restores the same writer and pending edits after a reload. If another tab holds the store's Web Lock, opening it throws `CheckpointLockedError`. Call `sync.stop()` when the writer is done to release the store.
+The store restores the same writer and pending edits after a reload. If another tab holds the store's Web Lock, opening it throws `CheckpointLockedError`. Call `sync.close()` when the writer is done to release the store.
 
 ### Open the same key in several tabs
 
@@ -117,7 +117,7 @@ sync.presence.on("change", (peers) => {
 });
 ```
 
-`peers` holds every other writer's latest state, never your own. A state is any JSON value; pass a `schema` to either side to validate it, as with [payloads](collections.md#validate-payloads). The client sends its state again every 10 seconds, and the handler drops a state it has not received for 30 seconds, so a closed tab disappears on its own; `set(null)` or `sync.stop()` removes it at once. To share a text selection, send [cursors](collections.md#stable-positions-with-cursors) and resolve them with `decodeCursor()` and `cursorIndex()` on arrival.
+`peers` holds every other writer's latest state, never your own. A state is any JSON value; pass a `schema` to either side to validate it, as with [payloads](collections.md#validate-payloads). The client sends its state again every 10 seconds, and the handler drops a state it has not received for 30 seconds, so a closed tab disappears on its own; `set(null)` or `sync.close()` removes it at once. To share a text selection, send [cursors](collections.md#stable-positions-with-cursors) and resolve them with `decodeCursor()` and `cursorIndex()` on arrival.
 
 Presence lives only in the handler's memory: it is not saved, not part of checkpoints or history, and not shared between server instances. Delivery is best-effort, and while the push channel is down `peers` is empty.
 
@@ -131,7 +131,7 @@ Presence lives only in the handler's memory: it is not saved, not part of checkp
 | `blocked` | Pending work cannot replay (`doc.replayConflict`) | Receives commits while waiting for the conflict to clear |
 | `gap` | History no longer covers this writer's watermark | Stops; pending work and the checkpoint are kept |
 | `failed` | An unrecoverable error | Stops syncing. Inspect `sync.error`. |
-| `stopped` | `stop()` was called | Later responses are ignored |
+| `closed` | `close()` was called | Later responses are ignored |
 
 If you choose to discard blocked work, call `rejectPending()`. It cancels batches pending when you call it and catches up first to confirm any edits the server already accepted. Each cancelled batch is reported by the document's [`transform`](server-wire.md#accept-transform-or-reject) event, so ignore those events while your own call runs.
 

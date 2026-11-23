@@ -1,8 +1,9 @@
 import { validateJsonValue } from "../json.ts";
+import { integerOption } from "../options.ts";
 import { checkPayload, type PayloadSchema } from "../payload.ts";
 import type { JsonValue } from "../schema.ts";
 
-export interface PresenceOptions<P extends JsonValue = JsonValue> {
+export interface SyncPresenceOptions<P extends JsonValue = JsonValue> {
   /** Validates this writer's state before it is sent, and peers' states as they arrive. */
   readonly schema?: PayloadSchema<P>;
   /** Milliseconds between re-sends of this writer's state, which keep it from expiring. Default 10000. */
@@ -17,7 +18,7 @@ export interface SyncPresence<P extends JsonValue = JsonValue> {
   readonly peers: ReadonlyMap<string, P>;
   /**
    * Shares `state`, or stops sharing with null. Sending is best-effort and retried by the re-sends.
-   * Once the client is stopped or failed, a valid state is ignored.
+   * Once the client is closed or failed, a valid state is ignored.
    */
   set(state: P | null): void;
   /** Called whenever `peers` changes. Returns an unsubscribe function. */
@@ -34,7 +35,7 @@ export interface PresenceController<P extends JsonValue> {
   /** The push stream ended: nothing it reported is current any more. */
   closed(): void;
   /** Leaves, best-effort, and stops re-sending. */
-  stop(): void;
+  close(): void;
 }
 
 /** Throws unless `state` is JSON that `schema` accepts. */
@@ -45,14 +46,11 @@ function checkState(schema: PayloadSchema | undefined, state: unknown): asserts 
 }
 
 export function createPresence<P extends JsonValue>(
-  options: PresenceOptions<P>,
+  options: SyncPresenceOptions<P>,
   clientId: string,
   publish: (state: P | null) => Promise<void>
 ): PresenceController<P> {
-  const republishInterval = options.republishInterval ?? 10_000;
-  if (!Number.isSafeInteger(republishInterval) || republishInterval <= 0) {
-    throw new TypeError("presence.republishInterval must be a positive safe integer");
-  }
+  const republishInterval = integerOption(options.republishInterval ?? 10_000, "presence.republishInterval", 1);
   const { schema } = options;
   let state: P | null = null;
   let peers: ReadonlyMap<string, P> = new Map();
@@ -60,7 +58,7 @@ export function createPresence<P extends JsonValue>(
   let queued: { readonly state: P | null } | undefined;
   let sending = false;
   let timer: ReturnType<typeof setInterval> | undefined;
-  let stopped = false;
+  let closed = false;
 
   /** Sends the newest queued state; while a send is in flight only the newest is kept. */
   function send(next: P | null): void {
@@ -78,7 +76,7 @@ export function createPresence<P extends JsonValue>(
   }
   function rearm(): void {
     if (timer !== undefined) clearInterval(timer);
-    timer = state === null || stopped ? undefined : setInterval(() => { if (state !== null) send(state); }, republishInterval);
+    timer = state === null || closed ? undefined : setInterval(() => { if (state !== null) send(state); }, republishInterval);
   }
   function emit(next: ReadonlyMap<string, P>): void {
     peers = next;
@@ -91,8 +89,8 @@ export function createPresence<P extends JsonValue>(
       get peers() { return peers; },
       set(next) {
         if (next !== null) checkState(schema, next);
-        // A stopped or failed client has left; editors may still report selections afterwards.
-        if (stopped) return;
+        // A closed or failed client has left; editors may still report selections afterwards.
+        if (closed) return;
         state = next;
         send(next);
         rearm();
@@ -106,7 +104,7 @@ export function createPresence<P extends JsonValue>(
     opened() {
       if (peers.size > 0) emit(new Map());
       // A restarted server forgot this writer; tell it again rather than wait for the next re-send.
-      if (state !== null && !stopped) send(state);
+      if (state !== null && !closed) send(state);
     },
     received(update) {
       if (typeof update !== "object" || update === null || Array.isArray(update)) return;
@@ -127,9 +125,9 @@ export function createPresence<P extends JsonValue>(
     closed() {
       if (peers.size > 0) emit(new Map());
     },
-    stop() {
-      if (stopped) return;
-      stopped = true;
+    close() {
+      if (closed) return;
+      closed = true;
       if (timer !== undefined) clearInterval(timer);
       timer = undefined;
       if (state !== null) { state = null; send(null); }

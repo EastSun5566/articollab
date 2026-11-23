@@ -4,6 +4,7 @@ import { describe, it, mock } from "node:test";
 import {
   createClient, createServer, createUndoManager, decodeServerCommit, defineDocument, list, map, text, value,
   type ClientBatch, type ClientDocument, type DocumentOperation, type ServerCommit, type UndoManager,
+  type UndoManagerOptions,
 } from "../src/index.ts";
 
 const Doc = defineDocument({ count: value(0), items: list<string>(), body: text(), tags: map<string>() });
@@ -18,7 +19,7 @@ const view = (doc: ClientDocument<Shape>) => JSON.stringify([doc.state.count.val
 function setup(resolve?: (batch: Batch) => readonly Operation[]) {
   const server = createServer(Doc, resolve === undefined ? {} : { resolve: ({ batch }) => resolve(batch) });
   const log: Commit[] = [];
-  const writer = (options: { captureTimeout?: number; paths?: string[]; maxSteps?: number } = {}) => {
+  const writer = (options: UndoManagerOptions<typeof Doc.definition> = {}) => {
     const batches: Batch[] = [];
     const doc = createClient(Doc, { clientId: server.openClient(), snapshot: server.snapshot(), onBatch(batch) { batches.push(batch); } });
     let received = server.snapshot().serverSeq;
@@ -172,6 +173,7 @@ describe("Undo manager", () => {
     assert.equal(a.doc.state.count.value, 10);
     assert.throws(() => createUndoManager(a.doc), /already has an undo manager/);
     assert.throws(() => b.doc.transact(() => createUndoManager(b.doc)), /inside a transaction/);
+    // @ts-expect-error Paths are the document's keys; the runtime check covers untyped callers.
     assert.throws(() => createUndoManager(b.doc, { paths: ["nope"] }), /Unknown document path: nope/);
   });
 
@@ -270,8 +272,10 @@ describe("Undo limits, groups and exclusions", () => {
     while (a.history.redo()) redone++;
     assert.deepEqual([redone, a.doc.state.count.value], [3, 5]);
     for (const maxSteps of [0, -1, 1.5, Number.NaN]) {
-      assert.throws(() => createUndoManager(createClient(Doc, { clientId: "x", onBatch() {} }), { maxSteps }), /maxSteps/);
+      assert.throws(() => createUndoManager(createClient(Doc, { clientId: "x", onBatch() {} }), { maxSteps }), RangeError);
     }
+    // @ts-expect-error Options are numbers; a wrong type is a TypeError, a wrong number a RangeError.
+    assert.throws(() => createUndoManager(createClient(Doc, { clientId: "x", onBatch() {} }), { captureTimeout: "0" }), TypeError);
     const unlimited = createUndoManager(createClient(Doc, { clientId: "y", onBatch() {} }), { maxSteps: Infinity });
     unlimited.destroy();
   });

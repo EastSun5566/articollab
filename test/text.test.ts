@@ -364,11 +364,16 @@ describe("text runtime", () => {
     assert.equal(batches.length, 2);
     assert.equal(changes, 2);
 
-    assert.throws(() => doc.state.body.insert(3, "x"), /out of bounds/i);
-    assert.throws(() => doc.state.body.delete(2), /out of bounds/i);
-    assert.throws(() => doc.state.body.delete(0, -1), /Invalid delete count/);
-    assert.throws(() => doc.state.body.delete(1, 2), /out of bounds/i);
-    assert.throws(() => doc.state.body.delete(0.5, 0), /out of bounds/i);
+    assert.throws(() => doc.state.body.insert(3, "x"), RangeError);
+    assert.throws(() => doc.state.body.delete(2), RangeError);
+    assert.throws(() => doc.state.body.delete(0, -1), (error) => error instanceof RangeError && /Invalid delete count/.test(error.message));
+    assert.throws(() => doc.state.body.delete(1, 2), RangeError);
+    assert.throws(() => doc.state.body.delete(0.5, 0), RangeError);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Exercises untyped JavaScript callers.
+    const notANumber = "0" as unknown as number;
+    assert.throws(() => doc.state.body.insert(notANumber, "x"), TypeError);
+    assert.throws(() => doc.state.body.delete(notANumber), TypeError);
+    assert.throws(() => doc.state.body.delete(0, notANumber), TypeError);
     assert.equal(batches.length, 2);
     assert.equal(doc.state.body.toString(), "AB");
   });

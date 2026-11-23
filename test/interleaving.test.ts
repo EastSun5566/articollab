@@ -34,7 +34,7 @@ function transformed(batch: Batch): readonly DocumentOperation<Shape>[] {
 }
 
 // Test-local scheduler records protocol facts, not an alternative IdList implementation.
-function setup(historyLimit = 1000) {
+function setup(maxHistory = 1000) {
   const trace: string[] = [];
   const coverage = new Set<string>();
   const commits: Commit[] = [];
@@ -51,7 +51,7 @@ function setup(historyLimit = 1000) {
     if (mode === "policy-reject") return [];
     return mode === "transform" ? transformed(batch) : batch.operations;
   };
-  let server = createServer(Board, { historyLimit, resolve });
+  let server = createServer(Board, { maxHistory, resolve });
   snapshots.push(decodeSnapshot(Board, json(server.snapshot())));
 
   function note(action: string): void { trace.push(action); coverage.add(action.split(" ", 1)[0]!); }
@@ -172,7 +172,7 @@ function setup(historyLimit = 1000) {
     note("restore-server");
     const before = server.checkpoint();
     const beforeCalls = calls;
-    server = createServer(Board, { historyLimit, resolve, checkpoint: decodeServerCheckpoint(Board, json(before)) });
+    server = createServer(Board, { maxHistory, resolve, checkpoint: decodeServerCheckpoint(Board, json(before)) });
     assert.deepEqual(server.checkpoint(), before);
     assert.equal(calls, beforeCalls);
   }
@@ -182,7 +182,7 @@ function setup(historyLimit = 1000) {
     const checkpoint = server.checkpoint();
     assert.equal(checkpoint.snapshot.serverSeq, commits.length);
     assert.deepEqual(checkpoint.snapshot, snapshots.at(-1));
-    assert.deepEqual(checkpoint.history, historyLimit === 0 ? [] : commits.slice(-historyLimit));
+    assert.deepEqual(checkpoint.history, maxHistory === 0 ? [] : commits.slice(-maxHistory));
     assert.equal(checkpoint.clients.length, clients.length);
     for (const entry of checkpoint.clients) assert.deepEqual(entry.replay, latest.get(entry.clientId) ?? null);
     assert.equal([...latest.values()].reduce((sum, entry) => sum + entry.batch.seq, 0), commits.length);

@@ -47,7 +47,7 @@ export async function mountTextEditors(root, url) {
   function stop(error) {
     if (!failed) { failed = true; failure = error; }
     // stop() can run inside a failing editor transaction; reconfigure only after it unwinds.
-    for (const pane of panes) { pane.sync.stop(); queueMicrotask(() => { pane.editor.setReadOnly(true); }); }
+    for (const pane of panes) { pane.sync.close(); queueMicrotask(() => { pane.editor.setReadOnly(true); }); }
     status.textContent = "Stopped: " + (failure instanceof Error ? failure.message : String(failure)) +
       ". Inspect and preserve the current checkpoints. Completed edits were not rolled back.";
     status.dataset.state = "error";
@@ -73,14 +73,14 @@ export async function mountTextEditors(root, url) {
     if (destroyed) return;
     destroyed = true;
     // stop() also tells the other writers this one left, so its caret disappears at once.
-    for (const pane of panes) { pane.sync.stop(); pane.cleanup(); pane.editor.destroy(); }
+    for (const pane of panes) { pane.sync.close(); pane.cleanup(); pane.editor.destroy(); }
   }
   try {
     for (const label of ["A", "B"]) {
       const network = createOfflineSwitch();
       const sync = await connectSync(Note, { pollInterval: 1000, presence: { schema: selectionSchema },
         transport: createHttpTransport({ url: new URL("/sync/", url), fetch: network.fetch }) });
-      if (destroyed) { sync.stop(); break; }
+      if (destroyed) { sync.close(); break; }
       const clientId = sync.doc.checkpoint().clientId;
       const section = document.createElement("section");
       const heading = document.createElement("h2");
@@ -126,7 +126,7 @@ export async function mountTextEditors(root, url) {
       // only these events change the editor, and only after the current dispatch has finished.
       function syncChanged() {
         refresh();
-        const next = failed || ["blocked", "gap", "failed", "stopped"].includes(sync.status);
+        const next = failed || ["blocked", "gap", "failed", "closed"].includes(sync.status);
         if (next === readOnly) return;
         readOnly = next;
         queueMicrotask(() => { if (!destroyed) editor?.setReadOnly(readOnly); });

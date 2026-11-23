@@ -222,7 +222,7 @@ describe("HTTP pending rejection recovery", { timeout: 15_000 }, () => {
   });
 
   it("does not cancel or replace pending when retained history is insufficient", async (t) => {
-    const server = createServer(Board, { historyLimit: 0 });
+    const server = createServer(Board, { maxHistory: 0 });
     const { url } = await host(t, server);
     let posts = 0;
     const a = await connectHttpExampleClient(url, { fetch: async (input, init) => {

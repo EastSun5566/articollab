@@ -43,8 +43,8 @@ function setup(t: TestContext, options: SyncHandlerOptions<Shape> = { presence: 
     if (url.includes("/events")) streams.add(abort);
     return handle(new Request(input, { ...init, signal: abort.signal }));
   };
-  const clients: { stop(): void }[] = [];
-  t.after(() => { for (const client of clients) client.stop(); for (const abort of streams) abort.abort(); });
+  const clients: { close(): void }[] = [];
+  t.after(() => { for (const client of clients) client.close(); for (const abort of streams) abort.abort(); });
   async function writer(presence: { republishInterval?: number; schema?: StandardSchemaV1<State> } = {}): Promise<PresenceSyncClient<Shape, State>> {
     const sync = await connectSync(Board, {
       pollInterval: 0, retry: { initialDelay: 20, maxDelay: 50 },
@@ -79,13 +79,13 @@ describe("Presence over the sync channel", () => {
     a.presence.set(null);
     await until(() => names(b).length === 0, "B to see A leave");
     assert.deepEqual(changes, [["Ann"], ["Ann (editing)"], []]);
-    b.stop();
+    b.close();
     await until(() => names(a).length === 0, "A to see B leave on stop");
-    // Editors may still report selections after their client stopped: ignored, not thrown.
+    // Editors may still report selections after their client closed: ignored, not thrown.
     b.presence.set({ name: "Ben again" });
     assert.throws(() => { b.presence.set({ nickname: "x" } as never); }, PayloadValidationError); // oxlint-disable-line typescript/no-unsafe-type-assertion -- An invalid state on purpose.
     await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.deepEqual([b.presence.state, names(a)], [null, []], "a stopped writer does not come back");
+    assert.deepEqual([b.presence.state, names(a)], [null, []], "a closed writer does not come back");
   });
 
   it("sends a new stream everyone's state, and rebuilds after the stream is lost", async (t) => {
@@ -149,5 +149,21 @@ describe("Presence over the sync channel", () => {
         async submit() {}, async reject() {}, async commitsSince() { return []; },
       },
     }), /publishPresence/);
+  });
+
+  it("refuses presence timings that are not positive integers", async () => {
+    const server = createServer(Board);
+    for (const ttl of [0, -1, 1.5]) {
+      assert.throws(() => createSyncHandler(Board, server, { presence: { ttl } }), RangeError, String(ttl));
+    }
+    // @ts-expect-error A wrong type is a TypeError.
+    assert.throws(() => createSyncHandler(Board, server, { presence: { ttl: "1" } }), TypeError);
+    const transport = {
+      async register() { return { clientId: server.openClient(), snapshot: server.snapshot() }; },
+      async submit() {}, async reject() {}, async commitsSince() { return []; }, async publishPresence() {},
+    };
+    await assert.rejects(connectSync(Board, { transport, presence: { republishInterval: 0 } }), RangeError);
+    // @ts-expect-error A wrong type is a TypeError.
+    await assert.rejects(connectSync(Board, { transport, presence: { republishInterval: "1" } }), TypeError);
   });
 });

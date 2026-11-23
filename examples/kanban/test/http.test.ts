@@ -42,7 +42,7 @@ async function fixture(t: TestContext) {
       const { settled } = sync.doc.track(() => renameCard(sync.doc, cardId, title));
       void settled.then((outcome) => { const card = outcome && lostRename(outcome); if (card !== undefined) lost.push(card.title); });
     };
-    stops.push(() => { sync.stop(); });
+    stops.push(() => { sync.close(); });
     await sync.sync();
     await until(() => sync.push === "open", "the push channel");
     return { sync, network, lost, rename,
@@ -125,7 +125,7 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
     assert.equal(tabStore.slot, 1);
     const tab = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 }, store: tabStore,
       transport: createHttpTransport({ url: f.host.url + "/sync/", fetch: tabNetwork.fetch }) });
-    t.after(() => tab.stop());
+    t.after(() => tab.close());
     assert.notEqual(tab.doc.checkpoint().clientId, before.doc.checkpoint().clientId, "each tab is its own writer");
     await assert.rejects(open(), CheckpointLockedError, "every slot is held");
     addCard(tab.doc, "todo", "From the second tab", "tab-card");
@@ -136,12 +136,12 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
     addCard(before.doc, "todo", "Typed offline", "offline-card");
     renameCard(before.doc, "seed-ship", "Renamed offline");
     await until(() => before.status === "retrying", "the offline writer to retry");
-    before.stop(); // The page unloads.
+    before.close(); // The page unloads.
 
     network.set(false);
     // The second tab is still open, so the reloaded page takes the freed slot with the unsent edits.
     const after = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 }, store: await open(), transport: transport() });
-    t.after(() => after.stop());
+    t.after(() => after.close());
     assert.equal(after.doc.checkpoint().clientId, before.doc.checkpoint().clientId, "the same writer resumes");
     assert.equal(after.doc.checkpoint().pendingBatches.length, 2, "both offline edits were restored");
     assert.equal(findCard(after.doc, "offline-card")?.card.title, "Typed offline");

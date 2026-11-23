@@ -10,7 +10,7 @@ export {
   type SyncTransport,
 } from "./client.ts";
 
-export { type PresenceOptions, type SyncPresence } from "./presence.ts";
+export { type SyncPresenceOptions, type SyncPresence } from "./presence.ts";
 
 export {
   CheckpointLockedError,

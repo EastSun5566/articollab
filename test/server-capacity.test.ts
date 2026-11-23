@@ -33,7 +33,7 @@ describe("server client capacity", () => {
       }
       for (const input of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null, "2", true, 1n]) {
         // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid numeric option verifies runtime validation.
-        assert.throws(() => create({ maxClients: input as number }));
+        assert.throws(() => create({ maxClients: input as number }), typeof input === "number" ? RangeError : TypeError);
       }
     }
   });
@@ -118,13 +118,13 @@ describe("server client capacity", () => {
   });
 
   it("does not release sessions merely because history is disabled or evicted", () => {
-    for (const historyLimit of [0, 1]) {
-      const server = createServer(Board, { maxClients: 2, historyLimit });
+    for (const maxHistory of [0, 1]) {
+      const server = createServer(Board, { maxClients: 2, maxHistory });
       const a = server.openClient(), b = server.openClient();
       const first = server.receive(batch(a));
       server.receive(batch(b));
       const before = server.checkpoint();
-      assert.equal(before.history.length, historyLimit);
+      assert.equal(before.history.length, maxHistory);
       assert.throws(() => server.openClient());
       assert.strictEqual(server.reject(batch(a)).commit, first.commit);
       assert.deepEqual(server.checkpoint(), before);

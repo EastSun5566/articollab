@@ -39,14 +39,14 @@ function assertCheckpointError(input: unknown, path: string): void {
   });
   assert.throws(
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
-    () => createServer(Board, { checkpoint: input as BoardCheckpoint, historyLimit: 0 }),
+    () => createServer(Board, { checkpoint: input as BoardCheckpoint, maxHistory: 0 }),
     WireDecodeError
   );
 }
 
 describe("server history", () => {
   it("returns complete frozen catch-up results and validates watermarks", () => {
-    const server = createServer(Board, { historyLimit: 3 });
+    const server = createServer(Board, { maxHistory: 3 });
     assert.equal(server.openClient(), "client-1");
     assert.deepEqual(server.commitsSince(0), []);
     assert.ok(Object.isFrozen(server.commitsSince(0)));
@@ -73,23 +73,23 @@ describe("server history", () => {
     assert.equal(server.checkpoint().history.length, 1000);
     assert.equal(server.commitsSince(0), null);
     assert.equal(server.commitsSince(1)!.length, 1000);
-    for (const historyLimit of [0, 1]) {
-      const document = createServer(Board, { historyLimit });
+    for (const maxHistory of [0, 1]) {
+      const document = createServer(Board, { maxHistory });
       assert.equal(document.openClient(), "client-1");
       assert.equal(document.openClient(), "client-2");
       const first = document.receive(makeBatch("client-1", 1));
       document.receive(makeBatch("client-2", 1));
-      assert.equal(document.checkpoint().history.length, historyLimit);
+      assert.equal(document.checkpoint().history.length, maxHistory);
       assert.equal(document.commitsSince(0), null);
-      assert.deepEqual(sequences(document.commitsSince(1)), historyLimit === 0 ? null : [2]);
+      assert.deepEqual(sequences(document.commitsSince(1)), maxHistory === 0 ? null : [2]);
       assert.deepEqual(document.commitsSince(2), []);
       assert.strictEqual(document.receive(makeBatch("client-1", 1)).commit, first.commit);
     }
-    for (const historyLimit of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null, "2"]) {
+    for (const maxHistory of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null, "2"]) {
       assert.throws(
         // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately invalid typed input tests runtime validation; do not decode away the failure under test.
-        () => createServer(Board, { historyLimit: historyLimit as number }),
-        /historyLimit/
+        () => createServer(Board, { maxHistory: maxHistory as number }),
+        (error) => error instanceof (typeof maxHistory === "number" ? RangeError : TypeError) && /maxHistory/.test(String(error))
       );
     }
   });
@@ -99,7 +99,7 @@ describe("server history", () => {
     let calls = 0;
     const observed: BoardCheckpoint[] = [];
     const server = createServer(Board, {
-      historyLimit: 2,
+      maxHistory: 2,
       resolve: ({ batch, snapshot }): readonly BoardOperation[] => {
         calls++;
         assert.deepEqual(server.snapshot(), snapshot);
@@ -186,7 +186,7 @@ describe("server history", () => {
   });
 
   it("keeps returned history and checkpoints point-in-time", () => {
-    const server = createServer(Board, { historyLimit: 2 });
+    const server = createServer(Board, { maxHistory: 2 });
     assert.equal(server.openClient(), "client-1");
     const first = server.receive(makeBatch("client-1", 1)).commit;
     const history = server.commitsSince(0)!;
@@ -204,17 +204,17 @@ describe("server history", () => {
   });
 
   it("restores and resizes only retained history without changing retry results", () => {
-    const server = createServer(Board, { historyLimit: 3 });
+    const server = createServer(Board, { maxHistory: 3 });
     assert.equal(server.openClient(), "client-1");
     for (let seq = 1; seq <= 5; seq++) server.receive(makeBatch("client-1", seq));
     const checkpoint = decodeServerCheckpoint(Board, JSON.parse(JSON.stringify(server.checkpoint())));
     assert.deepEqual(sequences(checkpoint.history), [3, 4, 5]);
-    for (const historyLimit of [undefined, 0, 1, 10]) {
+    for (const maxHistory of [undefined, 0, 1, 10]) {
       const restored = createServer(Board, {
         checkpoint,
-        ...(historyLimit === undefined ? {} : { historyLimit }),
+        ...(maxHistory === undefined ? {} : { maxHistory }),
       });
-      const expected = historyLimit === 0 ? [] : historyLimit === 1 ? [5] : [3, 4, 5];
+      const expected = maxHistory === 0 ? [] : maxHistory === 1 ? [5] : [3, 4, 5];
       assert.deepEqual(sequences(restored.checkpoint().history), expected);
       assert.deepEqual(restored.snapshot(), checkpoint.snapshot);
       assert.equal(restored.receive(makeBatch("client-1", 5)).replayed, true);

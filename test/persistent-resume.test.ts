@@ -557,7 +557,7 @@ describe("file-backed checkpoint recovery example", () => {
 
   it("leaves saved pending disconnected without submission when history is insufficient", async (t) => {
     const store = createCheckpointStore(directory(t));
-    const first = boot(store, { historyLimit: 0 });
+    const first = boot(store, { maxHistory: 0 });
     const source = first.network.connect();
     const peer = first.network.connect();
     source.disconnect();
@@ -567,7 +567,7 @@ describe("file-backed checkpoint recovery example", () => {
     peer.disconnect();
     const saved = store.loadClient("client-1")!;
     let requests = 0;
-    const next = boot(store, { historyLimit: 0 }, {
+    const next = boot(store, { maxHistory: 0 }, {
       transfer: async (direction, _id, message) => {
         if (direction === "client-to-server") requests++;
         return message;

@@ -12,6 +12,7 @@ import { jsonArray, jsonPointer, type JsonPathSegment } from "./json.ts";
 import { CollectionObservers, elementTargets } from "./observe.ts";
 import { cursorAt, cursorIndex, type Cursor } from "./cursor.ts";
 import { historyWriter } from "./history-access.ts";
+import { requireNumber } from "./options.ts";
 
 export interface TextSnapshotData {
   readonly idList: readonly SavedIdRange[];
@@ -538,8 +539,9 @@ export class RuntimeText implements Text {
   }
 
   insert(index: number, value: string): void {
+    requireNumber(index, "Index");
     if (!Number.isSafeInteger(index) || index < 0 || index > this.length) {
-      throw new Error(`Index out of bounds: ${index} (length: ${this.length})`);
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
     }
     if (value.length === 0) return;
 
@@ -558,14 +560,16 @@ export class RuntimeText implements Text {
   }
 
   delete(index: number, count = 1): void {
+    requireNumber(index, "Index");
+    requireNumber(count, "Delete count");
     if (!Number.isSafeInteger(index) || index < 0 || index > this.length) {
-      throw new Error(`Index out of bounds: ${index} (length: ${this.length})`);
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
     }
     if (!Number.isSafeInteger(count) || count < 0) {
-      throw new Error(`Invalid delete count: ${count}`);
+      throw new RangeError(`Invalid delete count: ${count}`);
     }
     if (count > this.length - index) {
-      throw new Error(
+      throw new RangeError(
         `Delete range out of bounds: ${index} + ${count} (length: ${this.length})`
       );
     }

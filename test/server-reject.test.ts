@@ -197,7 +197,7 @@ describe("explicit server rejection", () => {
   });
 
   it("restores explicit rejection, bounded history and retry ownership from JSON", () => {
-    const server = createServer(Board, { historyLimit: 2 });
+    const server = createServer(Board, { maxHistory: 2 });
     assert.equal(server.openClient(), "client-1");
     assert.equal(server.openClient(), "client-2");
     assert.equal(server.openClient(), "client-3");
@@ -339,7 +339,7 @@ describe("manual pending rejection example", () => {
   });
 
   it("does not submit anything or replace pending state when catch-up history is insufficient", () => {
-    const server = createServer(Board, { historyLimit: 0 });
+    const server = createServer(Board, { maxHistory: 0 });
     assert.equal(server.openClient(), "client-1");
     assert.equal(server.openClient(), "client-2");
     const { doc } = setup(); dependentEdits(doc);

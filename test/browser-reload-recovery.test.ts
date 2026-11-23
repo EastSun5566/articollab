@@ -266,7 +266,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
 
   it("preserves history-gap work and restores blocked pending for explicit cancellation", async (t) => {
     {
-      const { server, url } = await host(t, { historyLimit: 0 });
+      const { server, url } = await host(t, { maxHistory: 0 });
       const storage = memory();
       let a = await recovery.connectPersistentBrowserClient(url, { storage });
       mixed(a.doc);

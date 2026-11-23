@@ -61,7 +61,7 @@ describe("connectSync", () => {
     const checkpoint = t.mock.method(ClientDocument.prototype, "checkpoint");
     const a = await connectSync(Board, { transport: h.transport(), pollInterval: 0 });
     const b = await connectSync(Board, { transport: h.transport(), pollInterval: 0 });
-    t.after(() => { a.stop(); b.stop(); });
+    t.after(() => { a.close(); b.close(); });
     assert.equal(await a.sync(), true);
     const seenA = statuses(a);
     a.doc.state.items.push("one");
@@ -90,7 +90,7 @@ describe("connectSync", () => {
     assert.equal(await a.sync(), true);
     assert.deepEqual(h.server.snapshot().data.items.values, ["once"]);
     assert.equal(h.calls.filter((call) => call.startsWith("submit")).length, 1, "catch-up acknowledged it; no resend");
-    a.stop();
+    a.close();
   });
 
   it("resends a submission whose request never arrived", async () => {
@@ -103,7 +103,7 @@ describe("connectSync", () => {
     assert.equal(await a.sync(), true);
     assert.deepEqual(h.server.snapshot().data.items.values, ["retried"]);
     assert.equal(h.calls.filter((call) => call.startsWith("submit")).length, 2);
-    a.stop();
+    a.close();
   });
 
   it("backs off exponentially up to the limit and resets after a successful pass", async (t: TestContext) => {
@@ -130,7 +130,7 @@ describe("connectSync", () => {
     const before = attempts();
     t.mock.timers.tick(100); await tick(); await tick();
     assert.equal(attempts(), before + 1, "the delay starts over after success");
-    a.stop();
+    a.close();
   });
 
   it("fails without retrying on non-retryable errors, protocol violations and save failures", async () => {
@@ -166,7 +166,7 @@ describe("connectSync", () => {
         assert.equal(a.error, saveError);
         assert.equal(h.calls.filter((call) => call.startsWith("submit")).length, 0, "pending is never sent unsaved");
       }
-      a.stop();
+      a.close();
       assert.equal(a.status, "failed", "stop keeps the failure visible");
     }
   });
@@ -184,7 +184,7 @@ describe("connectSync", () => {
         await transport.submit(batch);
       },
     } });
-    t.after(() => a.stop());
+    t.after(() => a.close());
     assert.equal(saved.length, 1, "a fresh connection is saved before use");
     assert.equal(checkpoint.mock.callCount(), 1);
     assert.equal(await a.sync(), true);
@@ -215,7 +215,7 @@ describe("connectSync", () => {
       if (snapshot.lastLocalSeq === 1) { entered.resolve(); await release.promise; }
       saved.push(snapshot);
     } });
-    t.after(() => { a.stop(); release.resolve(); });
+    t.after(() => { a.close(); release.resolve(); });
     a.doc.state.items.push("first");
     const syncing = a.sync();
     await entered.promise;
@@ -233,7 +233,7 @@ describe("connectSync", () => {
   it("rejects cancellation requested during a document transaction", async (t) => {
     const h = harness();
     const a = await connectSync(Board, { transport: h.transport(), pollInterval: 0 });
-    t.after(() => a.stop());
+    t.after(() => a.close());
     const calls = h.calls.slice();
     let cancelling: Promise<boolean> | undefined;
     a.doc.transact(() => { cancelling = a.rejectPending(); });
@@ -268,11 +268,11 @@ describe("connectSync", () => {
     assert.equal(a.status, "idle");
     assert.deepEqual(a.doc.checkpoint().pendingBatches, []);
     assert.deepEqual(a.doc.state.items.toArray(), ["base"]);
-    a.stop();
+    a.close();
   });
 
   it("stops at a history gap, keeps pending work and restarts from a snapshot only without it", async (t) => {
-    const h = harness({ historyLimit: 1 });
+    const h = harness({ maxHistory: 1 });
     const a = await connectSync(Board, { transport: h.transport(), pollInterval: 0 });
     const b = await connectSync(Board, { transport: h.transport(), pollInterval: 0 });
     for (let index = 0; index < 3; index++) { b.doc.state.count.value = index + 1; await b.sync(); }
@@ -290,10 +290,10 @@ describe("connectSync", () => {
     const fresh = await c.restartFromSnapshot();
     assert.equal(checkpoint.mock.callCount(), 0);
     checkpoint.mock.restore();
-    assert.equal(c.status, "stopped");
+    assert.equal(c.status, "closed");
     assert.notEqual(fresh.doc.checkpoint().clientId, c.doc.checkpoint().clientId);
     assert.equal(fresh.doc.state.count.value, 12);
-    for (const client of [a, b, fresh]) client.stop();
+    for (const client of [a, b, fresh]) client.close();
   });
 
   it("runs one pass for edits made together and shares a pass between concurrent sync() calls", async () => {
@@ -308,10 +308,10 @@ describe("connectSync", () => {
     const pass = h.calls.slice(before);
     assert.equal(pass.filter((call) => call.startsWith("submit")).length, 3);
     assert.equal(pass.filter((call) => call.startsWith("commits")).length, 4, "one catch-up, then one per acknowledgement");
-    a.stop();
+    a.close();
   });
 
-  it("ignores responses after stop() and runs no timers", async (t: TestContext) => {
+  it("ignores responses after close() and runs no timers", async (t: TestContext) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const h = harness();
     const transport = h.transport();
@@ -323,20 +323,20 @@ describe("connectSync", () => {
     a.doc.state.items.push("late");
     const pending = a.sync();
     await tick();
-    a.stop(); a.stop();
+    a.close(); a.close();
     release!();
     assert.equal(await pending, false);
-    assert.equal(a.status, "stopped");
+    assert.equal(a.status, "closed");
     assert.equal(h.server.snapshot().serverSeq, 1, "an already-started submission is not rolled back");
     assert.equal(a.doc.checkpoint().snapshot.serverSeq, 0, "the late acknowledgement is ignored");
     assert.equal(a.doc.checkpoint().pendingBatches.length, 1);
     const calls = h.calls.length;
     t.mock.timers.tick(10_000); await tick();
-    assert.equal(h.calls.length, calls, "no catch-up after the stopped submission and no polling");
-    await assert.rejects(a.sync(), /stopped/);
+    assert.equal(h.calls.length, calls, "no catch-up after the closed client's submission and no polling");
+    await assert.rejects(a.sync(), /closed/);
   });
 
-  for (const terminal of ["stopped", "failed"] as const) it(`does not revive queued cancellation after the preceding pass is ${terminal}`, async (t) => {
+  for (const terminal of ["closed", "failed"] as const) it(`does not revive queued cancellation after the preceding pass is ${terminal}`, async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const h = harness(), transport = h.transport();
     const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
@@ -353,14 +353,14 @@ describe("connectSync", () => {
         return commits;
       },
     } });
-    t.after(() => { a.stop(); gate.resolve(); });
+    t.after(() => { a.close(); gate.resolve(); });
     a.doc.state.items.push("kept");
     const syncing = a.sync();
     await entered.promise;
     const cancelling = a.rejectPending();
     const saved = a.doc.checkpoint(), calls = h.calls.slice(), savedCount = saves;
-    if (terminal === "stopped") {
-      a.stop(); gate.resolve();
+    if (terminal === "closed") {
+      a.close(); gate.resolve();
       assert.equal(await syncing, false);
       assert.equal(await cancelling, false);
     } else {
@@ -389,7 +389,7 @@ describe("connectSync", () => {
         return commits;
       },
     } });
-    t.after(() => { a.stop(); gate.resolve(); });
+    t.after(() => { a.close(); gate.resolve(); });
     a.doc.state.items.push("first");
     const syncing = a.sync();
     await entered.promise;
@@ -415,11 +415,11 @@ describe("connectSync", () => {
     const h = harness();
     let saves = 0;
     const a = await connectSync(Board, { pollInterval: 0, transport: h.transport(), save() { saves++; } });
-    t.after(() => a.stop());
-    a.on("status", (status) => { if (status === "syncing") a.stop(); });
+    t.after(() => a.close());
+    a.on("status", (status) => { if (status === "syncing") a.close(); });
     a.doc.state.count.value = 1;
     assert.equal(await a.sync(), false);
-    assert.equal(a.status, "stopped");
+    assert.equal(a.status, "closed");
     assert.equal(saves, 1, "only the initial checkpoint was saved");
     assert.deepEqual(h.calls, ["register"]);
     assert.equal(a.doc.checkpoint().pendingBatches.length, 1);
@@ -433,14 +433,14 @@ describe("connectSync", () => {
     const a = await connectSync(Board, { pollInterval: 0, transport: h.transport(), async save() {
       if (++saves > 1) { entered.resolve(); await gate.promise; if (rejectSave) throw late; }
     } });
-    t.after(() => { a.stop(); gate.resolve(); });
+    t.after(() => { a.close(); gate.resolve(); });
     a.doc.state.count.value = 1;
     const syncing = a.sync();
     await entered.promise;
     const saved = a.doc.checkpoint();
-    a.stop(); gate.resolve();
+    a.close(); gate.resolve();
     assert.equal(await syncing, false);
-    assert.equal(a.status, "stopped");
+    assert.equal(a.status, "closed");
     assert.equal(a.error, undefined);
     assert.deepEqual(a.doc.checkpoint(), saved);
     assert.deepEqual(h.calls, ["register"]);
@@ -459,12 +459,12 @@ describe("connectSync", () => {
         throw new Error("late network failure");
       },
     } });
-    t.after(() => { a.stop(); gate.resolve(); });
+    t.after(() => { a.close(); gate.resolve(); });
     const syncing = a.sync();
     await entered.promise;
-    a.stop(); gate.resolve();
+    a.close(); gate.resolve();
     assert.equal(await syncing, false);
-    assert.equal(a.status, "stopped");
+    assert.equal(a.status, "closed");
     const calls = h.calls.slice();
     t.mock.timers.tick(60_000); await tick();
     assert.deepEqual(h.calls, calls);
@@ -474,12 +474,12 @@ describe("connectSync", () => {
     const h = harness();
     let saves = 0;
     const a = await connectSync(Board, { pollInterval: 0, transport: h.transport(), save() { saves++; } });
-    t.after(() => a.stop());
+    t.after(() => a.close());
     const peer = h.server.openClient();
     for (const seq of [1, 2]) h.server.receive({ clientId: peer, seq, operations: [{ type: "value/set", path: "count", value: seq }] });
-    a.doc.on("change", () => a.stop());
+    a.doc.on("change", () => a.close());
     assert.equal(await a.sync(), false);
-    assert.equal(a.status, "stopped");
+    assert.equal(a.status, "closed");
     assert.equal(a.doc.state.count.value, 1, "the first commit completed, the next was not delivered");
     assert.equal(a.doc.checkpoint().snapshot.serverSeq, 1);
     assert.equal(saves, 1, "no new save starts after the callback stops the client");
@@ -502,7 +502,7 @@ describe("connectSync", () => {
     assert.equal(a.status, "failed");
     assert.ok(a.error instanceof Error);
     assert.equal(a.error.cause, bug);
-    b.stop();
+    b.close();
   });
 
   it("restores from a checkpoint without registering and resends pending work after catching up", async () => {
@@ -513,7 +513,7 @@ describe("connectSync", () => {
     first.doc.state.items.push("accepted");
     first.doc.state.items.push("unsent");
     await first.sync();
-    first.stop();
+    first.close();
     const saved = decodeClientCheckpoint(Board, wire(first.doc.checkpoint()));
     assert.equal(saved.pendingBatches.length, 2);
     const transport = h.transport();
@@ -522,7 +522,7 @@ describe("connectSync", () => {
     assert.ok(!transport.calls.includes("register"));
     assert.deepEqual(h.server.snapshot().data.items.values, ["accepted", "unsent"]);
     assert.deepEqual(transport.calls.filter((call) => call.startsWith("submit")).map((call) => call.split(":")[2]), ["2"]);
-    resumed.stop();
+    resumed.close();
   });
 
   for (const seed of [1, 42, 2026]) it(`delivers every batch exactly once over a lossy transport seed=${seed}`, async () => {
@@ -547,7 +547,7 @@ describe("connectSync", () => {
     for (const client of clients) {
       assert.deepEqual(client.doc.state.items.toArray(), values);
       assert.deepEqual(client.doc.checkpoint().pendingBatches, []);
-      client.stop();
+      client.close();
     }
   });
 });

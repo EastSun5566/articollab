@@ -40,7 +40,7 @@ async function fixture(t: TestContext, server = createServer(Note), presenceTtl?
       onError(error) { errors.push(error); },
     });
     rendered = binding.state;
-    cleanups.push(() => { binding.destroy(); sync.stop(); });
+    cleanups.push(() => { binding.destroy(); sync.close(); });
     await sync.sync().catch(() => {}); // The first pass opens the push channel.
     return { sync, network, binding, errors,
       text: () => binding.state.doc.toString(),
@@ -104,7 +104,7 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
   });
 
   it("keeps pending work and the editor when history cannot fill a gap", async (t) => {
-    const f = await fixture(t, createServer(Note, { historyLimit: 0 }));
+    const f = await fixture(t, createServer(Note, { maxHistory: 0 }));
     const a = await f.connect(), b = await f.connect();
     a.network.set(true);
     a.edit({ changes: { from: 0, insert: "unsent" } });
@@ -208,7 +208,7 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
     await until(() => (showB(), shown().length === 1), "the caret to resolve");
     assert.deepEqual(shown(), ["@16"]);
 
-    b.sync.stop();
+    b.sync.close();
     await until(() => a.sync.presence.peers.size === 0, "B's caret to go when B stops");
     a.check();
     assert.deepEqual([a.errors, b.errors], [[], []]);

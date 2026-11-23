@@ -222,14 +222,14 @@ describe("collection benchmark", () => {
         seed: 42, batchSize: 32, gzipLevel: 6, brotliQuality: 4 });
       assert.ok(Array.isArray(report.results));
       const rows = report.results.map(record);
-      assert.deepEqual(rows.map((row) => [row.historyLimit, row.encoding]), [
+      assert.deepEqual(rows.map((row) => [row.maxHistory, row.encoding]), [
         [0, "json"], [0, "gzip"], [0, "brotli"], [2, "json"], [2, "gzip"], [2, "brotli"],
       ]);
       const firstFixture = rows[0]?.fixture;
       for (const row of rows) {
         assert.equal(row.size, 32);
         assert.equal(row.watermark, 3);
-        assert.equal(row.retainedCommits, row.historyLimit);
+        assert.equal(row.retainedCommits, row.maxHistory);
         assert.deepEqual(row.fixture, firstFixture);
         const fixture = record(row.fixture);
         assert.equal(fixture.visibleIds, 32);
@@ -237,7 +237,7 @@ describe("collection benchmark", () => {
         assert.match(String(fixture.snapshotSha256), /^[a-f0-9]{64}$/);
         assert.ok(typeof row.snapshotBytes === "number" && row.snapshotBytes > 0);
         assert.ok(typeof row.rawBytes === "number" && Number.isSafeInteger(row.rawBytes) && row.rawBytes > row.snapshotBytes);
-        assert.equal(row.rawBytes, rows.find((item) => item.historyLimit === row.historyLimit && item.encoding === "json")?.rawBytes);
+        assert.equal(row.rawBytes, rows.find((item) => item.maxHistory === row.maxHistory && item.encoding === "json")?.rawBytes);
         assert.ok(typeof row.encodedBytes === "number" && Number.isSafeInteger(row.encodedBytes) && row.encodedBytes > 0);
         assert.equal(row.encodedToRawRatio, row.encodedBytes / row.rawBytes);
         if (row.encoding === "json") assert.equal(row.rawBytes, row.encodedBytes);

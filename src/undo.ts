@@ -9,11 +9,11 @@ import type { JsonValue, SchemaShape } from "./schema.ts";
 import type { CollectionState } from "./state.ts";
 import { RuntimeText, type TextIdRange, type TextState } from "./text.ts";
 
-export interface UndoManagerOptions {
+export interface UndoManagerOptions<S extends SchemaShape = SchemaShape> {
   /** Local batches less than this many milliseconds apart form one step. Default 500; 0 never merges. */
   readonly captureTimeout?: number;
   /** The collections whose changes are recorded. Default: all. */
-  readonly paths?: readonly string[];
+  readonly paths?: readonly (keyof S & string)[];
   /** The most undo steps kept, and the most redo steps; the oldest is dropped beyond it. Default 1000. */
   readonly maxSteps?: number;
 }
@@ -97,15 +97,15 @@ function joinsSurrogates(left: string, right: string): boolean {
  * that revert only what nobody has changed since; see the reference for the exact rules.
  */
 export function createUndoManager<S extends SchemaShape>(
-  doc: ClientDocument<S>, options: UndoManagerOptions = {}
+  doc: ClientDocument<S>, options: UndoManagerOptions<S> = {}
 ): UndoManager {
   // Mid-transaction, earlier edits of the open batch already happened and would be recorded wrongly.
   if (isTransacting(doc)) throw new Error("Cannot create an undo manager inside a transaction");
   const captureTimeout = options.captureTimeout ?? 500;
-  if (typeof captureTimeout !== "number" || !(captureTimeout >= 0)) {
-    throw new RangeError("captureTimeout must be a non-negative number");
-  }
+  if (typeof captureTimeout !== "number") throw new TypeError("captureTimeout must be a number");
+  if (!(captureTimeout >= 0)) throw new RangeError("captureTimeout must be a non-negative number");
   const maxSteps = options.maxSteps ?? 1000;
+  if (typeof maxSteps !== "number") throw new TypeError("maxSteps must be a number");
   if (maxSteps !== Infinity && !(Number.isSafeInteger(maxSteps) && maxSteps > 0)) {
     throw new RangeError("maxSteps must be a positive integer or Infinity");
   }
@@ -172,7 +172,7 @@ export function createUndoManager<S extends SchemaShape>(
         case "text/insert": entry.ranges.push({ start: operation.id, count: [...operation.value].length }); break;
         case "text/delete": entry.ranges.push(...operation.ranges); break;
         case "counter/add": entry.keys.add(""); break;
-        case "counters/add": case "counters/delete": entry.keys.add(operation.key); break;
+        case "counterMap/add": case "counterMap/delete": entry.keys.add(operation.key); break;
         case "value/set": break;
       }
     }

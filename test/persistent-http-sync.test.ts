@@ -509,7 +509,7 @@ describe("file-backed HTTP recovery example", { timeout: 15_000 }, () => {
 
   it("keeps saved pending intact when history cannot fill the gap", async (t) => {
     const store = createCheckpointStore(directory(t));
-    const { host } = await boot(t, store, { historyLimit: 0 });
+    const { host } = await boot(t, store, { maxHistory: 0 });
     const a = await connect(host.url, "client-1", store);
     a.doc.state.items.push("Pending");
     const before = store.loadClient("client-1");

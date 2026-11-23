@@ -12,8 +12,8 @@ type Commit = ServerCommit<DocumentOperation<typeof Counter.definition>>;
 const sequences = (commits: readonly Commit[] | null) => commits?.map((commit) => commit.serverSeq) ?? null;
 
 describe("Server commit history window", () => {
-  for (const limit of [0, 1, 3, 1000]) it(`matches a naive retained window with historyLimit=${limit}`, () => {
-    let server = createServer(Counter, { historyLimit: limit });
+  for (const limit of [0, 1, 3, 1000]) it(`matches a naive retained window with maxHistory=${limit}`, () => {
+    let server = createServer(Counter, { maxHistory: limit });
     const clientId = server.openClient();
     const all: Commit[] = [];
     let compactions = 0;
@@ -23,7 +23,7 @@ describe("Server commit history window", () => {
       const batch = { clientId, seq, operations: [{ type: "value/set" as const, path: "count" as const, value: seq }] };
       all.push((seq % 7 === 0 ? server.reject(batch) : server.receive(batch)).commit);
       if (seq === 2500) {
-        server = createServer(Counter, { historyLimit: limit,
+        server = createServer(Counter, { maxHistory: limit,
           checkpoint: decodeServerCheckpoint(Counter, JSON.parse(JSON.stringify(server.checkpoint()))) });
       }
       // Every step: a compaction defect is only visible on the commit that triggers compaction.
@@ -48,12 +48,12 @@ describe("Server commit history window", () => {
   });
 
   it("keeps a restored, frozen history array untouched while appending", () => {
-    const source = createServer(Counter, { historyLimit: 2 });
+    const source = createServer(Counter, { maxHistory: 2 });
     const clientId = source.openClient();
     for (let seq = 1; seq <= 2; seq++) source.receive({ clientId, seq, operations: [{ type: "value/set", path: "count", value: seq }] });
     const checkpoint = source.checkpoint();
     assert.ok(Object.isFrozen(checkpoint.history));
-    const restored = createServer(Counter, { historyLimit: 2, checkpoint });
+    const restored = createServer(Counter, { maxHistory: 2, checkpoint });
     restored.receive({ clientId, seq: 3, operations: [{ type: "value/set", path: "count", value: 3 }] });
     assert.deepEqual(sequences(checkpoint.history), [1, 2]);
     assert.deepEqual(sequences(restored.checkpoint().history), [2, 3]);

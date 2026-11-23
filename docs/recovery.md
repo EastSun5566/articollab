@@ -141,7 +141,17 @@ The repository's browser recovery demo uses document-ID envelopes/headers and se
 
 Articollab 0.10 introduces [Counters](collections.md#counter-additions-that-all-count). The new runtime can restore valid 0.9 snapshots and checkpoints with the same schema and document lineage, and pending batches keep their original operations and sequence numbers.
 
-Upgrade the server, every client and every snapshot or checkpoint reader before adding a `counter()` or `counters()` path. A 0.9 reader cannot process `counter/add`, `counters/add` or `counters/delete` in batches, commits, pending work, retry records or history. Adding a Counter path, or replacing a `value()` that held a count with `counter()`, changes the schema: a whole-number Value snapshot decodes as a Counter, but pending `value/set` operations for that path do not, so send or cancel them first. Keep the original checkpoints for rollback.
+Upgrade the server, every client and every snapshot or checkpoint reader before adding a `counter()` or `counterMap()` path. A 0.9 reader cannot process `counter/add`, `counterMap/add` or `counterMap/delete` in batches, commits, pending work, retry records or history. Adding a Counter path, or replacing a `value()` that held a count with `counter()`, changes the schema: a whole-number Value snapshot decodes as a Counter, but pending `value/set` operations for that path do not, so send or cancel them first. Keep the original checkpoints for rollback.
+
+0.10 also renames a few existing APIs so they follow one style. Update your code when you upgrade:
+
+| 0.9 | 0.10 |
+| --- | --- |
+| `createServer(schema, { historyLimit })` | `createServer(schema, { maxHistory })` |
+| `createSyncHandler(schema, server, { bodyLimit })` | `createSyncHandler(schema, server, { maxBodySize })` |
+| `sync.stop()` and status `"stopped"` | `sync.close()` and status `"closed"` |
+
+Numeric options now throw `TypeError` when they are not numbers and `RangeError` when they are numbers out of range or not integers; some threw `TypeError` or `Error` before. List and Text indices and counts follow the same rule: `TypeError` for a non-number, `RangeError` when out of range, instead of `Error`.
 
 ## Upgrading from 0.8 to 0.9
 

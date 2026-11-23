@@ -8,6 +8,7 @@ import {
   type ServerDocument,
 } from "../index.ts";
 import { jsonEquals, validateJsonValue } from "../json.ts";
+import { integerOption } from "../options.ts";
 import { checkPayload, type PayloadSchema } from "../payload.ts";
 import type { JsonValue } from "../schema.ts";
 
@@ -34,7 +35,7 @@ export interface SyncHandlerOptions<S extends SchemaShape> {
   /** Enables `POST rejections`, which cancels pending work. Default false. */
   readonly allowRejections?: boolean;
   /** Maximum request body size in bytes. Default 1 MiB. */
-  readonly bodyLimit?: number;
+  readonly maxBodySize?: number;
   /** Milliseconds between heartbeat comments on event streams. Default 15000. */
   readonly heartbeatInterval?: number;
   /** Maximum open event streams; more are answered with 503. Default 1000. */
@@ -97,11 +98,6 @@ async function readBody(request: Request, limit: number): Promise<string | null>
 const WATERMARK = /^(0|[1-9]\d*)$/;
 const MAX_EVENT_STREAM_BUFFER_BYTES = 4 * 1024 * 1024;
 
-function nonNegativeInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative safe integer`);
-  return value;
-}
-
 interface EventStream {
   /** The last server sequence queued for delivery. */
   sent: number;
@@ -118,11 +114,10 @@ export function createSyncHandler<S extends SchemaShape>(
   server: ServerDocument<S>,
   options: SyncHandlerOptions<S> = {}
 ): SyncHandler {
-  const bodyLimit = nonNegativeInteger(options.bodyLimit ?? 1024 * 1024, "bodyLimit");
-  const heartbeatInterval = nonNegativeInteger(options.heartbeatInterval ?? 15_000, "heartbeatInterval");
-  const maxEventStreams = nonNegativeInteger(options.maxEventStreams ?? 1000, "maxEventStreams");
-  const presenceTtl = options.presence === undefined ? 0 : nonNegativeInteger(options.presence.ttl ?? 30_000, "presence.ttl");
-  if (options.presence !== undefined && presenceTtl === 0) throw new TypeError("presence.ttl must be positive");
+  const maxBodySize = integerOption(options.maxBodySize ?? 1024 * 1024, "maxBodySize", 0);
+  const heartbeatInterval = integerOption(options.heartbeatInterval ?? 15_000, "heartbeatInterval", 0);
+  const maxEventStreams = integerOption(options.maxEventStreams ?? 1000, "maxEventStreams", 0);
+  const presenceTtl = options.presence === undefined ? 0 : integerOption(options.presence.ttl ?? 30_000, "presence.ttl", 1);
   /** Writers' current presence, in memory only. */
   const presence = new Map<string, { readonly state: JsonValue; expiresAt: number }>();
   let sweeper: ReturnType<typeof setInterval> | undefined;
@@ -280,8 +275,8 @@ export function createSyncHandler<S extends SchemaShape>(
     if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
       return error(415, "Expected application/json");
     }
-    const message = await readBody(request, bodyLimit);
-    if (message === null) return error(413, `Body exceeds ${bodyLimit} bytes`, { Connection: "close" });
+    const message = await readBody(request, maxBodySize);
+    if (message === null) return error(413, `Body exceeds ${maxBodySize} bytes`, { Connection: "close" });
     let input: unknown;
     try { input = JSON.parse(message); } catch { return error(400, "Invalid JSON"); }
 

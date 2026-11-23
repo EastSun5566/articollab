@@ -86,9 +86,19 @@ describe("list runtime", () => {
       assert.deepEqual(doc.checkpoint(), before);
     }
     for (const index of [-1, 1, 0.5, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
-      assert.throws(() => doc.state.items.set(index, "invalid index"));
+      assert.throws(() => doc.state.items.set(index, "invalid index"), RangeError);
       assert.deepEqual(doc.checkpoint(), before);
     }
+    const items = doc.state.items;
+    for (const call of [() => items.get(-1), () => items.get(1), () => items.insert(2, "x"), () => items.delete(1), () => items.move(0, 1)]) {
+      assert.throws(call, RangeError);
+    }
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Exercises untyped JavaScript callers.
+    const notANumber = "0" as unknown as number;
+    for (const call of [() => items.get(notANumber), () => items.set(notANumber, "x"), () => items.insert(notANumber, "x"), () => items.delete(notANumber), () => items.move(notANumber, 0)]) {
+      assert.throws(call, TypeError);
+    }
+    assert.deepEqual(doc.checkpoint(), before);
     assert.equal(reads, 0);
     assert.strictEqual(doc.state.items.get(0), payload);
     assert.equal(batches, 1); assert.equal(changes, 1);
