@@ -164,7 +164,7 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Parses this example's fixed import map, which is independently checked by fetching every target.
     const map = JSON.parse(match[1]!) as { imports: Record<string, string> };
     for (const route of [...Object.values(map.imports), "/dist/index.js", "/dist/sync/index.js", "/kanban/page.js",
-      "/kanban/board.js", "/shared/sync-ui.js"]) {
+      "/kanban/board.js", "/shared/sync-ui.js", "/shared/writer-store.js"]) {
       const asset = await fetch(f.host.url + route);
       assert.equal(asset.status, 200, route);
       assert.equal(asset.headers.get("Content-Type"), "text/javascript; charset=utf-8");
@@ -181,7 +181,7 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
   });
 
   it("imports without DOM, fetch, registration or listening side effects", async () => {
-    const modules = ["server.ts", "page.js", "board.js", "policy.ts", "../shared/sync-ui.js"];
+    const modules = ["server.ts", "page.js", "board.js", "policy.ts", "../shared/sync-ui.js", "../shared/writer-store.js"];
     const script = `
       const { Server } = await import("node:http");
       Server.prototype.listen = () => { throw new Error("Unexpected listen"); };

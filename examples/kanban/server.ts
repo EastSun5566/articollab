@@ -36,6 +36,7 @@ export async function startKanbanServer(server = createBoardServer()) {
   const assets = createBrowserAssetHandler(new Map([
     ["/", { file: join(directory, "index.html"), type: "text/html; charset=utf-8" }],
     ["/shared/sync-ui.js", { file: join(directory, "../shared/sync-ui.js"), type: "text/javascript; charset=utf-8" }],
+    ["/shared/writer-store.js", { file: join(directory, "../shared/writer-store.js"), type: "text/javascript; charset=utf-8" }],
     ...["page", "board"].map((name) => [`/kanban/${name}.js`,
       { file: join(directory, `${name}.js`), type: "text/javascript; charset=utf-8" }] as const),
   ]));

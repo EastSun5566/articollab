@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Folder tree | Articollab</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { font: 16px/1.55 system-ui, sans-serif; color: #1b2938; background: #f7f9fc; }
+    body { margin: 0; }
+    main { max-width: 90rem; padding: 2rem clamp(1rem, 4vw, 3rem); margin: auto; }
+    h1 { font-size: clamp(1.7rem, 3vw, 2.4rem); line-height: 1.2; margin: 0 0 1rem; }
+    h2 { margin: 0 0 .75rem; font-size: 1.3rem; }
+    header p { max-width: 75ch; }
+    .writers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2rem; margin-top: 2rem; }
+    .message { color: #4e6477; font-size: .9rem; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin: .5rem 0; }
+    .toolbar input:not([type]) { flex: 1; min-width: 8rem; }
+    .toolbar label { display: inline-flex; align-items: center; gap: .35rem; cursor: pointer; }
+    .tree, .tree ul { list-style: none; margin: 0; padding: 0; }
+    .tree { background: white; border: 1px solid #c9d4e0; border-radius: .4rem; padding: .5rem; min-height: 14rem; }
+    .tree[inert] { opacity: .6; }
+    .tree ul { padding-left: 1.4rem; }
+    .row { display: flex; align-items: center; gap: .35rem; padding: .15rem .35rem; border-radius: .25rem; cursor: pointer; }
+    [aria-selected="true"] > .row { background: #dde9f8; }
+    .toggle { width: 1rem; color: #4e6477; }
+    .name { overflow-wrap: anywhere; }
+    .peer { font-size: .75rem; color: white; background: #b45309; border-radius: .25rem; padding: 0 .35rem; }
+    input, select { font: inherit; padding: .3rem .45rem; border: 1px solid #c9d4e0; border-radius: .25rem; }
+    button { font: inherit; padding: .3rem .6rem; border: 1px solid #c9d4e0; border-radius: .25rem; background: white; color: inherit; cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible, .row:focus-visible { outline: 2px solid #205faa; outline-offset: 2px; }
+    button:disabled, select:disabled { opacity: .55; cursor: default; }
+    .notices { list-style: none; padding: 0; margin: 0; }
+    .notices li { background: #fdf0e1; border: 1px solid #e3b98a; border-radius: .3rem; padding: .45rem .6rem; margin-top: .4rem; }
+    .badge { font-size: .8rem; font-weight: 600; vertical-align: middle; padding: .15rem .55rem; border-radius: 999px;
+      border: 1px solid currentColor; }
+    .badge[data-state="live"] { color: #1d6b3a; }
+    .badge[data-state="syncing"], .badge[data-state="polling"] { color: #205faa; }
+    .badge[data-state="offline"] { color: #8a5a00; }
+    .badge[data-state="blocked"], .badge[data-state="failed"], .badge[data-state="stopped"] { color: #a5232b; }
+    [data-state="error"] { color: #a5232b; }
+    @media (max-width: 64rem) { .writers { grid-template-columns: 1fr; } }
+  </style>
+  <script type="importmap">
+    { "imports": {
+      "articulated": "/vendor/articulated/index.js",
+      "sparse-array-rled": "/vendor/sparse-array-rled/index.js"
+    } }
+  </script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Two writers, one folder tree.</h1>
+      <p>Create, rename, drag and delete files in either writer. Turn one <strong>Offline</strong> and move two folders
+        into each other: the server keeps the tree valid, and the writer whose move lost is told.</p>
+    </header>
+    <div id="app"></div>
+  </main>
+  <script type="module">
+    import { mountFileTree } from "/file-tree/page.js";
+    const page = await mountFileTree(document.getElementById("app"), location.origin);
+    window.addEventListener("pagehide", () => page.destroy(), { once: true });
+  </script>
+</body>
+</html>
