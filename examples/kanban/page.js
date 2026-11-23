@@ -1,7 +1,8 @@
 // @ts-check
 import { createUndoManager } from "../../dist/index.js";
-import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../dist/sync/index.js";
+import { connectSync, createHttpTransport } from "../../dist/sync/index.js";
 import { createOfflineSwitch, describeSync } from "../shared/sync-ui.js";
+import { clearWriterStores, openWriterStore, readDocumentId } from "../shared/writer-store.js";
 import {
   addCard, Board, cardFor, cardsIn, COLUMNS, createSelection, deleteCard, findCard, moveCard, renameCard, voteCard,
   watchDroppedEdits,
@@ -90,25 +91,6 @@ const LABELS = ["A", "B"];
 /** Tabs that can run each writer at once; every tab is its own writer in a free slot. */
 const SLOTS = 4;
 
-/** The server's document identity. Stored checkpoints are keyed by it, so a restarted server starts fresh.
- * @param {string} url */
-async function readDocumentId(url) {
-  const response = await fetch(new URL("/document", url));
-  /** @type {unknown} */
-  const body = response.ok ? await response.json() : undefined;
-  if (typeof body !== "object" || body === null || !("documentId" in body) || typeof body.documentId !== "string") {
-    throw new Error("The server did not report a document ID");
-  }
-  return body.documentId;
-}
-
-/** The key of one slot: slot 0 is the base key, slot n is `<key>#n`.
- * @param {string} documentId @param {string} label @param {number} [slot] */
-function storeKey(documentId, label, slot = 0) {
-  const key = `${documentId}:${label}`;
-  return slot === 0 ? key : `${key}#${slot}`;
-}
-
 /** Explicit mount keeps imports free of DOM, requests and writer registration.
  * @param {HTMLElement} root @param {string} url */
 export async function mountKanban(root, url) {
@@ -131,18 +113,7 @@ export async function mountKanban(root, url) {
   // Stopping the writers releases their locks; a slot open in another tab keeps its saved edits.
   clear.addEventListener("click", async () => {
     destroy();
-    if (documentId !== undefined) {
-      for (const label of LABELS) {
-        for (let slot = 0; slot < SLOTS; slot++) {
-          try {
-            const store = await openIndexedDbStore({ database: DATABASE, key: storeKey(documentId, label, slot) });
-            try { await store.clear(); } finally { store.close(); }
-          } catch (error) {
-            if (!(error instanceof CheckpointLockedError)) throw error;
-          }
-        }
-      }
-    }
+    if (documentId !== undefined) await clearWriterStores({ database: DATABASE, documentId, labels: LABELS, slots: SLOTS });
     location.reload();
   });
   try {
@@ -150,12 +121,8 @@ export async function mountKanban(root, url) {
     let locked = 0;
     for (const label of LABELS) {
       const name = "Writer " + label;
-      let store;
-      try {
-        // Each tab takes a free slot, preferring one a closed tab left unsent edits in.
-        store = await openIndexedDbStore({ database: DATABASE, key: storeKey(documentId, label), slots: SLOTS });
-      } catch (error) {
-        if (!(error instanceof CheckpointLockedError)) throw error;
+      const store = await openWriterStore({ database: DATABASE, documentId, label, slots: SLOTS });
+      if (store === undefined) {
         // Every slot is held by another tab; a second copy of a slot would reuse its client ID.
         const pane = element("section", "writer");
         pane.append(element("h2", undefined, name), element("p", "message", `${name} is open in ${SLOTS} other tabs.`));
