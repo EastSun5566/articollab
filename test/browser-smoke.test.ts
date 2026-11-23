@@ -7,13 +7,13 @@ import { before, describe, it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { startBrowserSmokeServer } from "../examples/browser-smoke/server.ts";
+import { startBrowserSmokeServer } from "./fixtures/browser-smoke/server.ts";
 
 const execute = promisify(execFile);
 const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL("../", import.meta.url));
-const smokeUrl = new URL("../examples/browser-smoke/smoke.js", import.meta.url).href;
-const serverUrl = new URL("../examples/browser-smoke/server.ts", import.meta.url).href;
+const smokeUrl = new URL("./fixtures/browser-smoke/smoke.js", import.meta.url).href;
+const serverUrl = new URL("./fixtures/browser-smoke/server.ts", import.meta.url).href;
 let smoke: { runBrowserSmoke(): Array<{ name: string; stages: unknown[] }> };
 
 async function host(t: TestContext) {
@@ -44,8 +44,8 @@ describe("browser core smoke example", { timeout: 30_000 }, () => {
     const articulated = require.resolve("articulated/package.json");
     const sparse = createRequire(articulated).resolve("sparse-array-rled/package.json");
     const cases = [
-      ["/", join(root, "examples/browser-smoke/index.html"), "text/html"],
-      ["/smoke.js", join(root, "examples/browser-smoke/smoke.js"), "text/javascript"],
+      ["/", join(root, "test/fixtures/browser-smoke/index.html"), "text/html"],
+      ["/smoke.js", join(root, "test/fixtures/browser-smoke/smoke.js"), "text/javascript"],
       ["/dist/index.js", join(root, "dist/index.js"), "text/javascript"],
       ["/dist/vendor/hamt.js", join(root, "dist/vendor/hamt.js"), "text/javascript"],
       ["/vendor/articulated/index.js", join(dirname(articulated), "build/esm/index.js"), "text/javascript"],

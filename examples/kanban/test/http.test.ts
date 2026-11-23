@@ -5,7 +5,7 @@ import { describe, it, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { IDBFactory } from "fake-indexeddb";
 import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../../dist/sync/index.js";
-import { createOfflineSwitch } from "../../sync-ui.js";
+import { createOfflineSwitch } from "../../shared/sync-ui.js";
 import { addCard, Board, cardsIn, COLUMNS, deleteCard, findCard, lostRename, moveCard, renameCard } from "../board.js";
 import { createBoardServer, SEED_CARDS, startKanbanServer } from "../server.ts";
 
@@ -164,7 +164,7 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Parses this example's fixed import map, which is independently checked by fetching every target.
     const map = JSON.parse(match[1]!) as { imports: Record<string, string> };
     for (const route of [...Object.values(map.imports), "/dist/index.js", "/dist/sync/index.js", "/kanban/page.js",
-      "/kanban/board.js", "/sync-ui.js"]) {
+      "/kanban/board.js", "/shared/sync-ui.js"]) {
       const asset = await fetch(f.host.url + route);
       assert.equal(asset.status, 200, route);
       assert.equal(asset.headers.get("Content-Type"), "text/javascript; charset=utf-8");
@@ -181,7 +181,7 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
   });
 
   it("imports without DOM, fetch, registration or listening side effects", async () => {
-    const modules = ["server.ts", "page.js", "board.js", "policy.ts", "../sync-ui.js"];
+    const modules = ["server.ts", "page.js", "board.js", "policy.ts", "../shared/sync-ui.js"];
     const script = `
       const { Server } = await import("node:http");
       Server.prototype.listen = () => { throw new Error("Unexpected listen"); };

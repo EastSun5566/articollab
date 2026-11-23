@@ -107,6 +107,18 @@ describe("Text editor state bridge", () => {
     assert.equal(f.batches.length, 2); // No observer echo.
   });
 
+  it("leaves the editor alone when another writer changes another path", (t) => {
+    const f = fixture(); t.after(() => f.binding.destroy());
+    f.edit({ changes: { from: 0, insert: "Hello" } });
+    const { peer, deliver } = withPeer(f);
+    peer.state.count.value = 7;
+    deliver();
+    const updates = f.updates;
+    assert.equal(f.binding.state.doc.toString(), "Hello");
+    assert.deepEqual([f.doc.state.count.value, f.batches.length, f.updates], [7, 0, updates], "no echo and no editor update");
+    f.check();
+  });
+
   it("keeps same-string element-boundary updates out of the editor", (t) => {
     const f = fixture(); t.after(() => f.binding.destroy());
     f.doc.state.body.insert(0, "😀");

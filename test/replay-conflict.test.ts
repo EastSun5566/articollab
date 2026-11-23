@@ -10,10 +10,10 @@ import {
 } from "../src/index.ts";
 import { PendingReplayError } from "../src/conflict.ts";
 import { initialStates, replayPending } from "../src/state.ts";
-import { Board, createExampleNetwork } from "../examples/resume.ts";
-import { createAsyncExampleNetwork } from "../examples/async-resume.ts";
-import { connectHttpExampleClient, startHttpExampleServer } from "../examples/http-sync.ts";
-import { createCheckpointStore } from "../examples/persistent-resume.ts";
+import { Board, createExampleNetwork } from "./fixtures/resume.ts";
+import { createAsyncExampleNetwork } from "./fixtures/async-resume.ts";
+import { connectHttpExampleClient, startHttpExampleServer } from "./fixtures/http-sync.ts";
+import { createCheckpointStore } from "./fixtures/persistent-resume.ts";
 
 type Mutable<T> = T extends object ? { -readonly [K in keyof T]: Mutable<T[K]> } : T;
 

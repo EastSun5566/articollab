@@ -9,14 +9,14 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { createServer, type ClientCheckpoint, type ClientDocument, type CreateServerOptions } from "../src/index.ts";
-import { startBrowserReloadRecoveryServer } from "../examples/browser-reload-recovery/server.ts";
-import { startHttpExampleServer } from "../examples/http-sync.ts";
-import { Board } from "../examples/resume.ts";
+import { startBrowserReloadRecoveryServer } from "./fixtures/browser-reload-recovery/server.ts";
+import { startHttpExampleServer } from "./fixtures/http-sync.ts";
+import { Board } from "./fixtures/resume.ts";
 
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
-const recoveryUrl = new URL("../examples/browser-reload-recovery/recovery.js", import.meta.url).href;
-const browserUrl = new URL("../examples/browser-http-smoke/smoke.js", import.meta.url).href;
+const recoveryUrl = new URL("./fixtures/browser-reload-recovery/recovery.js", import.meta.url).href;
+const browserUrl = new URL("./fixtures/browser-http-smoke/smoke.js", import.meta.url).href;
 const key = "articollab:browser-reload-recovery:checkpoint";
 type Shape = typeof Board.definition;
 type Checkpoint = ClientCheckpoint<Shape>;
@@ -65,7 +65,7 @@ function visible(doc: Client) {
 describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
   setup(async () => {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.
-    recovery = (await import(new URL("../examples/browser-reload-recovery/recovery.js", import.meta.url).href)) as typeof recovery;
+    recovery = (await import(new URL("./fixtures/browser-reload-recovery/recovery.js", import.meta.url).href)) as typeof recovery;
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.
     browser = (await import(browserUrl)) as typeof browser;
   });
@@ -309,10 +309,10 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
     const http = await startBrowserReloadRecoveryServer();
     t.after(() => http.close());
     for (const [path, file, mime] of [
-      ["/", "examples/browser-reload-recovery/index.html", "text/html"],
-      ["/browser-reload-recovery/recovery.js", "examples/browser-reload-recovery/recovery.js", "text/javascript"],
-      ["/browser-http-smoke/smoke.js", "examples/browser-http-smoke/smoke.js", "text/javascript"],
-      ["/http-sync-controller.js", "examples/http-sync-controller.js", "text/javascript"],
+      ["/", "test/fixtures/browser-reload-recovery/index.html", "text/html"],
+      ["/browser-reload-recovery/recovery.js", "test/fixtures/browser-reload-recovery/recovery.js", "text/javascript"],
+      ["/browser-http-smoke/smoke.js", "test/fixtures/browser-http-smoke/smoke.js", "text/javascript"],
+      ["/http-sync-controller.js", "test/fixtures/http-sync-controller.js", "text/javascript"],
       ["/dist/index.js", "dist/index.js", "text/javascript"],
     ] as const) {
       const response = await fetch(http.url + path);
@@ -328,7 +328,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
       assert.equal(missing.status, 404);
       await missing.text();
     }
-    const serverUrl = new URL("../examples/browser-reload-recovery/server.ts", import.meta.url).href;
+    const serverUrl = new URL("./fixtures/browser-reload-recovery/server.ts", import.meta.url).href;
     const code = `
       const { Server } = await import("node:http");
       Server.prototype.listen = () => { throw new Error("Unexpected listen"); };

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { createServer } from "../src/index.ts";
+import { createServer } from "../../src/index.ts";
 import { connectHttpExampleClient, startHttpExampleServer } from "./http-sync.ts";
 import { createCheckpointStore } from "./persistent-resume.ts";
 import { Board } from "./resume.ts";

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 
-import { createClient, createServer, type ClientDocument, type ServerDocument } from "../src/index.ts";
+import { createClient, createServer, type ClientDocument, type ServerDocument } from "../../src/index.ts";
 import { Board } from "./resume.ts";
 
 type Shape = typeof Board.definition;

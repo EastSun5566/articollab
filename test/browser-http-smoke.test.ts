@@ -1,5 +1,5 @@
 import { decodeSnapshot } from "../src/index.ts";
-import { Board } from "../examples/resume.ts";
+import { Board } from "./fixtures/resume.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -9,12 +9,12 @@ import { before, describe, it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { startBrowserHttpSmokeServer } from "../examples/browser-http-smoke/server.ts";
+import { startBrowserHttpSmokeServer } from "./fixtures/browser-http-smoke/server.ts";
 
 const execute = promisify(execFile);
 const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL("../", import.meta.url));
-const smokeUrl = new URL("../examples/browser-http-smoke/smoke.js", import.meta.url).href;
+const smokeUrl = new URL("./fixtures/browser-http-smoke/smoke.js", import.meta.url).href;
 type View = { count: number; items: string[]; body: string; watermark: number; pending: number[]; conflict: unknown };
 type Report = { name: string; clientIds: string[]; stages: Array<{
   label: string; server: { serverSeq: number; count: number; items: string[]; body: string }; a: View; b: View;
@@ -102,9 +102,9 @@ describe("browser HTTP smoke example", { timeout: 30_000 }, () => {
     const { url } = await host(t);
     const articulated = require.resolve("articulated/package.json");
     const cases = [
-      ["/", join(root, "examples/browser-http-smoke/index.html"), "text/html"],
-      ["/browser-http-smoke/smoke.js", join(root, "examples/browser-http-smoke/smoke.js"), "text/javascript"],
-      ["/http-sync-controller.js", join(root, "examples/http-sync-controller.js"), "text/javascript"],
+      ["/", join(root, "test/fixtures/browser-http-smoke/index.html"), "text/html"],
+      ["/browser-http-smoke/smoke.js", join(root, "test/fixtures/browser-http-smoke/smoke.js"), "text/javascript"],
+      ["/http-sync-controller.js", join(root, "test/fixtures/http-sync-controller.js"), "text/javascript"],
       ["/dist/index.js", join(root, "dist/index.js"), "text/javascript"],
       ["/vendor/articulated/id_list", join(dirname(articulated), "build/esm/id_list.js"), "text/javascript"],
     ] as const;
@@ -157,8 +157,8 @@ describe("browser HTTP smoke example", { timeout: 30_000 }, () => {
   });
 
   it("imports without DOM access, HTTP requests, listening or smoke side effects", async () => {
-    const serverUrl = new URL("../examples/browser-http-smoke/server.ts", import.meta.url).href;
-    const controllerUrl = new URL("../examples/http-sync-controller.js", import.meta.url).href;
+    const serverUrl = new URL("./fixtures/browser-http-smoke/server.ts", import.meta.url).href;
+    const controllerUrl = new URL("./fixtures/http-sync-controller.js", import.meta.url).href;
     const code = `
       const { Server } = await import("node:http");
       Server.prototype.listen = () => { throw new Error("Unexpected listen"); };

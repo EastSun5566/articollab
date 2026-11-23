@@ -1,4 +1,4 @@
-import type { ClientBatch, Operation, ServerCommit } from "../src/index.ts";
+import type { ClientBatch, Operation, ServerCommit } from "../../src/index.ts";
 
 export function readHttpResponse(
   url: string, fetch: typeof globalThis.fetch, path: string, status: number, init?: RequestInit

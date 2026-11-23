@@ -3,11 +3,11 @@ import { createServer as createHttpServer } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createServer, type ServerDocument } from "../../src/index.ts";
-import { createSyncHandler } from "../../src/sync/index.ts";
-import { Board } from "../resume.ts";
-import { createBrowserAssetHandler } from "../browser-smoke/server.ts";
-import { toNodeListener } from "../fetch-bridge.ts";
+import { createServer, type ServerDocument } from "../../dist/index.js";
+import { createSyncHandler } from "../../dist/sync/index.js";
+import { Note } from "./schema.js";
+import { createBrowserAssetHandler } from "../shared/assets.ts";
+import { toNodeListener } from "../shared/fetch-bridge.ts";
 import { selectionSchema } from "./presence.js";
 
 /**
@@ -15,7 +15,7 @@ import { selectionSchema } from "./presence.js";
  * assets. CodeMirror is local to this example; only these exact files are served.
  */
 export async function startTextEditorServer(
-  server: ServerDocument<typeof Board.definition> = createServer(Board), presenceTtl = 30_000
+  server: ServerDocument<typeof Note.definition> = createServer(Note), presenceTtl = 30_000
 ) {
   const directory = import.meta.dirname;
   const state = fileURLToPath(import.meta.resolve("@codemirror/state"));
@@ -30,19 +30,16 @@ export async function startTextEditorServer(
   ]);
   const entries = new Map([
     ["/", { file: join(directory, "index.html"), type: "text/html; charset=utf-8" }],
-    ["/browser-http-smoke/smoke.js", { file: join(directory, "../browser-http-smoke/smoke.js"), type: "text/javascript; charset=utf-8" }],
-    // smoke.js, which defines the shared Board, imports the controller; the editor itself does not use it.
-    ["/http-sync-controller.js", { file: join(directory, "../http-sync-controller.js"), type: "text/javascript; charset=utf-8" }],
-    ["/sync-ui.js", { file: join(directory, "../sync-ui.js"), type: "text/javascript; charset=utf-8" }],
+    ["/shared/sync-ui.js", { file: join(directory, "../shared/sync-ui.js"), type: "text/javascript; charset=utf-8" }],
   ]);
-  for (const name of ["page", "editor", "binding", "changes", "presence"]) {
+  for (const name of ["page", "editor", "binding", "changes", "presence", "schema"]) {
     entries.set(`/text-editor/${name}.js`, { file: join(directory, `${name}.js`), type: "text/javascript; charset=utf-8" });
   }
   for (const [name, file] of modules) entries.set(`/codemirror/${name}.js`, { file, type: "text/javascript; charset=utf-8" });
   const assets = createBrowserAssetHandler(entries);
   // Rejections let a writer discard pending work that the server's policy blocked. Presence carries
   // each writer's selection as cursors over the same event stream, checked against selectionSchema.
-  const sync = toNodeListener(createSyncHandler(Board, server, {
+  const sync = toNodeListener(createSyncHandler(Note, server, {
     allowRejections: true, presence: { schema: selectionSchema, ttl: presenceTtl },
   }));
 

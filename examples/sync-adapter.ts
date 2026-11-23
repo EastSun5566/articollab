@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { createServer as createHttpServer } from "node:http";
 import { pathToFileURL } from "node:url";
 
-import { createServer, type ServerDocument } from "../src/index.ts";
+import { createServer, defineDocument, list, type ServerDocument } from "../src/index.ts";
 import { connectSync, createHttpTransport, createSyncHandler } from "../src/sync/index.ts";
-import { toNodeListener } from "./fetch-bridge.ts";
-import { Board } from "./resume.ts";
+import { toNodeListener } from "./shared/fetch-bridge.ts";
 
+const Board = defineDocument({ items: list<string>() });
 type Shape = typeof Board.definition;
 
 /** Serves a Fetch API handler on localhost through the example bridge. */

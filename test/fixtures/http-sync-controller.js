@@ -33,14 +33,14 @@ export async function readClientRegistration(url, fetch) {
 
 /**
  * Example-only manual synchronization, independent of document class identity.
- * @template {import("../src/index.ts").Operation} O
+ * @template {import("../../src/index.ts").Operation} O
  * @param {{
  *   url: string,
  *   fetch: typeof globalThis.fetch,
  *   checkpoint: () => {snapshot: {serverSeq: number}, lastLocalSeq: number,
- *     pendingBatches: readonly import("../src/index.ts").ClientBatch<O>[]},
- *   receive: (commit: import("../src/index.ts").ServerCommit<O>) => void,
- *   decodeCommit: (input: unknown) => import("../src/index.ts").ServerCommit<O>,
+ *     pendingBatches: readonly import("../../src/index.ts").ClientBatch<O>[]},
+ *   receive: (commit: import("../../src/index.ts").ServerCommit<O>) => void,
+ *   decodeCommit: (input: unknown) => import("../../src/index.ts").ServerCommit<O>,
  *   isBlocked: () => boolean,
  *   saveClient: () => void
  * }} options

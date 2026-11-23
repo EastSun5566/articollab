@@ -6,16 +6,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 
-import { connectHttpExampleClient, startHttpExampleServer } from "../examples/http-sync.ts";
-import { createCheckpointStore } from "../examples/persistent-resume.ts";
-import { Board } from "../examples/resume.ts";
+import { connectHttpExampleClient, startHttpExampleServer } from "./fixtures/http-sync.ts";
+import { createCheckpointStore } from "./fixtures/persistent-resume.ts";
+import { Board } from "./fixtures/resume.ts";
 import { createServer, type ClientDocument, type CreateServerOptions } from "../src/index.ts";
 
 type Shape = typeof Board.definition;
 type Store = ReturnType<typeof createCheckpointStore>;
 type HostOptions = NonNullable<Parameters<typeof startHttpExampleServer>[1]>;
-const httpUrl = new URL("../examples/http-sync.ts", import.meta.url).href;
-const storeUrl = new URL("../examples/persistent-resume.ts", import.meta.url).href;
+const httpUrl = new URL("./fixtures/http-sync.ts", import.meta.url).href;
+const storeUrl = new URL("./fixtures/persistent-resume.ts", import.meta.url).href;
 
 function directory(t: TestContext): string {
   const path = mkdtempSync(join(tmpdir(), "articollab-persistent-http-test-"));
@@ -87,7 +87,7 @@ async function child(t: TestContext, code: string): Promise<void> {
 
 describe("file-backed HTTP recovery example", { timeout: 15_000 }, () => {
   it("imports without demo side effects and disallows asynchronous saving callbacks", async (t) => {
-    const url = new URL("../examples/persistent-http-sync.ts", import.meta.url).href;
+    const url = new URL("./fixtures/persistent-http-sync.ts", import.meta.url).href;
     await child(t, "await import(" + JSON.stringify(url) + ")");
     // oxlint-disable-next-line eslint/no-constant-condition -- Compile-only negative type assertions must never execute.
     if (false) {

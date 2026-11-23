@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 
-import { Board, createExampleNetwork } from "../examples/resume.ts";
+import { Board, createExampleNetwork } from "./fixtures/resume.ts";
 import {
   createServer,
   decodeClientCheckpoint,
@@ -30,7 +30,7 @@ function view(doc: ClientDocument<Shape>) {
 
 describe("in-memory resume example", () => {
   it("has no demo side effects when imported", () => {
-    const url = new URL("../examples/resume.ts", import.meta.url).href;
+    const url = new URL("./fixtures/resume.ts", import.meta.url).href;
     const result = spawnSync(process.execPath, [
       "--input-type=module", "-e", "await import(" + JSON.stringify(url) + ")",
     ], { encoding: "utf8" });

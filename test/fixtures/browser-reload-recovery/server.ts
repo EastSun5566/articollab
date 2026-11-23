@@ -1,8 +1,8 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { createServer } from "../../src/index.ts";
-import { createBrowserAssetHandler } from "../browser-smoke/server.ts";
+import { createServer } from "../../../src/index.ts";
+import { createBrowserAssetHandler } from "../../../examples/shared/assets.ts";
 import { startHttpExampleServer } from "../http-sync.ts";
 import { createCheckpointStore } from "../persistent-resume.ts";
 import { Board } from "../resume.ts";
@@ -33,7 +33,7 @@ export async function startBrowserReloadRecoveryServer(options: {
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   if (args.length !== 0 && (args.length !== 2 || !/^[1-9]\d*$/.test(args[1]!) || Number(args[1]) > 65535)) {
-    throw new Error("Usage: node examples/browser-reload-recovery/server.ts [<existing-directory> <port:1-65535>]");
+    throw new Error("Usage: node test/fixtures/browser-reload-recovery/server.ts [<existing-directory> <port:1-65535>]");
   }
   const host = await startBrowserReloadRecoveryServer(args.length === 0 ? {} : { directory: args[0]!, port: Number(args[1]) });
   console.log("Open " + host.url + " in your browser. " + (args.length === 0

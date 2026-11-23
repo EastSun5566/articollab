@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 
-import { createAsyncExampleNetwork } from "../examples/async-resume.ts";
-import { Board } from "../examples/resume.ts";
+import { createAsyncExampleNetwork } from "./fixtures/async-resume.ts";
+import { Board } from "./fixtures/resume.ts";
 import {
   createServer, decodeClientCheckpoint, decodeServerCheckpoint, WireDecodeError,
   type ClientDocument, type ClientCheckpoint,
@@ -30,7 +30,7 @@ function view(doc: ClientDocument<Shape>) {
 
 describe("asynchronous wire/resume example", () => {
   it("has no demo side effects when imported", () => {
-    const url = new URL("../examples/async-resume.ts", import.meta.url).href;
+    const url = new URL("./fixtures/async-resume.ts", import.meta.url).href;
     const result = spawnSync(process.execPath, [
       "--unhandled-rejections=strict", "--input-type=module",
       "-e", "await import(" + JSON.stringify(url) + ")",

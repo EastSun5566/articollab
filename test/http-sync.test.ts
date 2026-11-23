@@ -5,8 +5,8 @@ import { spawn } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { describe, it, type TestContext } from "node:test";
 
-import { connectHttpExampleClient, startHttpExampleServer } from "../examples/http-sync.ts";
-import { Board } from "../examples/resume.ts";
+import { connectHttpExampleClient, startHttpExampleServer } from "./fixtures/http-sync.ts";
+import { Board } from "./fixtures/resume.ts";
 import {
   createServer, decodeClientCheckpoint, decodeServerCheckpoint, WireDecodeError,
   type ClientCheckpoint, type ServerDocument,
@@ -15,7 +15,7 @@ import {
 type Mutable<T> = T extends object ? { -readonly [K in keyof T]: Mutable<T[K]> } : T;
 
 type Shape = typeof Board.definition;
-const exampleUrl = new URL("../examples/http-sync.ts", import.meta.url).href;
+const exampleUrl = new URL("./fixtures/http-sync.ts", import.meta.url).href;
 
 async function host(t: TestContext, server: ServerDocument<Shape> = createServer(Board)) {
   const result = await startHttpExampleServer(server);
@@ -956,7 +956,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     const checkpoint = roundTrip(original.doc.checkpoint());
     assert.equal(await post(url, checkpoint.pendingBatches[0]), 204);
     const coreUrl = new URL("../src/index.ts", import.meta.url).href;
-    const boardUrl = new URL("../examples/resume.ts", import.meta.url).href;
+    const boardUrl = new URL("./fixtures/resume.ts", import.meta.url).href;
     const code = [
       "import { connectHttpExampleClient } from " + JSON.stringify(exampleUrl),
       "import { decodeClientCheckpoint } from " + JSON.stringify(coreUrl),

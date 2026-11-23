@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createClient, createServer, type ServerDocument } from "../../dist/index.js";
 import { createSyncHandler } from "../../dist/sync/index.js";
-import { createBrowserAssetHandler } from "../browser-smoke/server.ts";
-import { toNodeListener } from "../fetch-bridge.ts";
+import { createBrowserAssetHandler } from "../shared/assets.ts";
+import { toNodeListener } from "../shared/fetch-bridge.ts";
 import { addCard, Board, type Column, type Shape } from "./board.js";
 import { resolveBoard } from "./policy.ts";
 
@@ -35,7 +35,7 @@ export async function startKanbanServer(server = createBoardServer()) {
   const documentId = randomUUID();
   const assets = createBrowserAssetHandler(new Map([
     ["/", { file: join(directory, "index.html"), type: "text/html; charset=utf-8" }],
-    ["/sync-ui.js", { file: join(directory, "../sync-ui.js"), type: "text/javascript; charset=utf-8" }],
+    ["/shared/sync-ui.js", { file: join(directory, "../shared/sync-ui.js"), type: "text/javascript; charset=utf-8" }],
     ...["page", "board"].map((name) => [`/kanban/${name}.js`,
       { file: join(directory, `${name}.js`), type: "text/javascript; charset=utf-8" }] as const),
   ]));

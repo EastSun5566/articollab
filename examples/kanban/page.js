@@ -1,7 +1,7 @@
 // @ts-check
 import { createUndoManager } from "../../dist/index.js";
 import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../dist/sync/index.js";
-import { createOfflineSwitch, describeSync } from "../sync-ui.js";
+import { createOfflineSwitch, describeSync } from "../shared/sync-ui.js";
 import {
   addCard, Board, cardFor, cardsIn, COLUMNS, createSelection, deleteCard, findCard, moveCard, renameCard, voteCard,
   watchDroppedEdits,

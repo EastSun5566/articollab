@@ -10,15 +10,15 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { createServer, type ClientBatch, type ClientDocument, type DocumentOperation } from "../src/index.ts";
-import { startBrowserReloadRecoveryServer } from "../examples/browser-reload-recovery/server.ts";
-import { startHttpExampleServer } from "../examples/http-sync.ts";
-import { createCheckpointStore } from "../examples/persistent-resume.ts";
-import { Board } from "../examples/resume.ts";
+import { startBrowserReloadRecoveryServer } from "./fixtures/browser-reload-recovery/server.ts";
+import { startHttpExampleServer } from "./fixtures/http-sync.ts";
+import { createCheckpointStore } from "./fixtures/persistent-resume.ts";
+import { Board } from "./fixtures/resume.ts";
 
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
-const cli = join(root, "examples/browser-reload-recovery/server.ts");
-const recoveryUrl = new URL("../examples/browser-reload-recovery/recovery.js", import.meta.url).href;
+const cli = join(root, "test/fixtures/browser-reload-recovery/server.ts");
+const recoveryUrl = new URL("./fixtures/browser-reload-recovery/recovery.js", import.meta.url).href;
 const key = "articollab:browser-reload-recovery:checkpoint";
 type Shape = typeof Board.definition;
 type Client = ClientDocument<Shape>;

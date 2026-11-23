@@ -6,10 +6,10 @@ import { join } from "node:path";
 import { before as setup, describe, it, type TestContext } from "node:test";
 
 import { createServer, type ClientCheckpoint, type ClientDocument } from "../src/index.ts";
-import { startBrowserReloadRecoveryServer } from "../examples/browser-reload-recovery/server.ts";
-import { startHttpExampleServer } from "../examples/http-sync.ts";
-import { createCheckpointStore } from "../examples/persistent-resume.ts";
-import { Board } from "../examples/resume.ts";
+import { startBrowserReloadRecoveryServer } from "./fixtures/browser-reload-recovery/server.ts";
+import { startHttpExampleServer } from "./fixtures/http-sync.ts";
+import { createCheckpointStore } from "./fixtures/persistent-resume.ts";
+import { Board } from "./fixtures/resume.ts";
 
 type Shape = typeof Board.definition;
 type Record = { documentId: string; checkpoint: ClientCheckpoint<Shape> };
@@ -51,7 +51,7 @@ async function host(t: TestContext, port = 0) {
 describe("browser recovery document lineage", { timeout: 30_000 }, () => {
   setup(async () => {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deferred import of repository-owned JS after build; its interface is independently JSDoc-checked.
-    recovery = (await import(new URL("../examples/browser-reload-recovery/recovery.js", import.meta.url).href)) as typeof recovery;
+    recovery = (await import(new URL("./fixtures/browser-reload-recovery/recovery.js", import.meta.url).href)) as typeof recovery;
   });
 
   it("rejects missing and wrong request identities before runtime, while preserving cross-entry retry", async (t) => {
