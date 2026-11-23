@@ -48,7 +48,8 @@ import assert from "node:assert/strict";
 import {
   assertClientBatchNamespace,
   createClient, createServer, createUndoManager, defineDocument, list, map, text, value, PayloadValidationError,
-  decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeCursor, counter, counters,
+  decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeCursor, counter, counterMap,
+  CollectionConflictError,
 } from "articollab";
 import { CheckpointLockedError, connectSync, createHttpTransport, createSyncHandler, openIndexedDbStore } from "articollab/sync";
 import { openFileStore, CheckpointLockedError as NodeLockedError } from "articollab/sync/node";
@@ -392,7 +393,7 @@ assert.deepEqual(mapChanges, [{ type: "set", key: "b", value: 2, previous: undef
   { type: "set", key: "a", value: 1, previous: undefined }, { type: "delete", key: "a", previous: 1 }]);
 assert.deepEqual(roundTrip(mapServer.snapshot().data), { fields: { b: 2 } });
 
-const Tally = defineDocument({ likes: counter(), votes: counters() });
+const Tally = defineDocument({ likes: counter(), votes: counterMap() });
 const tallyServer = createServer(Tally);
 const tallyBatches = [];
 const tallyA = createClient(Tally, { clientId: tallyServer.openClient(), onBatch: (batch) => tallyBatches.push(batch) });
@@ -407,6 +408,14 @@ for (const batch of tallyBatches.splice(0)) {
 }
 assert.deepEqual([tallyA.state.likes.value, tallyB.state.likes.value, tallyB.state.votes.get("card")], [2, 2, 0]);
 assert.deepEqual(roundTrip(tallyServer.snapshot().data), { likes: 2, votes: {} });
+// Two writers that each stay in range overflow together: the server throws an exported conflict error.
+const big = createClient(Tally, { clientId: tallyServer.openClient(), snapshot: tallyServer.snapshot(), onBatch: (batch) => tallyBatches.push(batch) });
+big.state.likes.add(Number.MAX_SAFE_INTEGER - 2); // In range here: 2 + (MAX - 2).
+const overflowing = tallyBatches.pop();
+tallyA.state.likes.add(1);
+tallyServer.receive(decodeClientBatch(Tally, roundTrip(tallyBatches.pop())));
+assert.throws(() => tallyServer.receive(decodeClientBatch(Tally, roundTrip(overflowing))),
+  (error) => error instanceof CollectionConflictError && error.name === "CollectionConflictError");
 `;
 
 const typesFixture = `
@@ -415,7 +424,7 @@ import {
   createClient, createServer, defineDocument, list, map, text, value,
   decodeClientBatch, decodeServerCommit, decodeClientCheckpoint, decodeServerCheckpoint, decodeSnapshot, decodeCursor,
   type MapChange, type MapChangeEvent, type MapCollection, type MapSetOperation, type MapSnapshotData,
-  counter, counters, type Counter, type CounterMap, type CounterAddOperation, type CounterMapOperation,
+  counter, counterMap, type Counter, type CounterMap, type CounterAddOperation, type CounterMapOperation,
   type CounterMapChangeEvent, type CounterMapSnapshotData,
   type Cursor, type Value, type List, type Text, type TextChange, type TextChangeEvent, type DocumentOperation, type DocumentSnapshot,
   type ListChange, type ListChangeEvent,
@@ -426,7 +435,7 @@ import {
 } from "articollab";
 import {
   connectSync, createSyncHandler, type SyncClient, type SyncHandler, type SyncPushState, type SyncStatus,
-  type PresenceSyncClient, type SyncPresence, type PresenceOptions, type SyncHandlerPresenceOptions,
+  type PresenceSyncClient, type SyncPresence, type SyncPresenceOptions, type SyncHandlerPresenceOptions,
   type SyncSubscription, type SyncTransport, type CheckpointStore, type ConnectSyncOptions, openIndexedDbStore,
   type IndexedDbCheckpointStore,
 } from "articollab/sync";
@@ -514,7 +523,9 @@ doc.on("transform", (event) => {
 });
 // @ts-expect-error Transform listeners receive transform events, not change events.
 doc.on("transform", (event: { origin: "local" }) => event);
-const undoManager: UndoManager = createUndoManager(doc, { captureTimeout: 0, paths: ["items"] } satisfies UndoManagerOptions);
+const undoManager: UndoManager = createUndoManager(doc, { captureTimeout: 0, paths: ["items"] } satisfies UndoManagerOptions<Shape>);
+// @ts-expect-error Undo paths are the document's keys.
+void createUndoManager(doc, { paths: ["itemz"] });
 type Undone = Expect<Equal<ReturnType<UndoManager["undo"]>, boolean>>;
 // @ts-expect-error canUndo is read-only.
 undoManager.canUndo = true;
@@ -570,7 +581,7 @@ const withoutPresence = await connectSync(Board, { transport: transportForTypes 
 void withoutPresence.presence;
 type PresenceApi = Expect<Equal<SyncPresence<{ name: string }>["state"], { name: string } | null>>;
 const handlerPresence: SyncHandlerPresenceOptions = { schema: presenceSchema, ttl: 1000 };
-const clientPresence: PresenceOptions<{ name: string }> = { schema: presenceSchema, republishInterval: 1000 };
+const clientPresence: SyncPresenceOptions<{ name: string }> = { schema: presenceSchema, republishInterval: 1000 };
 type Status = Expect<Equal<SyncClient<Shape>["status"], SyncStatus>>;
 type Handler = Expect<Equal<ReturnType<typeof createSyncHandler<Shape>>, SyncHandler>>;
 const asPlainHandler: (request: Request) => Promise<Response> = createSyncHandler(Board, server);
@@ -640,7 +651,7 @@ server.closeClient(123);
 createServer(Board, { checkpoint: { snapshot, replays: [], history: [] } });
 type BunchCounters = Expect<Equal<typeof checkpoint.lastBunchSeqs, Readonly<{ items: number; body: number }>>>;
 
-const Tally = defineDocument({ likes: counter(3), votes: counters() });
+const Tally = defineDocument({ likes: counter(3), votes: counterMap() });
 type TallyShape = typeof Tally.definition;
 declare const tally: import("articollab").ClientDocument<TallyShape>;
 type TallyLikes = Expect<Equal<typeof tally.state.likes, Counter>>;

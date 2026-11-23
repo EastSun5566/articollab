@@ -24,6 +24,8 @@ An accessor intercepts replacement, not nested object mutation. If your schema i
 
 Schema defaults and local Value/List payloads are validated before use. For example, `doc.state.count.set(NaN)` throws `TypeError` without changing state or producing a batch. Validation does not copy or freeze your object and does not check its application-specific shape. Large payloads cost more to validate; unchanged document collections are not scanned.
 
+A Value has no `observe()`: it holds one value, so there is no smaller change to report. Read it in a [`doc.on("change")`](transactions.md#observe-visible-changes) listener instead. The same holds for a single [Counter](#counter-additions-that-all-count).
+
 ## List: single-element edits
 
 ```ts
@@ -116,12 +118,12 @@ Map updates have no `discard` event: a `set` is never a no-op, because it recrea
 
 Counters require Articollab 0.10 or later. When adding one to a shared document, [upgrade its readers first](recovery.md#upgrading-from-09-to-010).
 
-A Value records the number a writer set, so two writers who each turn 1 into 2 leave 2: one increment is lost. A Counter records what each writer added, and the server adds every addition in order, so pending additions replay on top of everyone else's. `counter(initialValue = 0)` holds one integer; `counters()` holds one integer per string key, such as votes per card:
+A Value records the number a writer set, so two writers who each turn 1 into 2 leave 2: one increment is lost. A Counter records what each writer added, and the server adds every addition in order, so pending additions replay on top of everyone else's. `counter(initialValue = 0)` holds one integer; `counterMap()` holds one integer per string key, such as votes per card:
 
 ```ts
-import { counter, counters, defineDocument } from "articollab";
+import { counter, counterMap, defineDocument } from "articollab";
 
-const Shop = defineDocument({ stock: counter(5), likes: counters() });
+const Shop = defineDocument({ stock: counter(5), likes: counterMap() });
 ```
 
 With a client `doc` created from this schema:
@@ -140,9 +142,10 @@ likes.add("post-1", -1);
 console.log([...likes.keys()]); // ["post-2"]: a total of 0 removes the key
 ```
 
-- Counts, additions and totals are safe integers. `add()` throws `TypeError` for anything else and `RangeError` when this writer's total would leave the safe integer range; adding 0 records nothing. If writers together push a total out of range, the server refuses that batch and a writer replaying it is [blocked](recovery.md#blocked-pending).
+- `counterMap()` has `observe()`, `delete(key)` and `clear()` like Map; a single `counter()`, like a Value, has no `observe()`.
+- Counts, additions and totals are safe integers. `add()` throws `TypeError` for a non-number and `RangeError` for any other non-safe-integer or when this writer's total would leave the safe integer range; adding 0 records nothing. If writers together push a total out of range, the server refuses that batch and a writer replaying it is [blocked](recovery.md#blocked-pending).
 - A Counter has no `set`. To bring one back to 0, add minus its current value; additions other writers make meanwhile still count.
-- In `counters()`, an absent key counts as 0 and a total of 0 removes the key, so `size`, `keys()`, `values()`, `entries()` and snapshots list only nonzero counts, sorted by UTF-16 code unit. `delete(key)` resets a key to 0, recorded even when it is 0 here; additions the server applies after it count again. `observe()` reports each key's `value` and `previous`, with 0 for an absent key.
+- In `counterMap()`, an absent key counts as 0 and a total of 0 removes the key, so `size`, `keys()`, `values()`, `entries()` and snapshots list only nonzero counts, sorted by UTF-16 code unit. `delete(key)` resets a key to 0, recorded even when it is 0 here; additions the server applies after it count again. `observe()` reports each key's `value` and `previous`, with 0 for an absent key.
 - [Undo](transactions.md#undo-and-redo) adds the opposite of this writer's additions, so other writers' additions stay. Undoing `delete(key)` adds back what it removed.
 
 A server policy can bound a counter by changing an addition. This one never lets stock go below 0; a writer whose removal was cut learns of it through [`transform`](server-wire.md#accept-transform-or-reject):

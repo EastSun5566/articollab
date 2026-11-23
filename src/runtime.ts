@@ -452,11 +452,11 @@ function sameOperations(
         return other.type === "map/delete" && operation.key === other.key;
       case "counter/add":
         return other.type === "counter/add" && (allowValueChanges || operation.delta === other.delta);
-      case "counters/add":
-        return other.type === "counters/add" && operation.key === other.key &&
+      case "counterMap/add":
+        return other.type === "counterMap/add" && operation.key === other.key &&
           (allowValueChanges || operation.delta === other.delta);
-      case "counters/delete":
-        return other.type === "counters/delete" && operation.key === other.key;
+      case "counterMap/delete":
+        return other.type === "counterMap/delete" && operation.key === other.key;
       default:
         return false;
     }
@@ -549,8 +549,8 @@ function freezeOperation(operation: Operation): Operation {
       return freezeMapOperation(operation);
     case "counter/add":
       return freezeCounterOperation(operation);
-    case "counters/add":
-    case "counters/delete":
+    case "counterMap/add":
+    case "counterMap/delete":
       return freezeCounterMapOperation(operation);
     default:
       throw unknownOperationType(operation);
@@ -753,7 +753,7 @@ export class ClientDocument<S extends SchemaShape> {
           throw wrongCollectionKind(path);
         }
         runtime = new RuntimeCounter((operation) => this.mutate(operation), path, collectionState, beforeMutation);
-      } else if (descriptor.kind === "counters") {
+      } else if (descriptor.kind === "counterMap") {
         if (!(collectionState instanceof CounterMapState)) {
           throw wrongCollectionKind(path);
         }
@@ -762,6 +762,7 @@ export class ClientDocument<S extends SchemaShape> {
           path,
           collectionState,
           beforeMutation,
+          (callback) => { this.transact(callback); },
           () => this.registerObserver("CounterMap")
         );
       } else if (descriptor.kind === "map") {
@@ -1085,8 +1086,8 @@ export class ClientDocument<S extends SchemaShape> {
           const ids = listComparisonIds.get(operation.path) ?? [];
           ids.push(operation.id);
           listComparisonIds.set(operation.path, ids);
-        } else if (operation.type === "map/set" || operation.type === "counters/add" ||
-          (compareRemoteTargets && (operation.type === "map/delete" || operation.type === "counters/delete"))) {
+        } else if (operation.type === "map/set" || operation.type === "counterMap/add" ||
+          (compareRemoteTargets && (operation.type === "map/delete" || operation.type === "counterMap/delete"))) {
           const keys = mapComparisonKeys!.get(operation.path) ?? [];
           keys.push(operation.key);
           mapComparisonKeys!.set(operation.path, keys);
@@ -1200,7 +1201,7 @@ export class ClientDocument<S extends SchemaShape> {
         case "map/set": case "map/delete":
           if (runtime instanceof RuntimeMap) runtime.track(operation);
           break;
-        case "counters/add": case "counters/delete":
+        case "counterMap/add": case "counterMap/delete":
           if (runtime instanceof RuntimeCounterMap) runtime.track(operation);
           break;
         default:

@@ -96,8 +96,10 @@ describe("IndexedDB checkpoint store", () => {
   it("validates options and the environment", async () => {
     await assert.rejects(openIndexedDbStore({ database: "", key: "k", indexedDB: new IDBFactory() }), TypeError);
     for (const slots of [0, 1.5, 65, Number.NaN]) {
-      await assert.rejects(openIndexedDbStore({ database: "d", key: "k", slots, indexedDB: new IDBFactory() }), TypeError, String(slots));
+      await assert.rejects(openIndexedDbStore({ database: "d", key: "k", slots, indexedDB: new IDBFactory() }), RangeError, String(slots));
     }
+    // @ts-expect-error Slots are a number.
+    await assert.rejects(openIndexedDbStore({ database: "d", key: "k", slots: "2", indexedDB: new IDBFactory() }), TypeError);
     await assert.rejects(openIndexedDbStore({ database: "d", key: "k" }), /indexedDB is unavailable/);
   });
 });

@@ -66,7 +66,7 @@ describe("Kanban board helpers", () => {
     assert.equal(renameCard(w.doc, "missing", "x"), false);
     assert.equal(deleteCard(w.doc, "missing"), false);
     assert.ok(deleteCard(w.doc, "new"));
-    assert.deepEqual(w.types(), ["list/delete order", "map/delete columns", "map/delete titles", "counters/delete votes"]);
+    assert.deepEqual(w.types(), ["list/delete order", "map/delete columns", "map/delete titles", "counterMap/delete votes"]);
     assert.equal(findCard(w.doc, "new"), undefined);
     assert.equal(w.doc.state.titles.has("new"), false);
   });

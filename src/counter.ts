@@ -11,7 +11,7 @@ export interface CounterAddOperation<Path extends string = string> {
 
 /** Adds a nonzero safe integer to one key of a CounterMap. */
 export interface CounterMapAddOperation<Path extends string = string> {
-  readonly type: "counters/add";
+  readonly type: "counterMap/add";
   readonly path: Path;
   readonly key: string;
   readonly delta: number;
@@ -19,7 +19,7 @@ export interface CounterMapAddOperation<Path extends string = string> {
 
 /** Resets one key of a CounterMap to 0. */
 export interface CounterMapDeleteOperation<Path extends string = string> {
-  readonly type: "counters/delete";
+  readonly type: "counterMap/delete";
   readonly path: Path;
   readonly key: string;
 }
@@ -62,6 +62,8 @@ export interface CounterMap extends Iterable<[string, number]> {
   add(key: string, delta: number): void;
   /** Resets one key to 0, recorded even when it is 0 here; returns whether it was not 0 here. */
   delete(key: string): boolean;
+  /** Resets every key counted here, in one batch. Keys other writers add to concurrently keep those additions. */
+  clear(): void;
   keys(): IterableIterator<string>;
   values(): IterableIterator<number>;
   entries(): IterableIterator<[string, number]>;
@@ -71,10 +73,11 @@ export interface CounterMap extends Iterable<[string, number]> {
   observe(listener: (event: CounterMapChangeEvent) => void): () => void;
 }
 
-/** Throws TypeError unless `delta` is a safe integer. */
+/** Throws TypeError unless `delta` is a number, and RangeError unless it is a safe integer. */
 function requireDelta(delta: unknown, path: readonly string[]): asserts delta is number {
-  if (typeof delta !== "number" || !Number.isSafeInteger(delta)) {
-    throw new TypeError(`Counter delta at ${path.join("/")} must be a safe integer: ${String(delta)}`);
+  if (typeof delta !== "number") throw new TypeError(`Counter delta at ${path.join("/")} must be a number: ${String(delta)}`);
+  if (!Number.isSafeInteger(delta)) {
+    throw new RangeError(`Counter delta at ${path.join("/")} must be a safe integer: ${String(delta)}`);
   }
 }
 
@@ -183,7 +186,7 @@ export function freezeCounterMapOperation<Path extends string>(operation: Counte
 export function freezeCounterMapOperation<Path extends string>(
   operation: CounterMapOperation<Path>
 ): CounterMapOperation<Path> {
-  return operation.type === "counters/add"
+  return operation.type === "counterMap/add"
     ? Object.freeze({ type: operation.type, path: operation.path, key: operation.key, delta: operation.delta })
     : Object.freeze({ type: operation.type, path: operation.path, key: operation.key });
 }
@@ -239,6 +242,7 @@ export class RuntimeCounterMap implements CounterMap {
   private readonly path: string;
   private readonly mutate: (operation: CounterMapOperation) => void;
   private readonly beforeMutation: () => void;
+  private readonly transact: (callback: () => void) => void;
   private readonly observers: CollectionObservers<CounterMapState, CounterMapChangeEvent, string>;
 
   constructor(
@@ -246,9 +250,11 @@ export class RuntimeCounterMap implements CounterMap {
     path: string,
     initialState: CounterMapState,
     beforeMutation: () => void,
+    transact: (callback: () => void) => void,
     beforeObserve: () => () => void
   ) {
     this.mutate = mutate;
+    this.transact = transact;
     this.path = path;
     this.current = initialState;
     this.beforeMutation = beforeMutation;
@@ -281,7 +287,7 @@ export class RuntimeCounterMap implements CounterMap {
     }
     this.beforeMutation();
     if (delta === 0) return;
-    const operation = freezeCounterMapOperation({ type: "counters/add", path: this.path, key, delta });
+    const operation = freezeCounterMapOperation({ type: "counterMap/add", path: this.path, key, delta });
     this.current = this.current.add(operation);
     this.mutate(operation);
   }
@@ -290,10 +296,17 @@ export class RuntimeCounterMap implements CounterMap {
     requireKey(key);
     this.beforeMutation();
     const present = this.current.has(key);
-    const operation = freezeCounterMapOperation({ type: "counters/delete", path: this.path, key });
+    const operation = freezeCounterMapOperation({ type: "counterMap/delete", path: this.path, key });
     this.current = this.current.delete(operation);
     this.mutate(operation);
     return present;
+  }
+
+  clear(): void {
+    this.beforeMutation();
+    const keys = this.current.keys();
+    if (keys.length === 0) return;
+    this.transact(() => { for (const key of keys) this.delete(key); });
   }
 
   *keys(): IterableIterator<string> {

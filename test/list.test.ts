@@ -86,7 +86,7 @@ describe("list runtime", () => {
       assert.deepEqual(doc.checkpoint(), before);
     }
     for (const index of [-1, 1, 0.5, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
-      assert.throws(() => doc.state.items.set(index, "invalid index"));
+      assert.throws(() => doc.state.items.set(index, "invalid index"), RangeError);
       assert.deepEqual(doc.checkpoint(), before);
     }
     assert.equal(reads, 0);

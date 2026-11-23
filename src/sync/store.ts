@@ -196,8 +196,9 @@ export async function openIndexedDbStore(options: IndexedDbStoreOptions): Promis
   if (typeof database !== "string" || database.length === 0) throw new TypeError("database must be a nonempty string");
   if (typeof options.key !== "string") throw new TypeError("key must be a string");
   const slots = options.slots ?? 1;
+  if (typeof slots !== "number") throw new TypeError("slots must be a number");
   if (!Number.isSafeInteger(slots) || slots < 1 || slots > MAX_SLOTS) {
-    throw new TypeError(`slots must be an integer from 1 to ${MAX_SLOTS}`);
+    throw new RangeError(`slots must be an integer from 1 to ${MAX_SLOTS}`);
   }
   const factory = options.indexedDB ?? (globalThis as { indexedDB?: IdbFactoryLike }).indexedDB;
   if (factory === undefined) throw new Error("indexedDB is unavailable; pass `indexedDB`");

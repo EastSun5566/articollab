@@ -12,25 +12,25 @@ export interface Cursor {
 
 function requireBind(bind: unknown): asserts bind is Cursor["bind"] {
   if (bind !== "left" && bind !== "right") {
-    throw new Error(`Cursor bind must be "left" or "right"`);
+    throw new RangeError(`Cursor bind must be "left" or "right"`);
   }
 }
 
 function requireCursor(cursor: unknown): asserts cursor is Cursor {
   if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) {
-    throw new Error("Cursor must be an object");
+    throw new TypeError("Cursor must be an object");
   }
   const { anchor, bind } = cursor as Partial<Cursor>;
   requireBind(bind);
   if (anchor === null) return;
   if (typeof anchor !== "object" || anchor === undefined || Array.isArray(anchor)) {
-    throw new Error("Cursor anchor must be an ElementId or null");
+    throw new TypeError("Cursor anchor must be an ElementId or null");
   }
   if (typeof anchor.bunchId !== "string" || anchor.bunchId.length === 0) {
-    throw new Error("Cursor anchor bunchId must not be empty");
+    throw new TypeError("Cursor anchor bunchId must not be empty");
   }
   if (!Number.isSafeInteger(anchor.counter) || anchor.counter < 0) {
-    throw new Error("Cursor anchor counter must be a non-negative safe integer");
+    throw new TypeError("Cursor anchor counter must be a non-negative safe integer");
   }
 }
 
@@ -38,7 +38,7 @@ function requireCursor(cursor: unknown): asserts cursor is Cursor {
 export function cursorAt(idList: IdList, index: number, bind: Cursor["bind"] = "left"): Cursor {
   requireBind(bind);
   if (!Number.isSafeInteger(index) || index < 0 || index > idList.length) {
-    throw new Error(`Index out of bounds: ${index} (length: ${idList.length})`);
+    throw new RangeError(`Index out of bounds: ${index} (length: ${idList.length})`);
   }
   const anchor = idList.cursorAt(index, bind);
   return Object.freeze({

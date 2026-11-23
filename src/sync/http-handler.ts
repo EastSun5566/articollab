@@ -121,8 +121,11 @@ export function createSyncHandler<S extends SchemaShape>(
   const bodyLimit = nonNegativeInteger(options.bodyLimit ?? 1024 * 1024, "bodyLimit");
   const heartbeatInterval = nonNegativeInteger(options.heartbeatInterval ?? 15_000, "heartbeatInterval");
   const maxEventStreams = nonNegativeInteger(options.maxEventStreams ?? 1000, "maxEventStreams");
-  const presenceTtl = options.presence === undefined ? 0 : nonNegativeInteger(options.presence.ttl ?? 30_000, "presence.ttl");
-  if (options.presence !== undefined && presenceTtl === 0) throw new TypeError("presence.ttl must be positive");
+  const presenceTtl = options.presence === undefined ? 0 : options.presence.ttl ?? 30_000;
+  if (typeof presenceTtl !== "number") throw new TypeError("presence.ttl must be a number");
+  if (options.presence !== undefined && (!Number.isSafeInteger(presenceTtl) || presenceTtl <= 0)) {
+    throw new RangeError("presence.ttl must be a positive safe integer");
+  }
   /** Writers' current presence, in memory only. */
   const presence = new Map<string, { readonly state: JsonValue; expiresAt: number }>();
   let sweeper: ReturnType<typeof setInterval> | undefined;

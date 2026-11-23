@@ -777,7 +777,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
 
   set(index: number, value: T): void {
     if (!Number.isSafeInteger(index) || index < 0 || index >= this.length) {
-      throw new Error(`Index out of bounds: ${index} (length: ${this.length})`);
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
     }
 
     this.beforeMutation();
@@ -792,7 +792,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
 
   insert(index: number, value: T): void {
     if (!Number.isSafeInteger(index) || index < 0 || index > this.length) {
-      throw new Error(`Index out of bounds: ${index} (length: ${this.length})`);
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
     }
 
     this.beforeMutation();
@@ -816,7 +816,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
 
   delete(index: number): void {
     if (!Number.isSafeInteger(index) || index < 0 || index >= this.length) {
-      throw new Error(`Index out of bounds: ${index} (length: ${this.length})`);
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
     }
 
     this.beforeMutation();
@@ -832,7 +832,7 @@ export class RuntimeList<T extends JsonValue> implements List<T> {
   move(from: number, to: number): void {
     for (const [name, index] of [["from", from], ["to", to]] as const) {
       if (!Number.isSafeInteger(index) || index < 0 || index >= this.length) {
-        throw new Error(`Index out of bounds: ${name} ${index} (length: ${this.length})`);
+        throw new RangeError(`Index out of bounds: ${name} ${index} (length: ${this.length})`);
       }
     }
     if (from === to) return;

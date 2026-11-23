@@ -1,6 +1,6 @@
 // @ts-check
 // Shared by the page, the server and the tests: no DOM and no network.
-import { counters, defineDocument, list, map } from "../../dist/index.js";
+import { counterMap, defineDocument, list, map } from "../../dist/index.js";
 
 /** A card as the page shows it: its ID, which never changes, and its title. @typedef {{ id: string, title: string }} Card */
 
@@ -43,7 +43,7 @@ export const Board = defineDocument({
   columns: map(columnSchema),
   titles: map(titleSchema),
   // Votes by card ID: concurrent votes all count, where a `map` of numbers would keep only the last.
-  votes: counters(),
+  votes: counterMap(),
 });
 /** @typedef {typeof Board.definition} Shape */
 /** @typedef {import("../../dist/index.js").ClientDocument<Shape>} BoardDocument */
@@ -164,7 +164,7 @@ export function droppedEdits(dropped) {
   /** @type {Map<string, { kind: "rename" | "move" | "vote", id: string, title?: string }>} */
   const edits = new Map();
   for (const operation of dropped) {
-    if (operation.type === "counters/add") edits.set(`vote:${operation.key}`, { kind: "vote", id: operation.key });
+    if (operation.type === "counterMap/add") edits.set(`vote:${operation.key}`, { kind: "vote", id: operation.key });
     if (operation.type !== "map/set") continue;
     if (operation.path === "titles") edits.set(`rename:${operation.key}`, { kind: "rename", id: operation.key, title: operation.value });
     else if (operation.path === "columns" && !edits.has(`move:${operation.key}`)) edits.set(`move:${operation.key}`, { kind: "move", id: operation.key });

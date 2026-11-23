@@ -48,7 +48,7 @@ export interface CounterSchema {
 }
 
 export interface CounterMapSchema {
-  readonly kind: "counters";
+  readonly kind: "counterMap";
 }
 
 export type CollectionSchema = ValueSchema | ListSchema | TextSchema | MapSchema | CounterSchema | CounterMapSchema;
@@ -119,15 +119,16 @@ function requirePayloadSchema(schema: unknown): void {
  * `initialValue` and every total must be safe integers.
  */
 export function counter(initialValue = 0): CounterSchema {
-  if (typeof initialValue !== "number" || !Number.isSafeInteger(initialValue)) {
-    throw new TypeError(`A counter's initial value must be a safe integer: ${String(initialValue)}`);
+  if (typeof initialValue !== "number") throw new TypeError(`A counter's initial value must be a number: ${String(initialValue)}`);
+  if (!Number.isSafeInteger(initialValue)) {
+    throw new RangeError(`A counter's initial value must be a safe integer: ${String(initialValue)}`);
   }
   return Object.freeze({ kind: "counter", initialValue });
 }
 
 /** Defines an initially empty set of counters by string key; an absent key counts as 0. */
-export function counters(): CounterMapSchema {
-  return Object.freeze({ kind: "counters" });
+export function counterMap(): CounterMapSchema {
+  return Object.freeze({ kind: "counterMap" });
 }
 
 /** Defines an initially empty collaborative plain-text string. */

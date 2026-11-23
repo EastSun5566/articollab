@@ -13,7 +13,7 @@ import {
   type ServerCommit,
 } from "../index.ts";
 import { readClientProgress } from "../runtime.ts";
-import { createPresence, type PresenceController, type PresenceOptions, type SyncPresence } from "./presence.ts";
+import { createPresence, type PresenceController, type SyncPresenceOptions, type SyncPresence } from "./presence.ts";
 import type { CheckpointStore } from "./store.ts";
 
 /**
@@ -87,7 +87,7 @@ export interface ConnectSyncOptions<S extends SchemaShape> {
   /** Milliseconds without any push traffic, heartbeats included, before reconnecting. Default 45000; 0 disables. */
   readonly pushTimeout?: number;
   /** Shares ephemeral per-writer state over the push channel; requires a transport with `publishPresence`. */
-  readonly presence?: PresenceOptions;
+  readonly presence?: SyncPresenceOptions;
 }
 
 export interface SyncClient<S extends SchemaShape> {
@@ -137,7 +137,7 @@ export interface PresenceSyncClient<S extends SchemaShape, P extends JsonValue =
  */
 export function connectSync<S extends SchemaShape, P extends JsonValue = JsonValue>(
   schema: DocumentSchema<S>,
-  options: ConnectSyncOptions<S> & { readonly presence: PresenceOptions<P> }
+  options: ConnectSyncOptions<S> & { readonly presence: SyncPresenceOptions<P> }
 ): Promise<PresenceSyncClient<S, P>>;
 export function connectSync<S extends SchemaShape>(
   schema: DocumentSchema<S>,

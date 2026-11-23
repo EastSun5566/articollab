@@ -141,7 +141,7 @@ The repository's browser recovery demo uses document-ID envelopes/headers and se
 
 Articollab 0.10 introduces [Counters](collections.md#counter-additions-that-all-count). The new runtime can restore valid 0.9 snapshots and checkpoints with the same schema and document lineage, and pending batches keep their original operations and sequence numbers.
 
-Upgrade the server, every client and every snapshot or checkpoint reader before adding a `counter()` or `counters()` path. A 0.9 reader cannot process `counter/add`, `counters/add` or `counters/delete` in batches, commits, pending work, retry records or history. Adding a Counter path, or replacing a `value()` that held a count with `counter()`, changes the schema: a whole-number Value snapshot decodes as a Counter, but pending `value/set` operations for that path do not, so send or cancel them first. Keep the original checkpoints for rollback.
+Upgrade the server, every client and every snapshot or checkpoint reader before adding a `counter()` or `counterMap()` path. A 0.9 reader cannot process `counter/add`, `counterMap/add` or `counterMap/delete` in batches, commits, pending work, retry records or history. Adding a Counter path, or replacing a `value()` that held a count with `counter()`, changes the schema: a whole-number Value snapshot decodes as a Counter, but pending `value/set` operations for that path do not, so send or cancel them first. Keep the original checkpoints for rollback.
 
 ## Upgrading from 0.8 to 0.9
 

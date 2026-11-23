@@ -539,7 +539,7 @@ export class RuntimeText implements Text {
 
   insert(index: number, value: string): void {
     if (!Number.isSafeInteger(index) || index < 0 || index > this.length) {
-      throw new Error(`Index out of bounds: ${index} (length: ${this.length})`);
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
     }
     if (value.length === 0) return;
 
@@ -559,13 +559,13 @@ export class RuntimeText implements Text {
 
   delete(index: number, count = 1): void {
     if (!Number.isSafeInteger(index) || index < 0 || index > this.length) {
-      throw new Error(`Index out of bounds: ${index} (length: ${this.length})`);
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
     }
     if (!Number.isSafeInteger(count) || count < 0) {
-      throw new Error(`Invalid delete count: ${count}`);
+      throw new RangeError(`Invalid delete count: ${count}`);
     }
     if (count > this.length - index) {
-      throw new Error(
+      throw new RangeError(
         `Delete range out of bounds: ${index} + ${count} (length: ${this.length})`
       );
     }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { counters, createClient, createUndoManager, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, map, PayloadValidationError, type DocumentOperation, type ServerCommit, type ServerDocument } from "../../../dist/index.js";
+import { counterMap, createClient, createUndoManager, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, map, PayloadValidationError, type DocumentOperation, type ServerCommit, type ServerDocument } from "../../../dist/index.js";
 import {
   addCard, Board, cardsIn, COLUMNS, deleteCard, droppedEdits, findCard, moveCard, renameCard, voteCard, watchDroppedEdits, type Shape,
 } from "../board.js";
@@ -202,7 +202,7 @@ describe("Board payload schemas", () => {
     assert.throws(() => a.doc.state.titles.set("seed-ship", "x".repeat(201)), PayloadValidationError);
     assert.deepEqual(a.doc.checkpoint().pendingBatches, [], "nothing was recorded");
     // A writer without the schemas sends the same edit; the server refuses it before the policy runs.
-    const Unchecked = defineDocument({ order: list<string>(), columns: map<string>(), titles: map<string>(), votes: counters() });
+    const Unchecked = defineDocument({ order: list<string>(), columns: map<string>(), titles: map<string>(), votes: counterMap() });
     const rogue = createClient(Unchecked, { clientId: n.server.openClient(), snapshot: n.server.snapshot(), onBatch() {} });
     rogue.state.columns.set("seed-ship", "trash");
     const batch = decodeClientBatch(Board, JSON.parse(JSON.stringify(rogue.checkpoint().pendingBatches[0])));
@@ -303,7 +303,7 @@ describe("Votes on the board", () => {
     assert.equal((await late.settled)?.status, "rejected");
     assert.deepEqual(a.notices, ["Vote not counted: another writer deleted this card."]);
     assert.deepEqual(n.server.snapshot().data.votes, {}, "no votes remain for the deleted card");
-    assert.deepEqual(droppedEdits([{ type: "counters/add", path: "votes", key: "seed-ship", delta: 1 }]),
+    assert.deepEqual(droppedEdits([{ type: "counterMap/add", path: "votes", key: "seed-ship", delta: 1 }]),
       [{ kind: "vote", id: "seed-ship" }]);
   });
 

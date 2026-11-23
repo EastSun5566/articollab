@@ -2,7 +2,7 @@ import { validateJsonValue } from "../json.ts";
 import { checkPayload, type PayloadSchema } from "../payload.ts";
 import type { JsonValue } from "../schema.ts";
 
-export interface PresenceOptions<P extends JsonValue = JsonValue> {
+export interface SyncPresenceOptions<P extends JsonValue = JsonValue> {
   /** Validates this writer's state before it is sent, and peers' states as they arrive. */
   readonly schema?: PayloadSchema<P>;
   /** Milliseconds between re-sends of this writer's state, which keep it from expiring. Default 10000. */
@@ -45,13 +45,14 @@ function checkState(schema: PayloadSchema | undefined, state: unknown): asserts 
 }
 
 export function createPresence<P extends JsonValue>(
-  options: PresenceOptions<P>,
+  options: SyncPresenceOptions<P>,
   clientId: string,
   publish: (state: P | null) => Promise<void>
 ): PresenceController<P> {
   const republishInterval = options.republishInterval ?? 10_000;
+  if (typeof republishInterval !== "number") throw new TypeError("presence.republishInterval must be a number");
   if (!Number.isSafeInteger(republishInterval) || republishInterval <= 0) {
-    throw new TypeError("presence.republishInterval must be a positive safe integer");
+    throw new RangeError("presence.republishInterval must be a positive safe integer");
   }
   const { schema } = options;
   let state: P | null = null;

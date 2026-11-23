@@ -150,4 +150,20 @@ describe("Presence over the sync channel", () => {
       },
     }), /publishPresence/);
   });
+
+  it("refuses presence timings that are not positive integers", async () => {
+    const server = createServer(Board);
+    for (const ttl of [0, -1, 1.5]) {
+      assert.throws(() => createSyncHandler(Board, server, { presence: { ttl } }), RangeError, String(ttl));
+    }
+    // @ts-expect-error A wrong type is a TypeError.
+    assert.throws(() => createSyncHandler(Board, server, { presence: { ttl: "1" } }), TypeError);
+    const transport = {
+      async register() { return { clientId: server.openClient(), snapshot: server.snapshot() }; },
+      async submit() {}, async reject() {}, async commitsSince() { return []; }, async publishPresence() {},
+    };
+    await assert.rejects(connectSync(Board, { transport, presence: { republishInterval: 0 } }), RangeError);
+    // @ts-expect-error A wrong type is a TypeError.
+    await assert.rejects(connectSync(Board, { transport, presence: { republishInterval: "1" } }), TypeError);
+  });
 });
