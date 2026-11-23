@@ -6,6 +6,7 @@ import { isWithin, ROOT, uniqueName, type Shape, type TreeOperation } from "./tr
  * against the tree as the server has it:
  * - a move or create into a missing folder, a file or the node itself is dropped, with the new
  *   node's name and kind;
+ * - a node's kind is set once: a change, such as a folder with children turning into a file, is dropped;
  * - a name taken in the folder becomes `name (2)`;
  * - deleting a folder also deletes whatever the server has below it.
  * Not authorization.
@@ -55,7 +56,12 @@ export function resolveTree({ batch, snapshot }: ServerResolveContext<Shape>): r
     } else if (operation.type === "map/set") {
       // A name or kind for a node that does not exist, including one whose create was just dropped.
       if (!parents.has(operation.key)) { changed = true; continue; }
-      if (operation.path === "kinds") { kinds.set(operation.key, operation.value); kept.push(operation); continue; }
+      if (operation.path === "kinds") {
+        if (kinds.has(operation.key) && kinds.get(operation.key) !== operation.value) { changed = true; continue; }
+        kinds.set(operation.key, operation.value);
+        kept.push(operation);
+        continue;
+      }
       const unique = uniqueName(takenBeside(operation.key, parents.get(operation.key)!), operation.value);
       names.set(operation.key, unique);
       kept.push(unique === operation.value ? operation : { ...operation, value: unique });

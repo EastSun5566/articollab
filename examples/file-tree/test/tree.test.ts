@@ -142,6 +142,15 @@ describe("Folder tree under concurrent edits", () => {
     assert.deepEqual(b.notices, ["Renamed to “todo (2).md”: the name was taken.", "Renamed to “notes (2).md”: the name was taken."]);
   });
 
+  it("never changes a node's kind, so a folder with children cannot become a file", () => {
+    const n = network(), a = n.writer();
+    a.doc.state.kinds.set("seed-docs", "file"); // A writer that skips the helpers.
+    a.send(); a.receive();
+    assert.equal(n.server.snapshot().data.kinds["seed-docs"], "folder");
+    assert.equal(a.doc.state.kinds.get("seed-docs"), "folder");
+    assert.deepEqual(n.serverPaths(), SEEDED);
+  });
+
   it("undoes a folder delete with everything in it, through the policy", () => {
     const n = network(), a = n.writer(), b = n.writer();
     const history = createUndoManager(a.doc, { captureTimeout: 0 });
