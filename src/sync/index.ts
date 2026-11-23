@@ -22,11 +22,9 @@ export {
   type LockManagerLike,
 } from "./store.ts";
 
-export {
-  createHttpTransport,
-  SyncHttpError,
-  type HttpTransportOptions,
-} from "./http-client.ts";
+export { createHttpTransport, type HttpTransportOptions } from "./http-client.ts";
+
+export { SyncRequestError } from "./errors.ts";
 
 export {
   createSyncHandler,

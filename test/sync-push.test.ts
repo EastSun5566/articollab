@@ -5,7 +5,7 @@ import {
   createServer, decodeClientBatch, defineDocument, list, value, type ClientBatch, type CreateServerOptions,
 } from "../src/index.ts";
 import {
-  connectSync, createHttpTransport, SyncHttpError,
+  connectSync, createHttpTransport, SyncRequestError,
   type SyncClient, type SyncPushState, type SyncSubscription, type SyncTransport,
 } from "../src/sync/index.ts";
 
@@ -225,7 +225,7 @@ describe("connectSync push", () => {
     const failure = a.error;
     assert.ok(failure instanceof Error && "retryable" in failure && failure.retryable === false);
     if (response !== "malformed-json") {
-      assert.ok(failure instanceof SyncHttpError);
+      assert.ok(failure instanceof SyncRequestError);
       assert.equal(failure.status, Number(response));
       assert.equal(body?.bodyUsed, true);
     }
@@ -243,7 +243,7 @@ describe("connectSync push", () => {
     t.after(() => a.close());
     await a.sync(); await settle();
     const subscriber = [...h.subscribers][0]!;
-    subscriber.handlers.onEnd(reason === "eof" ? undefined : reason === "network" ? new Error("reset") : new SyncHttpError(Number(reason)));
+    subscriber.handlers.onEnd(reason === "eof" ? undefined : reason === "network" ? new Error("reset") : new SyncRequestError(Number(reason)));
     await settle();
     assert.equal(a.status, "idle");
     assert.equal(a.error, undefined);

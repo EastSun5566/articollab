@@ -246,7 +246,7 @@ Import from `"articollab/sync"`. It depends only on the core entrypoint and on `
 | `createHttpTransport({ url, fetch?, headers? })` | A `SyncTransport` for the handler's routes under `url`. |
 | `createSyncHandler(schema, server, { authorize?, saveCheckpoint?, allowRejections?, maxBodySize?, heartbeatInterval?, maxEventStreams? })` | A `SyncHandler`: a Fetch API handler for `clients`, `batches`, `commits`, `events` and, when allowed, `rejections`. |
 | `handler.notify()` | Pushes commits applied without the handler to open event streams. |
-| `SyncHttpError` | An unexpected HTTP status with `status` and `retryable`. The sync client retries HTTP 408, 429 and 5xx, as well as network failures during a pass. |
+| `SyncRequestError` | A sync request answered with an unexpected status, with `status` and `retryable`. The sync client retries HTTP 408, 429 and 5xx, as well as network failures during a pass. |
 
 Types: `SyncClient`, `PresenceSyncClient`, `SyncStatus`, `SyncPushState`, `SyncTransport`, `SyncSubscription`, `ConnectSyncOptions`, `SyncRetryOptions`, `SyncPresence`, `SyncPresenceOptions`, `SyncHandlerPresenceOptions`, `HttpTransportOptions`, `SyncHandler`, `SyncHandlerOptions`, `SyncAction`, `CheckpointStore`, `IndexedDbCheckpointStore`, `IndexedDbStoreOptions`, `IdbFactoryLike`, `LockManagerLike`; from `"articollab/sync/node"` also `FileStoreOptions` and `FileStoreFileSystem`.
 
