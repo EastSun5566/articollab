@@ -185,7 +185,7 @@ export async function mountTextEditors(root, url) {
     }
     if (!destroyed) {
       for (const pane of panes) { publish(pane); showPeers(pane); }
-      status.textContent = "Ready. Type in either writer; edits are sent and received automatically.";
+      status.textContent = "Ready.";
     }
   } catch (error) { stop(error); }
   return { destroy };

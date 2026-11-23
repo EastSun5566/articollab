@@ -17,8 +17,7 @@ export function describeSync(status, push, offline) {
 }
 
 /**
- * A fetch whose writer can be taken offline: new requests fail like a dropped network, and open
- * event streams are aborted. Only stream requests are tracked; others finish on their own.
+ * A fetch that can be taken offline: new requests fail and open event streams are aborted.
  * @param {typeof globalThis.fetch} [base]
  */
 export function createOfflineSwitch(base = globalThis.fetch) {

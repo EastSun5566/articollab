@@ -20,8 +20,7 @@ function decodeSelection(input) {
 }
 
 /**
- * A hand-written Standard Schema for presence: both the host and each writer check it, so a
- * malformed cursor from any writer is refused by the server and skipped by its peers.
+ * Checked by the host and by every writer, so a malformed cursor is refused and skipped.
  * @type {import("../../dist/index.js").StandardSchemaV1<SelectionPresence>}
  */
 export const selectionSchema = {

@@ -30,7 +30,8 @@
     .card.dragging { opacity: .4; }
     .card.drop-before { box-shadow: 0 -3px 0 #205faa; }
     .cards.drop-end { box-shadow: inset 0 -3px 0 #205faa; }
-    .title { display: block; }
+    .head { display: flex; justify-content: space-between; align-items: flex-start; gap: .3rem; }
+    .vote { flex: none; padding: .05rem .4rem; font-size: .8rem; }
     .actions { display: flex; flex-wrap: wrap; gap: .2rem; margin-top: .3rem; }
     .actions button { padding: .05rem .4rem; font-size: .8rem; }
     .rename { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin-top: .75rem; }
@@ -66,19 +67,8 @@
   <main>
     <header>
       <h1>Two writers, one board.</h1>
-      <p>One List orders every card, Maps hold each card's column and title, and counters hold its votes. Drag cards
-        between columns or use their buttons; edits are sent as you make them and the other writer receives them over a
-        push channel. Select a card to rename it, or press 👍 to vote: votes from both writers all count, even when they
-        vote at the same time.</p>
-      <p>A move is a List move plus a column change, and a rename touches only the title, so they never conflict: when
-        two writers move the same card, the later move wins and the card never appears twice. Moving or renaming a card
-        someone else deleted is not saved, and neither is a vote for it; the writer is told. Turn a writer <strong>Offline</strong> to try these
-        races. <strong>Undo</strong> and <strong>Redo</strong> revert only that writer's own edits, and never the other
-        writer's later ones.</p>
-      <p>Each writer saves its edits in this browser as you make them, so reloading the page keeps edits that were not
-        sent yet. Another tab runs its own writers, and a tab you close leaves its unsent edits to the next tab you
-        open. This localhost prototype has no authentication, and the server keeps the document in memory: restarting
-        it starts a new document.</p>
+      <p>Two writers share one board. Drag cards, rename them or press 👍, and turn a writer <strong>Offline</strong> to
+        try conflicting edits: moves never duplicate a card, and every vote counts. Unsent edits survive a reload.</p>
     </header>
     <div id="app"></div>
   </main>

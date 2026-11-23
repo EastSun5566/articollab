@@ -3,9 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 
 /**
- * Example-only bridge from a node:http request to a Fetch API handler. It streams the response
- * body chunk by chunk, which event streams need, and aborts the request when the client
- * disconnects, which closes them. Frameworks such as Hono do this for you.
+ * Runs a Fetch API handler under node:http, streaming responses (event streams need it) and aborting
+ * on disconnect. Frameworks such as Hono do this for you.
  */
 export function toNodeListener(handle: (request: Request) => Promise<Response>) {
   return (incoming: IncomingMessage, outgoing: ServerResponse): void => {

@@ -43,7 +43,7 @@ Oxlint uses type-aware correctness/suspicious, explicit-any and unsafe-value che
 
 Knip covers source, tests, scripts and examples; findings and configuration hints fail. Public entrypoint exports are intentional APIs, not candidates for removal merely because the checkout does not call them. Review findings before deleting code.
 
-The [text editor prototype](examples/README.md#text-editor-prototype) is an independent private project. Root type/lint/unused checks exclude only `examples/text-editor/`; CI separately installs its frozen lockfile and runs every gate below after building the core:
+The [text editor example](examples/README.md#text-editor) is an independent private project. Root type/lint/unused checks exclude only `examples/text-editor/`; CI separately installs its frozen lockfile and runs every gate below after building the core:
 
 ```sh
 pnpm --dir examples/text-editor install --frozen-lockfile --ignore-scripts
@@ -67,7 +67,7 @@ Reproduce a deterministic scheduling seed with:
 node --test --test-name-pattern="seed=42" test/interleaving.test.ts
 ```
 
-Browser JSDoc and Node integration tests do not replace interactive verification. The [examples guide](examples/README.md#browser-reload-recovery-example) includes the full JSDoc command and manual demo steps. Keep tooling-specific instructions out of user documentation.
+Browser JSDoc and Node integration tests do not replace interactive verification: run the [examples](examples/README.md) in a browser. The browser JSDoc command for the test fixtures in `test/fixtures/` is the `Check browser smoke JSDoc` step in `.github/workflows/checks.yml`. Keep tooling-specific instructions out of user documentation.
 
 ## Preview and write documentation
 

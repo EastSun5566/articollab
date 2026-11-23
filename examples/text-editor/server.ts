@@ -10,10 +10,7 @@ import { createBrowserAssetHandler } from "../shared/assets.ts";
 import { toNodeListener } from "../shared/fetch-bridge.ts";
 import { selectionSchema } from "./presence.js";
 
-/**
- * Example-only localhost host: the packaged sync handler, with presence, under /sync/ and fixed ESM
- * assets. CodeMirror is local to this example; only these exact files are served.
- */
+/** Localhost host: the sync handler with presence under /sync/, plus the page's fixed assets. */
 export async function startTextEditorServer(
   server: ServerDocument<typeof Note.definition> = createServer(Note), presenceTtl = 30_000
 ) {
@@ -37,8 +34,7 @@ export async function startTextEditorServer(
   }
   for (const [name, file] of modules) entries.set(`/codemirror/${name}.js`, { file, type: "text/javascript; charset=utf-8" });
   const assets = createBrowserAssetHandler(entries);
-  // Rejections let a writer discard pending work that the server's policy blocked. Presence carries
-  // each writer's selection as cursors over the same event stream, checked against selectionSchema.
+  // Rejections let a blocked writer discard its pending work.
   const sync = toNodeListener(createSyncHandler(Note, server, {
     allowRejections: true, presence: { schema: selectionSchema, ttl: presenceTtl },
   }));
