@@ -13,7 +13,7 @@ New to Articollab? Read the [quick start](../docs/quick-start.md) first. The exa
 | --- | --- |
 | [Sync adapter](#sync-adapter) | `articollab/sync` in about 80 lines of Node: two writers, a lost response, push |
 | [Kanban board](#kanban-board) | List moves, Maps, Counters, undo, IndexedDB checkpoints and several tabs |
-| [Text editor](#text-editor) | Text in CodeMirror, cursors and presence |
+| [Text editor](#text-editor) | Text in CodeMirror, cursors and presence over WebSocket |
 | [Folder tree](#folder-tree) | A server policy that keeps concurrent moves from making cycles |
 
 ## Sync adapter
@@ -45,10 +45,10 @@ pnpm --dir examples/text-editor install --frozen-lockfile
 pnpm --dir examples/text-editor start
 ```
 
-Two CodeMirror editors share one Text. Try:
+Two CodeMirror editors share one Text, each writer over one [WebSocket](../docs/sync.md#use-websocket). Try:
 
 - Type in both at once, including emoji and Chinese: edits converge without a Sync button.
-- Select text in one editor: the other shows its caret or range, shared through [presence](../docs/sync.md#share-presence).
+- Select text in one editor: the other shows its caret or range, shared through [presence](../docs/sync.md#share-presence). Turn that writer **Offline** and its caret goes at once.
 - Turn one writer **Offline**, keep typing, then go back online.
 
 [`binding.js`](text-editor/binding.js) maps CodeMirror's UTF-16 offsets to Text elements and back; [`presence.js`](text-editor/presence.js) validates shared cursors.
