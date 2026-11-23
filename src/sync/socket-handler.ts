@@ -165,12 +165,16 @@ export function acceptSocket(core: SyncCore, socket: SyncSocket, request: Reques
         generation++;
         subscriber?.close();
         return { status: 204 };
-      case "presence":
+      case "presence": {
         if (!core.presence) return failure(404, "Unknown message type");
         if (size !== 4 || typeof input.clientId !== "string" || !("state" in input)) {
           return failure(400, "Expected { id, type, clientId, state }");
         }
-        return core.publish(input.clientId, input.state, allowed, owner);
+        const reply = await core.publish(input.clientId, input.state, allowed, owner);
+        // The socket may have closed while authorize ran, after its states were cleared.
+        if (!open) core.release(owner);
+        return reply;
+      }
       default:
         return failure(404, "Unknown message type");
     }

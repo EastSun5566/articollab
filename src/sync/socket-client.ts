@@ -49,7 +49,8 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): Sy
   let closed = false;
   let nextId = 0;
   const waiting = new Map<number, { resolve(answer: Answer): void; reject(error: unknown): void }>();
-  let subscription: { readonly handlers: SyncSubscription; active: boolean } | undefined;
+  /** The latest subscription; it takes pushes only once its reply arrived, as the server sends that first. */
+  let subscription: { readonly handlers: SyncSubscription; active: boolean; opened: boolean } | undefined;
 
   /** Ends everything the socket carried, with `cause` as the reason. */
   function lost(socket: WebSocketLike, cause: unknown): void {
@@ -81,14 +82,16 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): Sy
       waiter.resolve({ status, body: message.body });
       return;
     }
-    const handlers = subscription?.active === true ? subscription.handlers : undefined;
+    // Pushes before the reply belong to a subscription this one replaced.
+    const handlers = subscription?.active === true && subscription.opened ? subscription.handlers : undefined;
     switch (message.type) {
       case "commits": handlers?.onCommits(message.commits); break;
       case "presence": handlers?.onPresence?.({ clientId: message.clientId, state: message.state }); break;
       case "gap":
-        if (subscription !== undefined) subscription.active = false;
+        if (handlers === undefined || subscription === undefined) break;
+        subscription.active = false;
         subscription = undefined;
-        handlers?.onGap();
+        handlers.onGap();
         break;
       case "ping": handlers?.onActivity(); break;
       default: invalid(socket, "Unknown message type");
@@ -149,11 +152,11 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): Sy
       expect(await request({ type: "presence", clientId, state }), 204);
     },
     subscribe(watermark: number, handlers: SyncSubscription) {
-      const mine = { handlers, active: true };
+      const mine = { handlers, active: true, opened: false };
       subscription = mine;
       void request({ type: "subscribe", since: watermark }).then((answer) => {
         if (!mine.active) return;
-        if (answer.status === 200) { handlers.onOpen(); return; }
+        if (answer.status === 200) { mine.opened = true; handlers.onOpen(); return; }
         mine.active = false;
         if (subscription === mine) subscription = undefined;
         handlers.onEnd(new SyncRequestError(answer.status));

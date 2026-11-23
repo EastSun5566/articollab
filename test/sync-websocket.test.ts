@@ -214,6 +214,41 @@ describe("WebSocket transport", () => {
   });
 });
 
+describe("WebSocket transport, scripted", () => {
+  it("takes pushes only once its subscribe is answered, since earlier ones belong to a replaced subscription", async () => {
+    const sockets: Scripted[] = [];
+    class Scripted {
+      readonly sent: Record<string, unknown>[] = [];
+      private readonly listeners: [string, (event: unknown) => void][] = [];
+      constructor() { sockets.push(this); setTimeout(() => { this.emit("open", {}); }); }
+      addEventListener(type: string, listener: (event: unknown) => void) { this.listeners.push([type, listener]); }
+      emit(type: string, event: unknown) { for (const [name, listener] of this.listeners) if (name === type) listener(event); }
+      send(data: string) { this.sent.push(JSON.parse(data) as Record<string, unknown>); } // oxlint-disable-line typescript/no-unsafe-type-assertion -- The transport sends objects.
+      close() { this.emit("close", {}); }
+      receive(message: unknown) { this.emit("message", { data: JSON.stringify(message) }); }
+    }
+    const transport = createWebSocketTransport({ url: "ws://sync.test/socket", WebSocket: Scripted });
+    const seen: string[] = [];
+    const end = transport.subscribe?.(0, {
+      onOpen: () => { seen.push("open"); }, onCommits: () => { seen.push("commits"); }, onGap: () => { seen.push("gap"); },
+      onPresence: () => { seen.push("presence"); }, onActivity: () => { seen.push("ping"); }, onEnd: () => { seen.push("end"); },
+    });
+    await until(() => sockets[0]?.sent.length === 1, "the subscribe request");
+    const socket = sockets[0]!;
+    for (const push of [{ type: "commits", commits: [] }, { type: "presence", clientId: "x", state: null }, { type: "gap" }]) socket.receive(push);
+    assert.deepEqual(seen, [], "pushes before the reply are ignored");
+    socket.receive({ id: socket.sent[0]!.id, status: 200 });
+    await until(() => seen.length === 1, "the reply");
+    socket.receive({ type: "commits", commits: [] });
+    socket.receive({ type: "ping" });
+    assert.deepEqual(seen, ["open", "commits", "ping"]);
+    end?.();
+    await until(() => socket.sent.at(-1)?.type === "unsubscribe", "the unsubscribe");
+    transport.close?.();
+    assert.deepEqual(seen, ["open", "commits", "ping"], "closing after unsubscribing reports nothing");
+  });
+});
+
 describe("SyncHandler.accept", () => {
   it("answers each message with its id and the HTTP status, and closes on malformed input", async () => {
     const handle = createSyncHandler(Board, createServer(Board));
@@ -317,6 +352,25 @@ describe("SyncHandler.accept", () => {
     const id = clientIdOf(await other.ask({ type: "register" }));
     await other.ask({ type: "submit", batch: insert(id, 1, "x") });
     assert.equal(lagging.closed?.code, 1013, "a full send queue closes the socket");
+  });
+
+  it("clears a state whose socket closed while authorize was still deciding", async () => {
+    const server = createServer(Board);
+    let decide = (): void => {};
+    const decided = new Promise<void>((resolve) => { decide = resolve; });
+    const handle = createSyncHandler(Board, server, { presence: { ttl: 60_000 },
+      authorize: async (_request, { action }) => { if (action === "presence") await decided; return true; } });
+    const watcher = direct(handle);
+    await watcher.ask({ type: "subscribe", since: 0 });
+    const clientId = server.openClient();
+    const late = direct(handle);
+    late.connection.message(JSON.stringify({ id: 0, type: "presence", clientId, state: { name: "late" } }));
+    late.connection.close();
+    decide();
+    const updates = () => watcher.sent.filter((entry) => entry.type === "presence").map((entry) => entry.state);
+    await until(() => updates().length === 2, "the late state and its removal");
+    assert.deepEqual(updates(), [{ name: "late" }, null]);
+    watcher.connection.close();
   });
 
   it("clears presence only for the socket that last sent it", async () => {
