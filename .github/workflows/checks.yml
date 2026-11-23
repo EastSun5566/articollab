@@ -80,6 +80,18 @@ jobs:
       - name: Test kanban example
         run: pnpm --dir examples/kanban test
 
+      - name: Typecheck folder tree example
+        run: pnpm --dir examples/file-tree check
+
+      - name: Lint folder tree example
+        run: pnpm --dir examples/file-tree lint
+
+      - name: Check unused folder tree code
+        run: pnpm --dir examples/file-tree knip
+
+      - name: Test folder tree example
+        run: pnpm --dir examples/file-tree test
+
       - name: Check browser smoke JSDoc
         run: pnpm exec tsc --ignoreConfig --allowJs --checkJs --allowImportingTsExtensions --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext test/fixtures/browser-smoke/smoke.js test/fixtures/http-sync-controller.js test/fixtures/browser-http-smoke/smoke.js test/fixtures/browser-reload-recovery/recovery.js
 

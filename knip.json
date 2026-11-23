@@ -7,5 +7,5 @@
     "test/**/*.test.ts"
   ],
   "project": ["**/*.{ts,js}"],
-  "ignore": ["examples/text-editor/**", "examples/kanban/**", "examples/shared/*.js"]
+  "ignore": ["examples/text-editor/**", "examples/kanban/**", "examples/file-tree/**", "examples/shared/*.js"]
 }
