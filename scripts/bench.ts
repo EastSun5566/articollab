@@ -128,7 +128,7 @@ function timeTrial(api: Api, kind: Kind, size: number, scenario: typeof scenario
   const schema = board(api);
   const snapshot = fixture(kind, size);
   const server = api.createServer(schema, {
-    historyLimit: 0, checkpoint: { snapshot, lastClientNumber: 0, clients: [], history: [] },
+    maxHistory: 0, checkpoint: { snapshot, lastClientNumber: 0, clients: [], history: [] },
     ...(scenario === "unused-policy-snapshot" ? { resolve: ({ batch }: { batch: Batch }) => batch.operations } : {}),
   });
   const batches: Batch[] = [];
@@ -233,7 +233,7 @@ function heapTrial(api: Api, kind: Kind, size: number): number {
 }
 
 function serializedSizes(api: Api, kind: Kind, size: number) {
-  const server = api.createServer(board(api), { historyLimit: 0,
+  const server = api.createServer(board(api), { maxHistory: 0,
     checkpoint: { snapshot: fixture(kind, size), lastClientNumber: 0, clients: [], history: [] } });
   return { snapshotBytes: Buffer.byteLength(JSON.stringify(server.snapshot()), "utf8"),
     checkpointBytes: Buffer.byteLength(JSON.stringify(server.checkpoint()), "utf8") };
@@ -249,7 +249,7 @@ function objectFixture(size: number) {
 function objectTrial(api: Api, size: number, scenario: typeof objectScenarios[number], iterations: number): number {
   const schema = api.defineDocument({ items: api.list<{ label: string }>() });
   const snapshot = objectFixture(size);
-  const server = api.createServer(schema, { historyLimit: 0,
+  const server = api.createServer(schema, { maxHistory: 0,
     checkpoint: { snapshot, lastClientNumber: 0, clients: [], history: [] } });
   const batches: ClientBatch<DocumentOperation<typeof schema.definition>>[] = [];
   const writer = api.createClient(schema, { clientId: server.openClient(), snapshot,
@@ -342,7 +342,7 @@ function reconciliationTrial(api: Api, kind: Kind, size: number,
   const schema = api.defineDocument({ body: api.text(), items: api.list<{ label: string }>(),
     meta: api.value<{ edited: number } | null>(null) });
   const snapshot = reconciliationFixture(kind, size, scenario);
-  const server = api.createServer(schema, { historyLimit: 0,
+  const server = api.createServer(schema, { maxHistory: 0,
     checkpoint: { snapshot, lastClientNumber: 0, clients: [], history: [] } });
   const batches: ClientBatch<DocumentOperation<typeof schema.definition>>[] = [];
   const writer = api.createClient(schema, { clientId: server.openClient(), snapshot,
@@ -408,7 +408,7 @@ function reconciliationTrial(api: Api, kind: Kind, size: number,
 
 function listMoveTrial(api: Api, snapshot: DocumentSnapshot<Shape>, scenario: ListMoveScenario, iterations: number): number {
   const schema = board(api);
-  const server = api.createServer(schema, { historyLimit: 0,
+  const server = api.createServer(schema, { maxHistory: 0,
     checkpoint: { snapshot, lastClientNumber: 0, clients: [], history: [] } });
   const batches: Batch[] = [];
   const writer = api.createClient(schema, { clientId: server.openClient(), snapshot,
@@ -493,8 +493,8 @@ function listMoveTrial(api: Api, snapshot: DocumentSnapshot<Shape>, scenario: Li
   return elapsed / iterations;
 }
 
-function fragmentedDocument(api: Api, size: number, historyLimit = 0, batchSize = size * 2) {
-  const schema = board(api), server = api.createServer(schema, { historyLimit });
+function fragmentedDocument(api: Api, size: number, maxHistory = 0, batchSize = size * 2) {
+  const schema = board(api), server = api.createServer(schema, { maxHistory });
   const doc = api.createClient(schema, { clientId: server.openClient(),
     onBatch(batch) { doc.receive(server.receive(batch).commit); } });
   const oracle: string[] = [];
@@ -566,7 +566,7 @@ function checkpointStorageSettings(smoke: boolean) {
     gzipLevel, brotliQuality };
 }
 
-function checkpointStorageTrial(api: Api, document: ReturnType<typeof fragmentedDocument>, historyLimit: number,
+function checkpointStorageTrial(api: Api, document: ReturnType<typeof fragmentedDocument>, maxHistory: number,
   encoding: typeof checkpointEncodings[number]) {
   const { server, schema } = document;
   collect();
@@ -585,7 +585,7 @@ function checkpointStorageTrial(api: Api, document: ReturnType<typeof fragmented
   const parseEnd = performance.now();
   const decoded = api.decodeServerCheckpoint(schema, input);
   const decodeEnd = performance.now();
-  const restored = api.createServer(schema, { historyLimit, checkpoint: decoded });
+  const restored = api.createServer(schema, { maxHistory, checkpoint: decoded });
   const restoreEnd = performance.now();
 
   assert.deepEqual(bytes, raw);
@@ -623,21 +623,21 @@ function checkpointStorageTrial(api: Api, document: ReturnType<typeof fragmented
   } };
 }
 
-async function checkpointStorageWorker(size: number, historyLimit: number, smoke: boolean) {
+async function checkpointStorageWorker(size: number, maxHistory: number, smoke: boolean) {
   const loaded: unknown = await import(import.meta.resolve("articollab"));
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Built self-package has the API checked against source types.
   const api = loaded as Api;
-  const config = checkpointStorageSettings(smoke), document = fragmentedDocument(api, size, historyLimit, config.batchSize);
+  const config = checkpointStorageSettings(smoke), document = fragmentedDocument(api, size, maxHistory, config.batchSize);
   const { server, snapshot, deleted } = document;
   const snapshotJson = JSON.stringify(snapshot);
   const stats = fragmentedStats(snapshot, size, deleted, snapshotJson);
   const watermark = Math.ceil((size + deleted) / config.batchSize) + Math.ceil(deleted / config.batchSize);
-  const retainedCommits = Math.min(watermark, historyLimit);
+  const retainedCommits = Math.min(watermark, maxHistory);
   assert.equal(snapshot.serverSeq, watermark);
   assert.equal(server.checkpoint().history.length, retainedCommits);
   return checkpointEncodings.map((encoding) => {
-    for (let index = 0; index < config.warmups; index++) checkpointStorageTrial(api, document, historyLimit, encoding);
-    const measurements = Array.from({ length: config.samples }, () => checkpointStorageTrial(api, document, historyLimit, encoding));
+    for (let index = 0; index < config.warmups; index++) checkpointStorageTrial(api, document, maxHistory, encoding);
+    const measurements = Array.from({ length: config.samples }, () => checkpointStorageTrial(api, document, maxHistory, encoding));
     const { rawBytes, encodedBytes } = measurements[0]!;
     assert.ok(measurements.every((sample) => sample.rawBytes === rawBytes && sample.encodedBytes === encodedBytes));
     const timings = Object.fromEntries(checkpointStages.map((stage) => {
@@ -647,7 +647,7 @@ async function checkpointStorageWorker(size: number, historyLimit: number, smoke
       const median = sorted.length % 2 === 0 ? (sorted[midpoint - 1]! + sorted[midpoint]!) / 2 : sorted[midpoint]!;
       return [stage, { samples, median, min: sorted[0]!, max: sorted.at(-1)! }];
     }));
-    return { size, historyLimit, retainedCommits, watermark, fixture: stats, encoding, snapshotBytes: Buffer.byteLength(snapshotJson),
+    return { size, maxHistory, retainedCommits, watermark, fixture: stats, encoding, snapshotBytes: Buffer.byteLength(snapshotJson),
       rawBytes, encodedBytes, encodedToRawRatio: encodedBytes / rawBytes, timings };
   });
 }
@@ -660,7 +660,7 @@ function fragmentedTrial(api: Api, fragment: ReturnType<typeof fragmentedFixture
     const input: unknown = JSON.parse(fragment.serverJson);
     collect();
     const start = performance.now();
-    const server = api.createServer(schema, { historyLimit: 0,
+    const server = api.createServer(schema, { maxHistory: 0,
       checkpoint: api.decodeServerCheckpoint(schema, input) });
     const elapsed = performance.now() - start;
     assert.equal(server.snapshot().data.body.value, fragment.value);
@@ -707,7 +707,7 @@ function prepareFragmentedEdit(api: Api, fragment: ReturnType<typeof fragmentedF
     for (let index = 0; index < 20; index++) doc.state.body.insert(doc.state.body.length, "P");
   }
   if (scenario.startsWith("remote-") || scenario === "pending-replay") {
-    const server = api.createServer(schema, { historyLimit: 0,
+    const server = api.createServer(schema, { maxHistory: 0,
       checkpoint: api.decodeServerCheckpoint(schema, JSON.parse(fragment.serverJson)) });
     const remote = api.createClient(schema, { clientId: fragment.remoteId, snapshot,
       onBatch(batch) { const commit = server.receive(batch).commit; commits.push(commit); remote.receive(commit); } });
@@ -759,7 +759,7 @@ function prepareFragmentedEdit(api: Api, fragment: ReturnType<typeof fragmentedF
 }
 
 function historyFixture(api: Api, limit: number) {
-  const schema = board(api), server = api.createServer(schema, { historyLimit: 0 });
+  const schema = board(api), server = api.createServer(schema, { maxHistory: 0 });
   const clientId = server.openClient(), history: ServerCommit<DocumentOperation<Shape>>[] = [];
   for (let seq = 1; seq <= limit; seq++) history.push(server.receive({ clientId, seq,
     operations: [{ type: "value/set", path: "count", value: seq }] }).commit);
@@ -769,7 +769,7 @@ function historyFixture(api: Api, limit: number) {
 
 function historyTrial(api: Api, checkpointJson: string, limit: number, iterations: number): number {
   const schema = board(api), checkpoint = api.decodeServerCheckpoint(schema, JSON.parse(checkpointJson));
-  const server = api.createServer(schema, { historyLimit: limit, checkpoint });
+  const server = api.createServer(schema, { maxHistory: limit, checkpoint });
   const batches: Batch[] = Array.from({ length: iterations }, (_, index) => ({ clientId: "client-1",
     seq: limit + index + 1, operations: [{ type: "value/set", path: "count", value: limit + index + 1 }] }));
   collect();
@@ -1024,17 +1024,17 @@ async function checkpointStorage(smoke: boolean, json: boolean) {
   const config = checkpointStorageSettings(smoke), environment = await metadata();
   const results: Awaited<ReturnType<typeof checkpointStorageWorker>> = [];
   for (const size of config.sizes) {
-    for (const historyLimit of config.historyLimits) {
+    for (const maxHistory of config.historyLimits) {
       try {
         const output = await execute(process.execPath, ["--expose-gc", filename, "--checkpoint-storage-worker",
-          String(size), String(historyLimit), smoke ? "smoke" : "full"],
+          String(size), String(maxHistory), smoke ? "smoke" : "full"],
         { cwd: root, timeout: 120_000, maxBuffer: 1024 * 1024 });
         assert.equal(output.stderr, "");
         // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Private worker builds this report; smoke tests verify the fields.
         results.push(...JSON.parse(output.stdout) as Awaited<ReturnType<typeof checkpointStorageWorker>>);
       } catch (cause) {
         const stderr = cause instanceof Error && "stderr" in cause && typeof cause.stderr === "string" ? cause.stderr : "";
-        throw new Error(`checkpoint-storage/${size}/${historyLimit} worker failed\n${stderr}`, { cause });
+        throw new Error(`checkpoint-storage/${size}/${maxHistory} worker failed\n${stderr}`, { cause });
       }
     }
   }
@@ -1045,7 +1045,7 @@ async function checkpointStorage(smoke: boolean, json: boolean) {
   console.log(`Checkpoint storage · Articollab ${environment.packageVersion} · ${environment.node} · ${environment.os}/${environment.architecture}`);
   console.log("size\thistory limit\tretained\tencoding\tJSON B\tencoded B\tencoded/raw\tsave median ms\trestore median ms");
   for (const row of results) {
-    console.log([row.size, row.historyLimit, row.retainedCommits, row.encoding, row.rawBytes, row.encodedBytes,
+    console.log([row.size, row.maxHistory, row.retainedCommits, row.encoding, row.rawBytes, row.encodedBytes,
       row.encodedToRawRatio.toFixed(3), row.timings.saveTotal!.median.toFixed(3), row.timings.restoreTotal!.median.toFixed(3)].join("\t"));
   }
   console.log("In-memory timings. Restore includes JSON parsing, checkpoint decode and constructor validation. Use --json for stage samples.");
@@ -1053,11 +1053,11 @@ async function checkpointStorage(smoke: boolean, json: boolean) {
 
 async function main(args: string[]): Promise<void> {
   if (args[0] === "--checkpoint-storage-worker") {
-    const size = Number(args[1]), historyLimit = Number(args[2]), smoke = args[3] === "smoke";
+    const size = Number(args[1]), maxHistory = Number(args[2]), smoke = args[3] === "smoke";
     const config = checkpointStorageSettings(smoke);
     assert.ok(args.length === 4 && (smoke || args[3] === "full") && config.sizes.includes(size) &&
-      config.historyLimits.includes(historyLimit), "Invalid checkpoint storage worker arguments");
-    console.log(JSON.stringify(await checkpointStorageWorker(size, historyLimit, smoke)));
+      config.historyLimits.includes(maxHistory), "Invalid checkpoint storage worker arguments");
+    console.log(JSON.stringify(await checkpointStorageWorker(size, maxHistory, smoke)));
     return;
   }
   if (args[0] === "--profile-worker") {

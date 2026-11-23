@@ -69,6 +69,7 @@ import {
 } from "./state.ts";
 import { canonicalJson, jsonEquals, validateJsonValue } from "./json.ts";
 import { checkPayload, type PayloadSchema } from "./payload.ts";
+import { integerOption } from "./options.ts";
 
 export interface ValueSetOperation<
   Path extends string = string,
@@ -270,7 +271,7 @@ export type ServerResolver<S extends SchemaShape> = (
 export interface CreateServerOptions<S extends SchemaShape> {
   readonly resolve?: ServerResolver<S>;
   readonly checkpoint?: ServerCheckpoint<S>;
-  readonly historyLimit?: number;
+  readonly maxHistory?: number;
   /** Maximum open writer sessions, including those without a batch. */
   readonly maxClients?: number;
   /** Skip incoming insertion namespace checks; application code owns the policy. */
@@ -1275,7 +1276,7 @@ export class ServerDocument<S extends SchemaShape> {
   private authoritativeStates: Map<string, CollectionState>;
   private readonly clients: Map<string, ServerReplayEntry<DocumentOperation<S>> | null>;
   private lastClientNumber: number;
-  private readonly historyLimit: number;
+  private readonly maxHistory: number;
   private readonly maxClients: number | undefined;
   private readonly allowCustomClientNamespaces: boolean;
   /** Retained commits are `history[historyStart..]`; evicted entries are dropped in amortized batches. */
@@ -1296,22 +1297,14 @@ export class ServerDocument<S extends SchemaShape> {
       throw new TypeError("allowCustomClientNamespaces must be a boolean");
     }
     this.allowCustomClientNamespaces = allowCustomClientNamespaces ?? false;
-    const maxClients = options.maxClients;
-    if (maxClients !== undefined && (!Number.isSafeInteger(maxClients) || maxClients < 0)) {
-      throw new Error("maxClients must be a non-negative safe integer");
-    }
-    this.maxClients = maxClients;
-    const historyLimit =
-      options.historyLimit === undefined ? 1000 : options.historyLimit;
-    if (!Number.isSafeInteger(historyLimit) || historyLimit < 0) {
-      throw new Error("historyLimit must be a non-negative safe integer");
-    }
-    this.historyLimit = historyLimit;
+    this.maxClients = options.maxClients === undefined ? undefined : integerOption(options.maxClients, "maxClients", 0);
+    const maxHistory = integerOption(options.maxHistory === undefined ? 1000 : options.maxHistory, "maxHistory", 0);
+    this.maxHistory = maxHistory;
     const restored =
       options.checkpoint === undefined
         ? undefined
         : restoreServerCheckpoint(schema, options.checkpoint);
-    if (maxClients !== undefined && restored !== undefined && restored.clients.size > maxClients) {
+    if (this.maxClients !== undefined && restored !== undefined && restored.clients.size > this.maxClients) {
       throw new Error("Checkpoint exceeds maxClients");
     }
     this.authoritativeStates =
@@ -1319,7 +1312,7 @@ export class ServerDocument<S extends SchemaShape> {
     this.clients = restored?.clients ?? new Map<string, ServerReplayEntry<DocumentOperation<S>> | null>();
     this.lastClientNumber = restored?.lastClientNumber ?? 0;
     this.history =
-      historyLimit === 0 ? [] : (restored?.history ?? []).slice(-historyLimit);
+      maxHistory === 0 ? [] : (restored?.history ?? []).slice(-maxHistory);
     this.nextServerSeq = restored?.nextServerSeq ?? 1;
     this.resolve = options.resolve;
   }
@@ -1393,11 +1386,11 @@ export class ServerDocument<S extends SchemaShape> {
 
   /** Appends to retained history in amortized O(1); runs only after the commit is fully applied. */
   private retain(commit: ServerCommit<DocumentOperation<S>>): void {
-    if (this.historyLimit === 0) return;
+    if (this.maxHistory === 0) return;
     this.history.push(commit);
-    if (this.history.length - this.historyStart > this.historyLimit) this.historyStart++;
+    if (this.history.length - this.historyStart > this.maxHistory) this.historyStart++;
     // Compact once the evicted prefix is at least as long as the retained window.
-    if (this.historyStart >= Math.max(this.historyLimit, 1024)) {
+    if (this.historyStart >= Math.max(this.maxHistory, 1024)) {
       this.history = this.history.slice(this.historyStart);
       this.historyStart = 0;
     }

@@ -1,6 +1,8 @@
+import { integerOption } from "../options.ts";
+
 /**
  * Durable storage for one writer's checkpoint. `connectSync({ store })` loads it once, saves through
- * it and closes it when the client stops. Implementations hold an exclusive lock while open, so
+ * it and closes it when the client closes. Implementations hold an exclusive lock while open, so
  * two clients can never share one stored writer.
  */
 export interface CheckpointStore {
@@ -195,11 +197,7 @@ export async function openIndexedDbStore(options: IndexedDbStoreOptions): Promis
   const { database } = options;
   if (typeof database !== "string" || database.length === 0) throw new TypeError("database must be a nonempty string");
   if (typeof options.key !== "string") throw new TypeError("key must be a string");
-  const slots = options.slots ?? 1;
-  if (typeof slots !== "number") throw new TypeError("slots must be a number");
-  if (!Number.isSafeInteger(slots) || slots < 1 || slots > MAX_SLOTS) {
-    throw new RangeError(`slots must be an integer from 1 to ${MAX_SLOTS}`);
-  }
+  const slots = integerOption(options.slots ?? 1, "slots", 1, MAX_SLOTS);
   const factory = options.indexedDB ?? (globalThis as { indexedDB?: IdbFactoryLike }).indexedDB;
   if (factory === undefined) throw new Error("indexedDB is unavailable; pass `indexedDB`");
   const keys = Array.from({ length: slots }, (_, slot) => slot === 0 ? options.key : `${options.key}#${slot}`);

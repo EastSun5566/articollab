@@ -342,7 +342,7 @@ describe("browser and server checkpoint recovery", { timeout: 30_000 }, () => {
     mixed(a.doc);
     const origin = host.url;
     await host.close();
-    const server = createServer(Board, { historyLimit: 0 });
+    const server = createServer(Board, { maxHistory: 0 });
     server.receive({ clientId: server.openClient(), seq: 1, operations: [{ type: "value/set", path: "count", value: 10 }] });
     store.saveRecoveryServer({ documentId: a.documentId, checkpoint: server.checkpoint() }); // Same lineage; deliberately retained no catch-up history.
     host = await start(portFromUrl(origin));

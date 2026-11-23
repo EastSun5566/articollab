@@ -68,7 +68,7 @@ it("restores unprocessed sessions, original retries, closed history and allocati
   restored.reject({ ...input, clientId: b });
   assert.equal(restored.snapshot().serverSeq, 2);
   assert.equal(restored.snapshot().data.count, 1);
-  const again = createServer(Counter, { checkpoint: restored.checkpoint(), historyLimit: 0 });
+  const again = createServer(Counter, { checkpoint: restored.checkpoint(), maxHistory: 0 });
   assert.equal(again.receive({ ...input, clientId: b }).replayed, true);
   assert.equal(again.openClient(), "client-4");
 });
@@ -114,7 +114,7 @@ it("checks allocation exhaustion and validates new checkpoints without old-forma
 
 it("closing drops rejected retry payload but does not pretend to purge caller checkpoints", () => {
   const Data = defineDocument({ data: value("") });
-  const server = createServer(Data, { historyLimit: 0 });
+  const server = createServer(Data, { maxHistory: 0 });
   const id = server.openClient();
   const doc = createClient(Data, { clientId: id, onBatch() {} });
   doc.state.data.value = "x".repeat(100_000);

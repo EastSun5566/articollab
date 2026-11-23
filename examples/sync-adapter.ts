@@ -71,7 +71,7 @@ export async function runSyncAdapterDemo(server: ServerDocument<Shape> = createS
     await waitFor(() => a.doc.state.items.length === 3);
     return { items: a.doc.state.items.toArray(), serverSeq: server.snapshot().serverSeq };
   } finally {
-    a.stop(); b.stop();
+    a.close(); b.close();
     await host.close();
   }
 }

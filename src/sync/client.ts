@@ -13,6 +13,7 @@ import {
   type ServerCommit,
 } from "../index.ts";
 import { readClientProgress } from "../runtime.ts";
+import { integerOption } from "../options.ts";
 import { createPresence, type PresenceController, type SyncPresenceOptions, type SyncPresence } from "./presence.ts";
 import type { CheckpointStore } from "./store.ts";
 
@@ -53,7 +54,7 @@ export interface SyncSubscription {
   onEnd(error?: unknown): void;
 }
 
-export type SyncStatus = "idle" | "syncing" | "retrying" | "blocked" | "gap" | "stopped" | "failed";
+export type SyncStatus = "idle" | "syncing" | "retrying" | "blocked" | "gap" | "closed" | "failed";
 
 /** The push channel: closed, opening, or delivering commits (polling pauses while open). */
 export type SyncPushState = "off" | "connecting" | "open";
@@ -76,7 +77,7 @@ export interface ConnectSyncOptions<S extends SchemaShape> {
   readonly save?: (checkpoint: ClientCheckpoint<S>) => void | Promise<void>;
   /**
    * Loads, saves and closes this writer's checkpoint: a saved checkpoint is restored, otherwise a
-   * session is registered. The client closes the store when it stops. Not with `checkpoint` or `save`.
+   * session is registered. `close()` closes the store too. Not with `checkpoint` or `save`.
    */
   readonly store?: CheckpointStore;
   /** Milliseconds between catch-up polls while idle or blocked. Default 1000; 0 disables polling. */
@@ -101,15 +102,15 @@ export interface SyncClient<S extends SchemaShape> {
   sync(): Promise<boolean>;
   /** Confirms cancellation of the pending batches that exist when it is called. */
   rejectPending(): Promise<boolean>;
-  /** After a history gap with no pending work, registers a new session and stops this client. */
+  /** After a history gap with no pending work, registers a new session and closes this client. */
   restartFromSnapshot(): Promise<SyncClient<S>>;
   on(event: "status", listener: (status: SyncStatus) => void): () => void;
   on(event: "push", listener: (push: SyncPushState) => void): () => void;
-  /** Stops polling, retries and push. Responses that arrive later are ignored. */
-  stop(): void;
+  /** Stops polling, retries and push and closes the store; final. Responses that arrive later are ignored. */
+  close(): void;
 }
 
-class StoppedSignal extends Error {}
+class ClosedSignal extends Error {}
 
 /** A protocol violation or local failure: never retried. */
 class SyncFailure extends Error {
@@ -117,14 +118,10 @@ class SyncFailure extends Error {
 }
 
 function isRetryable(error: unknown): boolean {
-  return !(error instanceof StoppedSignal) &&
+  return !(error instanceof ClosedSignal) &&
     !(typeof error === "object" && error !== null && "retryable" in error && error.retryable === false);
 }
 
-function nonNegativeInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative safe integer`);
-  return value;
-}
 
 /** A sync client with presence enabled. */
 export interface PresenceSyncClient<S extends SchemaShape, P extends JsonValue = JsonValue> extends SyncClient<S> {
@@ -160,10 +157,10 @@ async function start<S extends SchemaShape>(
   if (store !== undefined && (options.checkpoint !== undefined || options.save !== undefined)) {
     throw new TypeError("store cannot be combined with checkpoint or save");
   }
-  const pollInterval = nonNegativeInteger(options.pollInterval ?? 1000, "pollInterval");
-  const initialDelay = nonNegativeInteger(options.retry?.initialDelay ?? 500, "retry.initialDelay");
-  const maxDelay = nonNegativeInteger(options.retry?.maxDelay ?? 30_000, "retry.maxDelay");
-  const pushTimeout = nonNegativeInteger(options.pushTimeout ?? 45_000, "pushTimeout");
+  const pollInterval = integerOption(options.pollInterval ?? 1000, "pollInterval", 0);
+  const initialDelay = integerOption(options.retry?.initialDelay ?? 500, "retry.initialDelay", 0);
+  const maxDelay = integerOption(options.retry?.maxDelay ?? 30_000, "retry.maxDelay", 0);
+  const pushTimeout = integerOption(options.pushTimeout ?? 45_000, "pushTimeout", 0);
   const { transport } = options;
   if (options.presence !== undefined && transport.publishPresence === undefined) {
     throw new TypeError("presence requires a transport with publishPresence");
@@ -196,7 +193,7 @@ async function start<S extends SchemaShape>(
     scheduled = true;
     queueMicrotask(() => {
       scheduled = false;
-      if (status === "stopped" || status === "failed") return;
+      if (status === "closed" || status === "failed") return;
       // Save local edits now rather than when a pass gets to them: a pass may be waiting on the network.
       void persist().catch(() => {});
       if (status !== "gap") void sync().catch(() => {});
@@ -222,10 +219,10 @@ async function start<S extends SchemaShape>(
   })();
 
   function setStatus(next: SyncStatus): void {
-    if (status === next || status === "stopped" || status === "failed") return;
+    if (status === next || status === "closed" || status === "failed") return;
     status = next;
-    if (next === "gap" || next === "stopped" || next === "failed") shutdownPush();
-    if (next === "stopped" || next === "failed") presence?.stop();
+    if (next === "gap" || next === "closed" || next === "failed") shutdownPush();
+    if (next === "closed" || next === "failed") presence?.close();
     let thrown: { readonly cause: unknown } | undefined;
     for (const listener of [...listeners]) {
       try { listener(next); } catch (cause) { thrown ??= { cause }; }
@@ -245,7 +242,7 @@ async function start<S extends SchemaShape>(
     throw error;
   }
   function usable(): void {
-    if (status === "stopped") throw new StoppedSignal("Sync client is stopped");
+    if (status === "closed") throw new ClosedSignal("Sync client is closed");
     if (status === "failed") throw error;
   }
   function schedule(delay: number): void {
@@ -324,7 +321,7 @@ async function start<S extends SchemaShape>(
       if (status !== "retrying" && readClientProgress(document).nextPendingBatch !== undefined) return await runSync();
       return true;
     } catch (cause) {
-      if (cause instanceof StoppedSignal) return false;
+      if (cause instanceof ClosedSignal) return false;
       return fail(cause);
     }
   }
@@ -373,7 +370,7 @@ async function start<S extends SchemaShape>(
       }, delay / 2 + Math.random() * (delay / 2));
       if (status === "idle" || status === "blocked") void sync().catch(() => {});
     } catch (failure) {
-      if (failure instanceof StoppedSignal) return;
+      if (failure instanceof ClosedSignal) return;
       // Push/timer callbacks have no promise to reject; expose the stored failure instead.
       try { fail(failure); } catch { /* The first failure remains available as client.error. */ }
     }
@@ -458,7 +455,7 @@ async function start<S extends SchemaShape>(
         usable();
         return await work();
       } catch (cause) {
-        if (cause instanceof StoppedSignal) return false;
+        if (cause instanceof ClosedSignal) return false;
         throw cause;
       } finally {
         // Cleared before callers resume, so a later sync() never joins a finished pass.
@@ -480,7 +477,7 @@ async function start<S extends SchemaShape>(
       afterPass();
       return done;
     } catch (cause) {
-      if (status === "stopped" || cause instanceof StoppedSignal) return false;
+      if (status === "closed" || cause instanceof ClosedSignal) return false;
       if (status === "failed" || !isRetryable(cause)) fail(cause);
       // Transport errors leave the outcome unknown; the next pass catches up before resending.
       const delay = Math.min(maxDelay, initialDelay * 2 ** attempt);
@@ -525,7 +522,7 @@ async function start<S extends SchemaShape>(
         else afterPass();
         return true;
       } catch (cause) {
-        if (status === "stopped" || cause instanceof StoppedSignal) return false;
+        if (status === "closed" || cause instanceof ClosedSignal) return false;
         if (status === "failed" || !isRetryable(cause)) fail(cause);
         // A transport error leaves the outcome unknown; the caller may retry rejectPending().
         setStatus("idle");
@@ -552,7 +549,7 @@ async function start<S extends SchemaShape>(
       // The new client takes over the store; its first save replaces this session's checkpoint.
       const next = await start(schema, rest, true);
       ownsStore = false;
-      client.stop();
+      client.close();
       return next;
     },
     on(event: "status" | "push", listener: ((status: SyncStatus) => void) | ((push: SyncPushState) => void)) {
@@ -562,11 +559,11 @@ async function start<S extends SchemaShape>(
       set.add(listener);
       return () => { set.delete(listener); };
     },
-    stop() {
+    close() {
       if (ownsStore) { ownsStore = false; store?.close(); }
-      if (status === "stopped") return;
+      if (status === "closed") return;
       clearTimer();
-      if (status !== "failed") setStatus("stopped");
+      if (status !== "failed") setStatus("closed");
     },
   };
 

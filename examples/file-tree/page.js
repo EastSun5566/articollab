@@ -87,7 +87,7 @@ export async function mountFileTree(root, url) {
         store.close();
         throw error;
       }
-      if (destroyed) { sync.stop(); break; }
+      if (destroyed) { sync.close(); break; }
       names.set(sync.doc.checkpoint().clientId, name);
       stops.push(mountWriter(writers, name, sync, network, names, sync.doc.checkpoint().pendingBatches.length));
     }
@@ -294,7 +294,7 @@ function mountWriter(parent, name, sync, network, names, restored) {
     badge.textContent = shown.text;
     badge.dataset.state = shown.state;
     discard.hidden = sync.status !== "blocked";
-    const disabled = ["blocked", "gap", "failed", "stopped"].includes(sync.status);
+    const disabled = ["blocked", "gap", "failed", "closed"].includes(sync.status);
     tree.inert = disabled;
     for (const control of [nameInput, newFolder, newFile]) control.disabled = disabled;
     undoButton.disabled = disabled || !history.canUndo;
@@ -359,7 +359,7 @@ function mountWriter(parent, name, sync, network, names, restored) {
 
   return () => {
     stopped = true;
-    sync.stop();
+    sync.close();
     stopTransform(); stopChange(); stopPeers(); stopStatus(); stopPush(); stopHistory(); history.destroy();
     clearTimeout(refreshing);
     for (const [node, type, listener] of listeners) node.removeEventListener(type, listener);

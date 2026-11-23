@@ -301,7 +301,7 @@ for (let tries = 0; present[1].presence.peers.size === 0; tries++) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 assert.deepEqual([...present[1].presence.peers.values()], [{ name: "first" }]);
-for (const sync of present) sync.stop();
+for (const sync of present) sync.close();
 
 const syncServer = createServer(Board);
 const handle = createSyncHandler(Board, syncServer);
@@ -325,7 +325,7 @@ for (let tries = 0; syncA.doc.state.items.length < 2; tries++) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 assert.deepEqual(syncA.doc.state.items.toArray(), ["synced", "pushed"]);
-syncA.stop(); syncB.stop();
+syncA.close(); syncB.close();
 
 assert.equal(NodeLockedError, CheckpointLockedError, "both entrypoints share one error class");
 assert.equal(typeof openIndexedDbStore, "function");
@@ -334,12 +334,12 @@ await assert.rejects(openFileStore("checkpoint.json"), CheckpointLockedError);
 const stored = await connectSync(Board, { transport: createHttpTransport({ url: "http://sync.local/api/", fetch: viaHandler }), pollInterval: 0, push: false, store: fileStore });
 stored.doc.state.items.push("persisted");
 await stored.sync();
-stored.stop();
+stored.close();
 const reopened = await openFileStore("checkpoint.json");
 const resumed = await connectSync(Board, { transport: createHttpTransport({ url: "http://sync.local/api/", fetch: viaHandler }), pollInterval: 0, push: false, store: reopened });
 assert.equal(resumed.doc.checkpoint().clientId, stored.doc.checkpoint().clientId, "the same writer resumes");
 assert.equal(resumed.doc.state.items.toArray().at(-1), "persisted");
-resumed.stop();
+resumed.close();
 
 const sessionServer = createServer(Board);
 const sessionId = sessionServer.openClient();

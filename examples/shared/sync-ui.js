@@ -8,7 +8,7 @@
  */
 export function describeSync(status, push, offline) {
   if (status === "failed") return { state: "failed", text: "Failed" };
-  if (status === "stopped") return { state: "stopped", text: "Stopped" };
+  if (status === "closed") return { state: "closed", text: "Closed" };
   if (status === "gap") return { state: "failed", text: "History gap: preserve the checkpoint" };
   if (status === "blocked") return { state: "blocked", text: "Blocked by a rejected edit" };
   if (offline || status === "retrying") return { state: "offline", text: offline ? "Offline" : "Reconnecting" };

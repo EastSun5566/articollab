@@ -285,7 +285,7 @@ describe("Map collection", () => {
       assert.deepEqual(b.doc.state.fields.toObject(), expected);
       assert.deepEqual(server.snapshot().data.fields, expected);
     } finally {
-      a.stop(); b.stop();
+      a.close(); b.close();
     }
   });
 });

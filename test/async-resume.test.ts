@@ -463,7 +463,7 @@ describe("asynchronous wire/resume example", () => {
 
   it("returns false without submitting or replacing pending work when history is insufficient", async () => {
     let sourceSubmissions = 0;
-    const server = createServer(Board, { historyLimit: 0 });
+    const server = createServer(Board, { maxHistory: 0 });
     const network = createAsyncExampleNetwork(server, { transfer: async (direction, id, message) => {
       if (direction === "client-to-server" && id === "client-1") sourceSubmissions++;
       return message;

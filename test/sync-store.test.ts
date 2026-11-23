@@ -244,11 +244,11 @@ describe("connectSync with a store", () => {
     before.doc.state.items.push("typed while waiting");
     await tick(); await tick();
     // The page reloads while the request is still open.
-    before.stop();
+    before.close();
     release();
     await tick();
     const after = await connectSync(Board, { transport: h.transport(), pollInterval: 0, store: await db.open() });
-    t.after(() => after.stop());
+    t.after(() => after.close());
     assert.equal(after.doc.checkpoint().clientId, before.doc.checkpoint().clientId, "same writer");
     assert.deepEqual(after.doc.state.items.toArray(), ["sent before the reload", "typed while waiting"]);
     assert.equal(await after.sync(), true);
@@ -268,7 +268,7 @@ describe("connectSync with a store", () => {
       await submit(batch);
     });
     const client = await connectSync(Board, { transport, pollInterval: 0, store });
-    t.after(() => client.stop());
+    t.after(() => client.close());
     const initial = decodeClientCheckpoint(Board, await store.load());
     const initialSaveCount = save.mock.callCount();
     let write = Promise.withResolvers<void>();
@@ -318,7 +318,7 @@ describe("connectSync with a store", () => {
       close() {},
     };
     const client = await connectSync(Board, { transport: h.transport(), pollInterval: 0, store: slow });
-    t.after(() => client.stop());
+    t.after(() => client.close());
     for (let index = 0; index < 5; index++) {
       client.doc.state.items.push(String(index));
       await tick();
@@ -345,7 +345,7 @@ describe("connectSync with a store", () => {
     await tick(); await tick(); await tick();
     assert.equal(client.status, "failed");
     assert.match(String(client.error), /quota exceeded/);
-    client.stop();
+    client.close();
 
     const corrupt = await db.open("corrupt");
     await corrupt.save({ clientId: "client-1" });
@@ -359,7 +359,7 @@ describe("connectSync with a store", () => {
     const h = harness(), db = idb(t);
     const connect = async () => connectSync(Board, { transport: h.transport(), pollInterval: 0, store: await db.open("doc", 2) });
     const first = await connect(), second = await connect();
-    t.after(() => { first.stop(); second.stop(); });
+    t.after(() => { first.close(); second.close(); });
     assert.notEqual(first.doc.checkpoint().clientId, second.doc.checkpoint().clientId, "each tab is its own writer");
     first.doc.state.items.push("from the first tab");
     second.doc.state.items.push("from the second tab");
@@ -372,11 +372,11 @@ describe("connectSync with a store", () => {
     second.doc.state.items.push("left behind");
     await tick(); await tick();
     const closedId = second.doc.checkpoint().clientId;
-    second.stop();
+    second.close();
     release();
     await tick();
     const third = await connect();
-    t.after(() => third.stop());
+    t.after(() => third.close());
     assert.equal(third.doc.checkpoint().clientId, closedId, "the free slot is taken over with its writer");
     assert.equal(await third.sync(), true);
     await first.sync();
@@ -388,14 +388,14 @@ describe("connectSync with a store", () => {
     const h = harness(), db = idb(t);
     const client = await connectSync(Board, { transport: h.transport(), pollInterval: 0, store: await db.open() });
     await assert.rejects(db.open(), CheckpointLockedError);
-    client.stop();
+    client.close();
     const reopened = await db.open();
     assert.equal(decodeClientCheckpoint(Board, await reopened.load()).clientId, client.doc.checkpoint().clientId);
   });
 
   it("restarts from a snapshot into the same store, replacing the old session's checkpoint", async (t) => {
     const h = harness(), db = idb(t);
-    const server = createServer(Board, { historyLimit: 0 });
+    const server = createServer(Board, { maxHistory: 0 });
     const transport: SyncTransport = {
       async register() { return { clientId: server.openClient(), snapshot: wire(server.snapshot()) }; },
       async submit(batch) { server.receive(decodeClientBatch(Board, wire(batch))); },
@@ -410,8 +410,8 @@ describe("connectSync with a store", () => {
     assert.equal(await first.sync(), false);
     assert.equal(first.status, "gap");
     const next = await first.restartFromSnapshot();
-    t.after(() => next.stop());
-    assert.equal(first.status, "stopped");
+    t.after(() => next.close());
+    assert.equal(first.status, "closed");
     assert.notEqual(next.doc.checkpoint().clientId, first.doc.checkpoint().clientId);
     assert.equal(next.doc.state.count.value, 1);
     const saved = decodeClientCheckpoint(Board, await store.load());

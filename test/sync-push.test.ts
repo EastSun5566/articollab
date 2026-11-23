@@ -87,7 +87,7 @@ describe("connectSync push", () => {
     const a = await connectSync(Board, { transport: ta, pollInterval: 1000 });
     const states = pushStates(a);
     const b = await connectSync(Board, { transport: h.transport({ push: false }), pollInterval: 0 });
-    t.after(() => { a.stop(); b.stop(); });
+    t.after(() => { a.close(); b.close(); });
     const checkpoint = t.mock.method(a.doc, "checkpoint");
     t.mock.timers.tick(0); await settle();
     assert.equal(a.push, "open");
@@ -108,7 +108,7 @@ describe("connectSync push", () => {
     assert.equal(checkpoint.mock.callCount(), 0);
     checkpoint.mock.restore();
     assert.deepEqual(a.doc.checkpoint().pendingBatches, []);
-    a.stop(); b.stop();
+    a.close(); b.close();
     assert.equal(ta.closed(), 1);
     assert.equal(a.push, "off");
   });
@@ -131,7 +131,7 @@ describe("connectSync push", () => {
     b.doc.state.count.value = 3; await b.sync(); await settle();
     assert.equal(a.doc.state.count.value, 3);
     assert.equal(ta.gets.length, gets + 1, "one catch-up request filled the gap");
-    a.stop(); b.stop();
+    a.close(); b.close();
   });
 
   it("reconnects with backoff when the channel ends or goes silent, polling meanwhile", async (t: TestContext) => {
@@ -167,7 +167,7 @@ describe("connectSync push", () => {
     await settle();
     assert.equal(a.push, "open");
     assert.equal(ta.opened.length, opened);
-    a.stop();
+    a.close();
   });
 
   for (const synchronous of [false, true]) it(`fails on ${synchronous ? "synchronous" : "asynchronous"} non-retryable push errors without reviving timers`, async (t) => {
@@ -183,7 +183,7 @@ describe("connectSync push", () => {
         return () => { closed++; };
       } },
     });
-    t.after(() => a.stop());
+    t.after(() => a.close());
     await a.sync().catch((error: unknown) => { assert.equal(error, failure); });
     await settle();
     assert.equal(a.status, "failed");
@@ -197,7 +197,7 @@ describe("connectSync push", () => {
     assert.deepEqual(base.gets, gets);
     await assert.rejects(a.sync(), (error) => error === failure);
     await assert.rejects(a.rejectPending(), (error) => error === failure);
-    a.stop();
+    a.close();
     assert.equal(a.status, "failed");
     assert.equal(a.error, failure);
   });
@@ -218,7 +218,7 @@ describe("connectSync push", () => {
         : new Response("forbidden or unsupported", { status: Number(response) });
       return body;
     } }) });
-    t.after(() => a.stop());
+    t.after(() => a.close());
     await a.sync().catch(() => {}); await settle();
     assert.equal(a.status, "failed");
     assert.equal(a.push, "off");
@@ -240,7 +240,7 @@ describe("connectSync push", () => {
     t.mock.method(Math, "random", () => 1);
     const h = hub(), transport = h.transport();
     const a = await connectSync(Board, { transport, pollInterval: 1000, retry: { initialDelay: 100, maxDelay: 400 } });
-    t.after(() => a.stop());
+    t.after(() => a.close());
     await a.sync(); await settle();
     const subscriber = [...h.subscribers][0]!;
     subscriber.handlers.onEnd(reason === "eof" ? undefined : reason === "network" ? new Error("reset") : new SyncHttpError(Number(reason)));
@@ -262,16 +262,16 @@ describe("connectSync push", () => {
     t.mock.method(Math, "random", () => 1);
     const h = hub(), transport = h.transport();
     const a = await connectSync(Board, { transport, pollInterval: 0, retry: { initialDelay: 100 } });
-    t.after(() => a.stop());
+    t.after(() => a.close());
     if (reconnect) {
       await a.sync(); await settle();
       [...h.subscribers][0]!.handlers.onEnd(new Error("reset"));
       await settle();
     }
-    a.on("push", (push) => { if (push === "connecting") a.stop(); });
+    a.on("push", (push) => { if (push === "connecting") a.close(); });
     if (reconnect) assert.doesNotThrow(() => t.mock.timers.tick(100));
     else assert.equal(await a.sync(), false);
-    assert.equal(a.status, "stopped");
+    assert.equal(a.status, "closed");
     assert.equal(a.push, "off");
     assert.deepEqual(transport.opened, reconnect ? [0] : []);
     const gets = transport.gets.slice();
@@ -291,7 +291,7 @@ describe("connectSync push", () => {
         return commits;
       },
     } });
-    t.after(() => { a.stop(); gate.resolve(); });
+    t.after(() => { a.close(); gate.resolve(); });
     await a.sync(); await settle();
     const subscriber = [...h.subscribers][0]!;
     hold = true;
@@ -311,7 +311,7 @@ describe("connectSync push", () => {
   });
 
   it("stops at a pushed gap, closes on failure and stays off with push: false", async () => {
-    const h = hub({ historyLimit: 1 });
+    const h = hub({ maxHistory: 1 });
     const a = await connectSync(Board, { transport: h.transport(), pollInterval: 0 });
     await a.sync(); await settle();
     const subscriber = [...h.subscribers][0]!;
@@ -342,7 +342,7 @@ describe("connectSync push", () => {
     assert.equal(broken.status, "failed");
     assert.equal(broken.push, "off");
     assert.equal(failing.closed(), 1);
-    for (const client of [off, optOut]) client.stop();
+    for (const client of [off, optOut]) client.close();
   });
 
   it("saves after applying pushed commits and fails when a document listener throws", async () => {
@@ -360,7 +360,7 @@ describe("connectSync push", () => {
     assert.equal(a.status, "failed");
     assert.ok(a.error instanceof Error && a.error.cause === bug, "a listener bug is not retried");
     assert.equal(a.doc.state.count.value, 2, "the commit was applied before the listener threw");
-    b.stop();
+    b.close();
   });
 
   for (const seed of [1, 42, 2026]) it(`converges with lossy, duplicated and reordered pushes seed=${seed}`, async () => {
@@ -392,7 +392,7 @@ describe("connectSync push", () => {
     for (const client of clients) {
       assert.deepEqual(client.doc.state.items.toArray(), values);
       assert.notEqual(client.status, "failed");
-      client.stop();
+      client.close();
     }
   });
 });

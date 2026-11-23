@@ -131,7 +131,7 @@ console.log(server.listClients().map((session) => session.clientId)); // [ 'clie
 console.log(idle); // client-2, now closed
 ```
 
-A session that has not written is not necessarily abandoned: a writer may still be offline with pending work. For time-based policies, record when your transport last heard from each client and combine it with this list. Close a session only after its writer has stopped, as described in the [session rules](reference.md#server-policy-rejection-and-retries).
+A session that has not written is not necessarily abandoned: a writer may still be offline with pending work. For time-based policies, record when your transport last heard from each client and combine it with this list. Close a session only after its writer has closed, as described in the [session rules](reference.md#server-policy-rejection-and-retries).
 
 ## Deliver in order
 

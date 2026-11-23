@@ -139,7 +139,7 @@ export async function mountKanban(root, url) {
         store.close();
         throw error;
       }
-      if (destroyed) { sync.stop(); break; }
+      if (destroyed) { sync.close(); break; }
       stops.push(mountWriter(writers, name, sync, network, store.slot, sync.doc.checkpoint().pendingBatches.length));
     }
     if (!destroyed) {
@@ -397,7 +397,7 @@ function mountWriter(parent, name, sync, network, slot, restored = 0) {
     badge.textContent = shown.text;
     badge.dataset.state = shown.state;
     discard.hidden = sync.status !== "blocked";
-    board.disabled = ["blocked", "gap", "failed", "stopped"].includes(sync.status);
+    board.disabled = ["blocked", "gap", "failed", "closed"].includes(sync.status);
     undoButton.disabled = board.disabled || !history.canUndo;
     redoButton.disabled = board.disabled || !history.canRedo;
     if (sync.status === "failed") {
@@ -480,7 +480,7 @@ function mountWriter(parent, name, sync, network, slot, restored = 0) {
 
   return () => {
     stopped = true;
-    sync.stop();
+    sync.close();
     for (const cleanup of cleanups) cleanup();
     stopChange(); dropped.stop(); stopHistory(); history.destroy(); stopStatus(); stopPush();
     clearTimeout(refreshing);

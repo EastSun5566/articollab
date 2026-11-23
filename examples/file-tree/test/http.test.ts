@@ -34,7 +34,7 @@ async function fixture(t: TestContext) {
       transport: createHttpTransport({ url: host.url + "/sync/", fetch: network.fetch }) });
     const notices: string[] = [];
     sync.doc.on("transform", (event) => { notices.push(...describeTransform(event, sync.doc)); });
-    stops.push(() => { sync.stop(); });
+    stops.push(() => { sync.close(); });
     await sync.sync();
     await until(() => sync.push === "open", "the push channel");
     return { sync, network, notices,
@@ -79,7 +79,7 @@ describe("Folder tree over HTTP", { timeout: 30_000 }, () => {
     before.network.set(true);
     createNode(before.sync.doc, "seed-docs", "file", "offline.md");
     await until(() => before.sync.status === "retrying", "the offline writer to retry");
-    before.sync.stop();
+    before.sync.close();
     const after = await f.connect(await open());
     assert.equal(after.sync.doc.checkpoint().clientId, before.sync.doc.checkpoint().clientId, "the same writer resumes");
     await until(() => after.settled(), "the restored edit to be sent");

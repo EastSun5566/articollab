@@ -364,7 +364,7 @@ describe("client checkpoint", () => {
     assert.deepEqual(restored.state.items.toArray(), b.state.items.toArray());
     assert.equal(restored.state.body.toString(), b.state.body.toString());
     assert.deepEqual(restored.checkpoint().pendingBatches, []);
-    const withoutHistory = createServer(Board, { checkpoint: server.checkpoint(), historyLimit: 0 });
+    const withoutHistory = createServer(Board, { checkpoint: server.checkpoint(), maxHistory: 0 });
     const stillPending = createClient(Board, { clientId: "client-1", checkpoint, onBatch: () => {} });
     assert.equal(withoutHistory.commitsSince(checkpoint.snapshot.serverSeq), null);
     assert.deepEqual(stillPending.checkpoint(), checkpoint);

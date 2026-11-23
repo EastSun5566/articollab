@@ -61,8 +61,24 @@ describe("createSyncHandler", () => {
     assert.deepEqual(await (await h.get("commits?since=1")).json(), []);
   });
 
+  it("checks numeric options: TypeError for a non-number, RangeError for a bad number", async () => {
+    const server = createServer(Board);
+    for (const name of ["maxBodySize", "heartbeatInterval", "maxEventStreams"] as const) {
+      assert.throws(() => createSyncHandler(Board, server, { [name]: -1 }), RangeError, name);
+      assert.throws(() => createSyncHandler(Board, server, { [name]: 1.5 }), RangeError, name);
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A wrong type on purpose.
+      assert.throws(() => createSyncHandler(Board, server, { [name]: "1" as unknown as number }), TypeError, name);
+    }
+    const transport = createHttpTransport({ url: "http://sync.test/", fetch: () => Promise.reject(new Error("unused")) });
+    for (const options of [{ pollInterval: -1 }, { pushTimeout: 0.5 }, { retry: { initialDelay: -1 } }, { retry: { maxDelay: Infinity } }]) {
+      await assert.rejects(connectSync(Board, { transport, ...options }), RangeError, JSON.stringify(options));
+    }
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A wrong type on purpose.
+    await assert.rejects(connectSync(Board, { transport, pollInterval: "1" as unknown as number }), TypeError);
+  });
+
   it("rejects invalid requests with fixed messages and no echo", async () => {
-    const h = setup({ bodyLimit: 256 });
+    const h = setup({ maxBodySize: 256 });
     const clientId = h.server.openClient();
     const cases: [Promise<Response>, number][] = [
       [h.get("unknown"), 404],
@@ -165,7 +181,7 @@ describe("createSyncHandler", () => {
       transport: createHttpTransport({ url, headers: () => ({ authorization: "bad" }) }), checkpoint: b.doc.checkpoint() });
     await assert.rejects(denied.sync(), (error) => error instanceof SyncHttpError && error.status === 401 && !error.retryable);
     assert.equal(denied.status, "failed");
-    for (const client of [a, b]) client.stop();
+    for (const client of [a, b]) client.close();
   });
 
   it("runs the documented example: a lost response is acknowledged, not duplicated, then pushed", async () => {
@@ -195,7 +211,7 @@ describe("createSyncHandler event streams", () => {
     // Keep clearInterval real so callbacks from previous HTTP tests can still clean up.
     const heartbeat = t.mock.method(globalThis, "setInterval");
     const saves: number[] = [];
-    const h = setup({ maxEventStreams: 2, heartbeatInterval: 60_000, bodyLimit: 5 * 1024 * 1024,
+    const h = setup({ maxEventStreams: 2, heartbeatInterval: 60_000, maxBodySize: 5 * 1024 * 1024,
       saveCheckpoint: (checkpoint) => { saves.push(checkpoint.snapshot.serverSeq); } });
     const slow = await h.get("events?since=0");
     assert.equal(slow.status, 200);
@@ -360,7 +376,7 @@ describe("createSyncHandler event streams", () => {
 
   it("resumes after Last-Event-ID, reports gaps, validates and limits streams", async () => {
     const h = setup({ maxEventStreams: 1, authorize: (request) => request.headers.get("x-deny") === null });
-    const server = createServer(Board, { historyLimit: 1 });
+    const server = createServer(Board, { maxHistory: 1 });
     const narrow = createSyncHandler(Board, server);
     const clientId = h.server.openClient();
     for (const seq of [1, 2, 3]) await h.post("batches", batch(clientId, seq));
@@ -442,7 +458,7 @@ describe("push over real HTTP", () => {
     const a = await connectSync(Board, {
       transport: createHttpTransport({ url }), pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 },
     });
-    t.after(() => a.stop());
+    t.after(() => a.close());
     const applied: number[] = [];
     a.doc.on("change", (event) => {
       if (event.origin === "server") applied.push(event.commit.serverSeq);
@@ -478,7 +494,7 @@ describe("push over real HTTP", () => {
     const a = await connectSync(Board, { pollInterval: 0, pushTimeout: 2000, retry: { initialDelay: 20, maxDelay: 100 },
       transport: createHttpTransport({ url: host.url, fetch: counting }) });
     const b = await connectSync(Board, { pollInterval: 0, push: false, transport: createHttpTransport({ url: host.url }) });
-    t.after(() => { a.stop(); b.stop(); });
+    t.after(() => { a.close(); b.close(); });
     await a.sync();
     await until(() => a.push === "open", "the push channel");
     const before = catchUps;
