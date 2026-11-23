@@ -4,7 +4,7 @@ Look up the public API and exact collaboration contracts here. For a runnable in
 
 ## Compatibility
 
-List moves and the `transform` event were introduced in Articollab 0.9. If the npm `latest` tag still points to 0.8, use `pnpm add articollab@beta` to try these features.
+Articollab 0.10 adds undo and redo, `track()` and `settled()`, payload schemas, Counters, presence and store `slots`. Articollab 0.9 added List moves and the `transform` event.
 
 Upgrade all participating runtimes before exchanging new operations or snapshot formats. See the [0.10 upgrade guide](recovery.md#upgrading-from-09-to-010) for Counters, the [0.9 upgrade guide](recovery.md#upgrading-from-08-to-09) for List moves and the [0.8 upgrade guide](recovery.md#upgrading-from-07-to-08) for Map and checkpoint stores.
 

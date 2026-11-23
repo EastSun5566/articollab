@@ -168,6 +168,8 @@ Writing the value a key already holds (by `Object.is`), deleting an absent key, 
 
 ## Undo and redo
 
+Undo requires [Articollab 0.10 or later](reference.md#compatibility).
+
 `createUndoManager(doc)` records this writer's own changes as steps and reverts them on request. Undo and redo are ordinary local edits: they are sent, resolved and acknowledged like any other batch.
 
 ```ts
