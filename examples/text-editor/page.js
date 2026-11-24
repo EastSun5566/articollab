@@ -23,7 +23,7 @@ function inspect(pane) {
   pane.details.hidden = false;
 }
 
-/** Explicit mount keeps imports free of DOM, requests and writer registration.
+/** Mounts two writers into `root`, synced with the host at `url`.
  * @param {HTMLElement} root @param {string} url
  */
 export async function mountTextEditors(root, url) {
@@ -134,7 +134,7 @@ export async function mountTextEditors(root, url) {
         readOnly = next;
         queueMicrotask(() => { if (!destroyed) editor?.setReadOnly(readOnly); });
       }
-      // checkpoint() copies the document, so the pending count is refreshed at most every 250 ms.
+      // At most every 250 ms: checkpoint() copies the document.
       function refresh() {
         const shown = describeSync(sync.status, sync.push, network.offline);
         badge.textContent = shown.text;

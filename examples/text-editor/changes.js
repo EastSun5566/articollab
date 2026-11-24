@@ -1,10 +1,8 @@
 // @ts-check
 
 /**
- * Text indices count elements, while CodeMirror offsets count UTF-16 units. Only elements
- * two units long (supplementary code points) make them differ; separately inserted surrogate
- * halves are one unit each. Keeping just their sorted indices makes BMP documents O(1) to map,
- * and others O(log w) to map and O(w) to update, where w is the number of wide elements.
+ * Text counts code points; CodeMirror counts UTF-16 units. They differ only at elements two units
+ * long, such as most emoji, so the mirror keeps just those elements' indices, sorted.
  * @typedef {{ readonly length: number, readonly wide: readonly number[] }} TextMirror
  */
 
