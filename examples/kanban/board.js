@@ -155,78 +155,51 @@ export function moveCard(doc, cardId, toColumn, toIndex) {
 }
 
 /**
- * The renames, moves and votes the policy dropped because another writer deleted the card first,
- * from a `transform` event's or outcome's `dropped` operations.
- * @param {readonly import("../../dist/index.js").DocumentOperation<Shape>[]} dropped
- * @returns {{ kind: "rename" | "move" | "vote", id: string, title?: string }[]} In batch order, at most one of each kind per card.
+ * What to tell this writer about its edits the server did not apply because another writer deleted
+ * the card first: a `transform` event's `dropped` or a `discard` event's `operations`. One message
+ * per card and kind, in batch order.
+ * @param {readonly import("../../dist/index.js").DocumentOperation<Shape>[]} operations
+ * @returns {string[]}
  */
-export function droppedEdits(dropped) {
-  /** @type {Map<string, { kind: "rename" | "move" | "vote", id: string, title?: string }>} */
-  const edits = new Map();
-  for (const operation of dropped) {
-    if (operation.type === "counterMap/add") edits.set(`vote:${operation.key}`, { kind: "vote", id: operation.key });
-    if (operation.type !== "map/set") continue;
-    if (operation.path === "titles") edits.set(`rename:${operation.key}`, { kind: "rename", id: operation.key, title: operation.value });
-    else if (operation.path === "columns" && !edits.has(`move:${operation.key}`)) edits.set(`move:${operation.key}`, { kind: "move", id: operation.key });
+export function describeDropped(operations) {
+  /** @type {Map<string, string>} */
+  const messages = new Map();
+  for (const operation of operations) {
+    if (operation.type === "map/set" && operation.path === "titles") {
+      messages.set(`rename:${operation.key}`, `Not saved: “${operation.value}”. Another writer deleted this card.`);
+    } else if (operation.type === "counterMap/add") {
+      messages.set(`vote:${operation.key}`, "Vote not counted: another writer deleted this card.");
+    } else if ((operation.type === "map/set" && operation.path === "columns") || operation.type === "list/move") {
+      // A List move names the card's element ID, not its card ID: one move notice per batch is enough.
+      messages.set("move", "Not moved: another writer deleted that card.");
+    }
   }
-  return [...edits.values()];
+  return [...messages.values()];
 }
 
 /**
- * The rename a batch's outcome lost because another writer deleted the card first.
- * @param {import("../../dist/index.js").BatchOutcome<import("../../dist/index.js").DocumentOperation<Shape>>} outcome
- * @returns {Card | undefined}
+ * Calls `listener` with each message about this writer's edits the server dropped, from undo and
+ * restored batches too. A dropped move can show up in both events of one commit; it is told once.
+ * @param {BoardDocument} doc @param {(message: string) => void} listener
+ * @returns {() => void} Stops listening.
  */
-export function lostRename(outcome) {
-  const edit = droppedEdits(outcome.dropped).find(({ kind }) => kind === "rename");
-  return edit === undefined ? undefined : { id: edit.id, title: edit.title ?? "" };
-}
-
-/**
- * Tells this writer about edits the server did not apply: moves from document events, renames and
- * votes per batch through `follow()`. Edits cancelled through `cancel()` are not reported.
- * @param {BoardDocument} doc @param {(message: string) => void} notify
- */
-export function watchDroppedEdits(doc, notify) {
-  let cancelling = false, movedNotice = -1;
-  /** @param {number} serverSeq */
-  const notMoved = (serverSeq) => {
-    if (movedNotice === serverSeq) return;
-    movedNotice = serverSeq;
-    notify("Not moved: another writer deleted that card.");
+export function onDroppedEdits(doc, listener) {
+  let commit = -1;
+  /** @type {Set<string>} */
+  let told = new Set();
+  /** @param {number} serverSeq @param {readonly import("../../dist/index.js").DocumentOperation<Shape>[]} operations */
+  const tell = (serverSeq, operations) => {
+    if (serverSeq !== commit) { commit = serverSeq; told = new Set(); }
+    for (const message of describeDropped(operations)) {
+      if (told.has(message)) continue;
+      told.add(message);
+      listener(message);
+    }
   };
-  const stopTransform = doc.on("transform", ({ commit, dropped }) => {
-    if (cancelling) return;
-    for (const edit of droppedEdits(dropped)) if (edit.kind === "move") notMoved(commit.serverSeq);
-  });
-  // A List move of a deleted card changed nothing; the server reports it on acknowledgement.
-  const stopDiscard = doc.on("discard", ({ commit, operations }) => {
-    if (!cancelling && operations.some((operation) => operation.type === "list/move")) notMoved(commit.serverSeq);
-  });
-  return {
-    /**
-     * Reports the rename or vote a tracked batch loses, once the server has decided; from `doc.track()` or,
-     * for a batch restored from a checkpoint, `doc.settled(batch)`.
-     * @param {Promise<import("../../dist/index.js").BatchOutcome<import("../../dist/index.js").DocumentOperation<Shape>> | undefined>} settled
-     */
-    follow(settled) {
-      void settled.then((outcome) => {
-        if (outcome === undefined || cancelling) return;
-        const lost = lostRename(outcome);
-        if (lost !== undefined) notify(`Not saved: “${lost.title}”. Another writer deleted this card.`);
-        if (droppedEdits(outcome.dropped).some(({ kind }) => kind === "vote")) notify("Vote not counted: another writer deleted this card.");
-      });
-    },
-    /**
-     * Runs the writer's own cancellation, such as `sync.rejectPending()`, without reporting it.
-     * @template T @param {() => Promise<T>} cancellation @returns {Promise<T>}
-     */
-    async cancel(cancellation) {
-      cancelling = true;
-      try { return await cancellation(); } finally { cancelling = false; }
-    },
-    stop() { stopTransform(); stopDiscard(); },
-  };
+  const stopTransform = doc.on("transform", (event) => { tell(event.commit.serverSeq, event.dropped); });
+  // A List move of a deleted card changes nothing, so the commit still matches the batch: `discard` reports it.
+  const stopDiscard = doc.on("discard", (event) => { tell(event.commit.serverSeq, event.operations); });
+  return () => { stopTransform(); stopDiscard(); };
 }
 
 /**
