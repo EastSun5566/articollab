@@ -215,7 +215,7 @@ describe("WebSocket transport", () => {
 });
 
 describe("WebSocket transport, scripted", () => {
-  it("takes pushes only once its subscribe is answered, since earlier ones belong to a replaced subscription", async () => {
+  it("takes pushes only once its subscribe is answered, including pushes that arrive in the same task", async () => {
     const sockets: Scripted[] = [];
     class Scripted {
       readonly sent: Record<string, unknown>[] = [];
@@ -237,15 +237,17 @@ describe("WebSocket transport, scripted", () => {
     const socket = sockets[0]!;
     for (const push of [{ type: "commits", commits: [] }, { type: "presence", clientId: "x", state: null }, { type: "gap" }]) socket.receive(push);
     assert.deepEqual(seen, [], "pushes before the reply are ignored");
+    // A socket can dispatch the reply and the pushes after it in one task, with no microtask between.
     socket.receive({ id: socket.sent[0]!.id, status: 200 });
-    await until(() => seen.length === 1, "the reply");
     socket.receive({ type: "commits", commits: [] });
+    socket.receive({ type: "presence", clientId: "x", state: null });
+    assert.deepEqual(seen, ["open", "commits", "presence"], "open first, then every push after the reply");
     socket.receive({ type: "ping" });
-    assert.deepEqual(seen, ["open", "commits", "ping"]);
+    assert.deepEqual(seen, ["open", "commits", "presence", "ping"]);
     end?.();
     await until(() => socket.sent.at(-1)?.type === "unsubscribe", "the unsubscribe");
     transport.close?.();
-    assert.deepEqual(seen, ["open", "commits", "ping"], "closing after unsubscribing reports nothing");
+    assert.deepEqual(seen, ["open", "commits", "presence", "ping"], "closing after unsubscribing reports nothing");
   });
 });
 

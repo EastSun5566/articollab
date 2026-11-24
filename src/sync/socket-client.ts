@@ -128,16 +128,18 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): Sy
     }
     return connecting;
   }
-  async function request(message: Record<string, unknown>): Promise<Answer> {
+  /** Sends one request on the current socket; `waiter` hears its answer as soon as the reply arrives. */
+  async function send(message: Record<string, unknown>, waiter: { resolve(answer: Answer): void; reject(error: unknown): void }) {
     const socket = await connect();
     // It may have closed meanwhile; a closed WebSocket drops sends without an error.
     if (socket !== current) throw new SyncConnectionError("WebSocket closed");
     const id = nextId++;
-    return new Promise((resolve, reject) => {
-      waiting.set(id, { resolve, reject });
-      try { socket.send(JSON.stringify({ id, ...message })); }
-      catch (cause) { waiting.delete(id); reject(new SyncConnectionError("WebSocket send failed", { cause })); }
-    });
+    waiting.set(id, waiter);
+    try { socket.send(JSON.stringify({ id, ...message })); }
+    catch (cause) { waiting.delete(id); throw new SyncConnectionError("WebSocket send failed", { cause }); }
+  }
+  function request(message: Record<string, unknown>): Promise<Answer> {
+    return new Promise((resolve, reject) => { send(message, { resolve, reject }).catch(reject); });
   }
 
   return {
@@ -151,18 +153,23 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): Sy
     subscribe(watermark: number, handlers: SyncSubscription) {
       const mine = { handlers, active: true, opened: false };
       subscription = mine;
-      void request({ type: "subscribe", since: watermark }).then((answer) => {
-        if (!mine.active) return;
-        if (answer.status === 200) { mine.opened = true; handlers.onOpen(); return; }
-        mine.active = false;
-        if (subscription === mine) subscription = undefined;
-        handlers.onEnd(new SyncRequestError(answer.status));
-      }, (cause: unknown) => {
+      const end = (cause: unknown) => {
         if (!mine.active) return;
         mine.active = false;
         if (subscription === mine) subscription = undefined;
         handlers.onEnd(cause);
-      });
+      };
+      // Handled as the reply arrives, not a microtask later: the pushes that follow it on the socket
+      // can be dispatched in the same task, and must find the subscription open.
+      send({ type: "subscribe", since: watermark }, {
+        resolve(answer) {
+          if (!mine.active) return;
+          if (answer.status !== 200) { end(new SyncRequestError(answer.status)); return; }
+          mine.opened = true;
+          handlers.onOpen();
+        },
+        reject: end,
+      }).catch(end);
       return () => {
         if (!mine.active) return;
         mine.active = false;
