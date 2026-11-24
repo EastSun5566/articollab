@@ -24,4 +24,4 @@ Save the checkpoint after a successful receive. A local change can fire before s
 
 Authenticate the caller in your application and bind them to a writer session. The [namespace check](server-wire.md#incoming-insertion-namespaces) validates the ownership of insertion IDs within the batch.
 
-[Previous: Core reference](reference.md) · [Back to Overview](README.md)
+[Previous: Upgrading](upgrading.md) · [Back to Overview](README.md)

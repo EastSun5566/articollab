@@ -12,22 +12,22 @@ pnpm add articollab
 
 ## Quick start
 
-Save this example as `counter.ts` and run `node counter.ts`.
+Save this example as `score.ts` and run `node score.ts`.
 
 ```ts
 import { createClient, createServer, defineDocument, value } from "articollab";
 
-const Counter = defineDocument({ count: value(0) });
-const server = createServer(Counter);
-const doc = createClient(Counter, {
+const Score = defineDocument({ points: value(0) });
+const server = createServer(Score);
+const doc = createClient(Score, {
   clientId: server.openClient(),
   onBatch(batch) {
     doc.receive(server.receive(batch).commit);
   },
 });
 
-doc.state.count.value = 1;
-console.log(doc.state.count.value); // 1
+doc.state.points.value = 1;
+console.log(doc.state.points.value); // 1
 ```
 
 The example opens a writer session, submits one edit and delivers the server commit back to the writer. It prints `1`.

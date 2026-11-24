@@ -1,12 +1,12 @@
 # Core reference
 
-Look up the public API and exact collaboration contracts here. For a runnable introduction, start with the [Counter quick start](quick-start.md); for design reasons, read [Concepts](concepts.md).
+Look up the public API and exact collaboration contracts here. For a runnable introduction, start with the [Quick start](quick-start.md); for design reasons, read [Concepts](concepts.md).
 
 ## Compatibility
 
 Articollab 0.10 adds undo and redo, `track()` and `settled()`, payload schemas, Counters, presence, store `slots` and the WebSocket transport. Articollab 0.9 added List moves and the `transform` event.
 
-Upgrade all participating runtimes before exchanging new operations or snapshot formats. See the [0.10 upgrade guide](recovery.md#upgrading-from-09-to-010) for Counters, the [0.9 upgrade guide](recovery.md#upgrading-from-08-to-09) for List moves and the [0.8 upgrade guide](recovery.md#upgrading-from-07-to-08) for Map and checkpoint stores.
+Upgrade every runtime that reads a document before it exchanges new operations or snapshot formats; see [Upgrading](upgrading.md).
 
 Numeric options, indices and counts follow one rule: a non-number throws `TypeError`, and a number that is out of range or not an integer throws `RangeError`. Size and count limits are named `max*`, and objects that hold connections, locks or storage are released with `close()`.
 
@@ -312,4 +312,4 @@ The server uses explicit writer sessions. Examples demonstrate application orche
 
 The [sync adapter](sync.md) provides HTTP transport with push, polling and retries, plus IndexedDB and file checkpoint stores; there is no server-side storage adapter, snapshot fallback, schema migration, auth, writer coordination, rich text, bulk List editing or move between Lists. Tabs opening one store key with `slots` are separate writers: they exchange edits only through the server, never share undo history or unsent edits, and do not see each other's edits while offline. Presence lives in one handler's memory, best-effort, and is not saved or shared between server instances; there is no selection type or remote-caret rendering. Same-ID server rollback/forks, power-loss durability and cross-file transactions are not promised. These omissions do not imply a schedule for adding them.
 
-[Previous: Sync adapter](sync.md) · [Next: FAQ](faq.md)
+[Previous: Sync adapter](sync.md) · [Next: Upgrading](upgrading.md)

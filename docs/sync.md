@@ -155,11 +155,11 @@ Presence requires [Articollab 0.10 or later](reference.md#compatibility).
 Presence is what each writer wants the others to see right now, such as a name and a selection, but that is not part of the document. Enable it on the handler and the client, and it travels over the same push channel:
 
 ```ts
-const handleSync = createSyncHandler(Counter, server, { presence: {} });
+const handleSync = createSyncHandler(Board, server, { presence: {} });
 const transport = createHttpTransport({ url: "https://example.test/sync/" });
-const sync = await connectSync(Counter, { transport, presence: {} });
+const sync = await connectSync(Board, { transport, presence: {} });
 
-sync.presence.set({ name: "Ann", editing: "count" });
+sync.presence.set({ name: "Ann", editing: "items" });
 sync.presence.on("change", (peers) => {
   for (const [clientId, state] of peers) console.log(clientId, state);
 });

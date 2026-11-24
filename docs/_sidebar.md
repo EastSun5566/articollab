@@ -1,5 +1,5 @@
 - [Overview](README.md)
-- [Counter quick start](quick-start.md)
+- [Quick start](quick-start.md)
 - [Concepts](concepts.md)
 - [Value, List, Text, Map and Counter](collections.md)
 - [Transactions and events](transactions.md)
@@ -7,4 +7,5 @@
 - [Recovery](recovery.md)
 - [Sync adapter](sync.md)
 - [Core reference](reference.md)
+- [Upgrading](upgrading.md)
 - [FAQ](faq.md)

@@ -61,13 +61,13 @@ const stop = doc.on("discard", ({ operations }) => {
 });
 ```
 
-`set()` requires a visible index in `0..length-1`. Setting the same value still records a local write. Pending updates follow the original ID even if another insertion changes its index. See [upgrade guidance](recovery.md#upgrading-from-02-to-03) before exchanging these operations.
+`set()` requires a visible index in `0..length-1`. Setting the same value still records a local write. Pending updates follow the original ID even if another insertion changes its index.
 
 To update a view without calling `toArray()` after every change, subscribe with `doc.state.items.observe()`; it reports `set()` as an in-place `set` change. See [Update a list view incrementally](transactions.md#update-a-list-view-incrementally).
 
 ### Move an element
 
-List moves require [Articollab 0.9 or later](reference.md#compatibility). Before enabling moves in a shared document, [upgrade all its readers](recovery.md#upgrading-from-08-to-09).
+List moves require [Articollab 0.9 or later](reference.md#compatibility). Before enabling moves in a shared document, [upgrade all its readers](upgrading.md#upgrading-from-08-to-09).
 
 `move(from, to)` moves the element at index `from` so that it ends at index `to`, like moving an array item. With the List above containing `"Implement API"`:
 
@@ -83,7 +83,7 @@ Delete + insert inside a transaction still creates a new element identity. If tw
 
 ## Map: keyed values
 
-Map requires Articollab 0.8 or later. When adding Map to a shared document, [upgrade its readers first](recovery.md#upgrading-from-07-to-08).
+Map requires Articollab 0.8 or later. When adding Map to a shared document, [upgrade its readers first](upgrading.md).
 
 A Map holds JSON values under string keys at one schema path. It starts empty:
 
@@ -116,7 +116,7 @@ Map updates have no `discard` event: a `set` is never a no-op, because it recrea
 
 ## Counter: additions that all count
 
-Counters require Articollab 0.10 or later. When adding one to a shared document, [upgrade its readers first](recovery.md#upgrading-from-09-to-010).
+Counters require Articollab 0.10 or later. When adding one to a shared document, [upgrade its readers first](upgrading.md#upgrading-from-09-to-010).
 
 A Value records the number a writer set, so two writers who each turn 1 into 2 leave 2: one increment is lost. A Counter records what each writer added, and the server adds every addition in order, so pending additions replay on top of everyone else's. `counter(initialValue = 0)` holds one integer; `counterMap()` holds one integer per string key, such as votes per card:
 
