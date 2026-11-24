@@ -781,6 +781,7 @@ Messages are JSON objects. Each request has a non-negative integer `id`. Its rep
 - States live only in the handler's memory, keyed by client ID. `null` removes one.
 - A state not sent again within `ttl` milliseconds (30,000 by default; it must be positive) is removed by a sweep that runs every third of `ttl` while any state exists.
 - A state sent over a WebSocket is also removed when that socket closes, unless a later message, from either transport, set it again.
+- `server.closeClient()` removes the closed session's state at once, whichever transport sent it.
 - Each change is pushed to every subscriber; on an event stream as `event: presence` with the data `{ clientId, state }`, `null` for a removal. Re-sending an identical state only extends its life.
 - A new subscriber receives every current state after its commits.
 - Presence frames share the stream's queue limit and end the stream like commit frames when it is full.

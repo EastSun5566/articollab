@@ -9,6 +9,7 @@ import {
 } from "../index.ts";
 import { isJsonObject, jsonEquals, validateJsonValue } from "../json.ts";
 import { integerOption } from "../options.ts";
+import { hasOpenClient, onClientClosed } from "../runtime.ts";
 import { checkPayload, type PayloadSchema } from "../payload.ts";
 import type { JsonValue } from "../schema.ts";
 import {
@@ -215,6 +216,9 @@ export function createSyncHandler<S extends SchemaShape>(
     } else if (presence.size === 0 && sweeper !== undefined) { clearInterval(sweeper); sweeper = undefined; }
   }
 
+  // A closed session's state goes at once, not when its TTL runs out.
+  if (options.presence !== undefined) onClientClosed(server, (clientId) => { setPresence(clientId, null); });
+
   const core: SyncCore = {
     maxMessageSize: maxBodySize,
     heartbeatInterval,
@@ -272,7 +276,7 @@ export function createSyncHandler<S extends SchemaShape>(
         } catch { return failure(400, "Invalid presence state"); }
       }
       if (!(await allowed("presence", clientId))) return failure(403, "Forbidden");
-      if (!server.listClients().some((session) => session.clientId === clientId)) return failure(409, "Unknown client session");
+      if (!hasOpenClient(server, clientId)) return failure(409, "Unknown client session");
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Checked to be JSON above.
       setPresence(clientId, state as JsonValue | null, owner);
       return { status: 204 };

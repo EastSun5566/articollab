@@ -6,6 +6,7 @@ import {
   connectSync, createHttpTransport, createSyncHandler,
   type PresenceSyncClient, type SyncHandlerOptions,
 } from "../src/sync/index.ts";
+import { onClientClosed } from "../src/runtime.ts";
 
 const Board = defineDocument({ items: list<string>() });
 type Shape = typeof Board.definition;
@@ -149,6 +150,40 @@ describe("Presence over the sync channel", () => {
         async submit() {}, async reject() {}, async commitsSince() { return []; },
       },
     }), /publishPresence/);
+  });
+
+  it("drops a state as soon as server.closeClient() closes its session, and checks sessions without listing them", async (t) => {
+    const fixture = setup(t, { presence: { schema: named, ttl: 60_000 } });
+    const a = await fixture.writer(), b = await fixture.writer(), watcher = await fixture.writer();
+    a.presence.set({ name: "Ann" });
+    b.presence.set({ name: "Ben" });
+    await until(() => names(watcher).length === 2, "both states");
+    const aId = a.doc.checkpoint().clientId;
+    fixture.server.closeClient(aId);
+    await until(() => names(watcher).join() === "Ben", "A's state to go with its session, long before the TTL", 1000);
+    assert.equal((await fixture.post({ clientId: aId, state: { name: "Ann" } })).status, 409, "a closed session cannot publish");
+
+    const listClients = fixture.server.listClients.bind(fixture.server);
+    let lists = 0;
+    fixture.server.listClients = () => { lists++; return listClients(); };
+    for (let index = 0; index < 50; index++) b.presence.set({ name: `Ben ${index}` });
+    await until(() => names(watcher).includes("Ben 49"), "B's last state");
+    assert.equal(lists, 0, "publishing presence does not list every session");
+  });
+
+  it("tells the handler only when an open session closes", () => {
+    const server = createServer(Board);
+    createSyncHandler(Board, server); // Without presence, closing still works.
+    const closed: string[] = [];
+    const stop = onClientClosed(server, (clientId) => { closed.push(clientId); });
+    const first = server.openClient(), second = server.openClient();
+    server.closeClient(first);
+    server.closeClient(first);
+    assert.deepEqual(closed, [first], "closing a closed session is not news");
+    assert.throws(() => { server.closeClient("client-99"); }, TypeError);
+    stop();
+    server.closeClient(second);
+    assert.deepEqual(closed, [first]);
   });
 
   it("refuses presence timings that are not positive integers", async () => {
