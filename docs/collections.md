@@ -77,7 +77,14 @@ doc.state.items.move(1, 0);
 console.log(doc.state.items.toArray()); // ["Write tests", "Implement API"]
 ```
 
-The element keeps its identity: a peer's `set()` or `delete()` aimed at it still applies after the move, and a concurrent move of the same element is decided by server order, so the element never appears twice. Moving an element that a peer deleted first changes nothing and is reported through `discard`, like a lost `set()`. A cursor bound to a moved element stays at the element's old gap, as it would after a deletion. Moves stay within one List; to move an item between Lists, delete and insert it, or keep one List and record the group in a [Map](#map-keyed-values), as the [Kanban board example](https://github.com/EastSun5566/articollab/blob/main/examples/README.md#kanban-board) does.
+The element keeps its identity:
+
+- A peer's `set()` or `delete()` aimed at it still applies after the move.
+- When two writers move the same element, server order decides, so the element never appears twice.
+- Moving an element that a peer already deleted changes nothing, and is reported through `discard` like a lost `set()`.
+- A cursor bound to a moved element stays at the element's old gap, as it would after a deletion.
+
+Moves stay within one List. To move an item between Lists, delete and insert it, or keep one List and record each item's group in a [Map](#map-keyed-values), as the [Kanban board example](https://github.com/EastSun5566/articollab/blob/main/examples/README.md#kanban-board) does.
 
 Delete + insert inside a transaction still creates a new element identity. If two writers concurrently do this for the same old element, both new insertions can remain: the second deletion targets an already-deleted ID.
 
@@ -198,7 +205,9 @@ const Board = defineDocument({
 });
 ```
 
-Every value written is validated: locally before the edit changes anything, and again by the server before its resolver runs and before it applies the resolver's result, so a writer that skips the check cannot store an invalid value. A rejected value throws `PayloadValidationError`, a `TypeError` with the collection `path` (and the Map key) and the schema's `issues`. Schemas must validate synchronously. They only check: the value written is the one you passed, never a transformed output such as a trimmed or defaulted copy.
+Every value written is validated twice: locally, before the edit changes anything, and by the server, before its resolver runs and again before it applies the resolver's result. So a writer that skips the check still cannot store an invalid value.
+
+A rejected value throws `PayloadValidationError`, a `TypeError` with the collection `path` (and the Map key) and the schema's `issues`. Schemas must validate synchronously, and they only check: the value kept is the one you passed, never a transformed output such as a trimmed or defaulted copy.
 
 A schema can also be a small object of your own, with no dependency:
 
@@ -275,9 +284,16 @@ deliver();
 console.log(bob.state.body.cursorIndex(caret)); // 13
 ```
 
-`cursorAt(index, bind?)` takes a gap index in `0..length`. With the default `"left"`, the cursor binds to the element before the gap; an insertion into that gap lands after the cursor, which suits a text caret. With `"right"`, it binds to the element after the gap and an insertion lands before it. When the bound element is deleted, the cursor moves to the nearest surviving gap on its side. Cursors at the very start (`"left"`) or end (`"right"`) store no element and stay there.
+`cursorAt(index, bind?)` takes a gap index in `0..length`:
 
-`cursorIndex(cursor)` returns `undefined` while the cursor's element is unknown to that document: a peer's pending insertion that has not been committed and received yet, an insertion the server rejected or a transaction rolled back, or a cursor from another collection. Hide that position or keep showing its previous index, and try again after the next change. Deleted elements stay known, so cursors keep resolving after snapshot loads and checkpoint restores. [Undo](transactions.md#undo-and-redo) brings a deleted element back with a new ID, so a cursor bound to the old element keeps resolving to the nearest gap, not to the restored element.
+- With the default `"left"`, the cursor binds to the element before the gap, and an insertion into that gap lands after the cursor. This suits a text caret.
+- With `"right"`, it binds to the element after the gap, and an insertion lands before it.
+- When the bound element is deleted, the cursor moves to the nearest surviving gap on its side.
+- Cursors at the very start (`"left"`) or end (`"right"`) store no element and stay there.
+
+`cursorIndex(cursor)` returns `undefined` while the cursor's element is unknown to that document: a peer's insertion not yet committed and received, an insertion the server rejected or a transaction rolled back, or a cursor from another collection. Hide that position or keep showing its previous index, and try again after the next change.
+
+Deleted elements stay known, so cursors keep resolving after snapshot loads and checkpoint restores. [Undo](transactions.md#undo-and-redo) brings a deleted element back with a new ID, so a cursor bound to the old element keeps resolving to the nearest gap, not to the restored element.
 
 Validate received cursors with `decodeCursor()`, like other wire data. Articollab provides the positions, and the sync adapter can [share them as presence](sync.md#share-presence), with expiry; drawing remote carets is up to the application. Text cursor indices count elements, like every other Text index, so convert them to editor offsets at the UI boundary. Both Text and List support cursors with the same methods.
 

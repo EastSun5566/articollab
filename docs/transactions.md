@@ -133,7 +133,9 @@ console.log(rows.map(({ key, card }) => `${key}:${card.title}:${card.done}`)); /
 stop();
 ```
 
-Apply changes in the supplied order: each index refers to the view after the changes before it. Moves come first; then splices and sets follow by descending index, with a set before a splice at the same index, so without moves every index is in the pre-event view. A set means the same element changed value, and a move means the same element changed position. A delete-and-reinsert still arrives as two splices and gets a new key; use `move()` to keep it. Payloads keep `Object.is` identity: an acknowledgement that replaces an object with an equal decoded copy is reported as a set, which a view may skip after its own equality check.
+Apply changes in the order given: each index refers to the view after the changes before it. Moves come first. Then splices and sets follow by descending index, with a set before a splice at the same index, so without moves every index is in the pre-event view.
+
+A set means the same element changed value, and a move means the same element changed position. A delete-and-reinsert still arrives as two splices and gets a new key; use `move()` to keep it. Payloads keep `Object.is` identity: an acknowledgement that replaces an object with an equal decoded copy is reported as a set, which a view may skip after its own equality check.
 
 ## Update a view from a Map
 
@@ -216,7 +218,9 @@ console.log(doc.state.items.toArray()); // [ 'Write docs', 'Ship', 'Added by the
 
 `undo()`, `redo()` and `stopCapturing()` end open groups. Ignored changes are still ordinary edits that are sent, and later undos skip what they changed, like a peer's change.
 
-Only this writer's changes are recorded, and undo never overwrites a later change by someone else. It reverts a value, Map key or List element only while it still holds what this writer wrote; a step another writer has entirely superseded is skipped, and `undo()` moves on to the next one. Undoing a deletion inserts the element again at its place with a new ID, which later steps follow. A Counter is never superseded: undo adds the opposite of this writer's additions, so other writers' additions stay. See the [exact rules](reference.md#undo-and-redo).
+Only this writer's changes are recorded, and undo never overwrites a later change by someone else. It reverts a value, Map key or List element only while it still holds what this writer wrote. A step that another writer has entirely replaced is skipped, and `undo()` moves on to the next one.
+
+Undoing a deletion inserts the element again at its place with a new ID, which later steps follow. A Counter is never superseded: undo adds the opposite of this writer's additions, so other writers' additions stay. See the [exact rules](reference.md#undo-and-redo).
 
 ## Callback failure is not rollback
 
