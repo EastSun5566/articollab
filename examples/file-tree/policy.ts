@@ -8,6 +8,7 @@ import { isWithin, ROOT, uniqueName, type Shape, type TreeOperation } from "./tr
  *   node's name and kind;
  * - a node's kind is set once: a change, such as a folder with children turning into a file, is dropped;
  * - a name taken in the folder becomes `name (2)`;
+ * - a name or kind is deleted only with its node, so no node is left without one;
  * - deleting a folder also deletes whatever the server has below it.
  * Not authorization.
  */
@@ -77,6 +78,8 @@ export function resolveTree({ batch, snapshot }: ServerResolveContext<Shape>): r
         changed = true;
       }
     } else {
+      // An undone create whose node another writer has since moved keeps its parent, so it keeps these too.
+      if (parents.has(operation.key)) { changed = true; continue; }
       (operation.path === "names" ? names : kinds).delete(operation.key);
       kept.push(operation);
     }

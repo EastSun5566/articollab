@@ -43,7 +43,10 @@ function network(server: ServerDocument<Shape> = createTreeServer()) {
   function serverPaths() {
     const { data } = server.snapshot();
     const doc = createClient(Tree, { clientId: server.openClient(), snapshot: server.snapshot(), onBatch() {} });
-    for (const parent of Object.values(data.parents)) assert.ok(parent === ROOT || parent in data.parents, "no orphans");
+    for (const [id, parent] of Object.entries(data.parents)) {
+      assert.ok(parent === ROOT || parent in data.parents, "no orphans");
+      assert.ok(id in data.names && id in data.kinds, "every node keeps its name and kind");
+    }
     return allPaths(doc);
   }
   return { server, writer, serverPaths };
@@ -148,6 +151,28 @@ describe("Folder tree under concurrent edits", () => {
     a.send(); a.receive();
     assert.equal(n.server.snapshot().data.kinds["seed-docs"], "folder");
     assert.equal(a.doc.state.kinds.get("seed-docs"), "folder");
+    assert.deepEqual(n.serverPaths(), SEEDED);
+  });
+
+  it("keeps a node's name and kind when undoing its create after another writer moved it", () => {
+    const n = network(), a = n.writer(), b = n.writer();
+    const history = createUndoManager(a.doc, { captureTimeout: 0 });
+    const id = createNode(a.doc, "seed-docs", "file", "draft.md");
+    a.send(); b.receive();
+    assert.ok(moveNode(b.doc, id, "seed-src"));
+    b.send(); a.receive();
+    // The move is B's, so undo leaves the node's place alone but still writes its name and kind away.
+    assert.ok(history.undo());
+    a.send(); a.receive(); b.receive();
+    for (const writer of [a, b]) assert.deepEqual(writer.paths(), [...SEEDED.slice(0, 3), "src/draft.md", ...SEEDED.slice(3)]);
+    assert.deepEqual(n.serverPaths(), a.paths());
+  });
+
+  it("drops a name or kind delete sent without deleting its node", () => {
+    const n = network(), a = n.writer();
+    a.doc.transact(() => { a.doc.state.names.delete("seed-notes"); a.doc.state.kinds.delete("seed-notes"); });
+    a.send(); a.receive();
+    assert.deepEqual(a.paths(), SEEDED);
     assert.deepEqual(n.serverPaths(), SEEDED);
   });
 
