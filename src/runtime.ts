@@ -1271,10 +1271,19 @@ function checkOperationPayloads(definition: Readonly<SchemaShape>, operations: r
   }
 }
 
+/** Internal: whether a writer session is open, without listing sessions. Initialized by ServerDocument. */
+export let hasOpenClient: <S extends SchemaShape>(server: ServerDocument<S>, clientId: string) => boolean;
+
+/** Internal: calls `listener` after `closeClient()` closes an open session; returns the function that stops it. */
+export let onClientClosed: <S extends SchemaShape>(
+  server: ServerDocument<S>, listener: (clientId: string) => void
+) => () => void;
+
 /** A synchronous authoritative document that resolves and orders client batches. */
 export class ServerDocument<S extends SchemaShape> {
   private authoritativeStates: Map<string, CollectionState>;
   private readonly clients: Map<string, ServerReplayEntry<DocumentOperation<S>> | null>;
+  private readonly closeListeners = new Set<(clientId: string) => void>();
   private lastClientNumber: number;
   private readonly maxHistory: number;
   private readonly maxClients: number | undefined;
@@ -1286,6 +1295,15 @@ export class ServerDocument<S extends SchemaShape> {
   private readonly definition: Readonly<S>;
   private nextServerSeq = 1;
   private receiving = false;
+
+  static {
+    hasOpenClient = <Shape extends SchemaShape>(server: ServerDocument<Shape>, clientId: string): boolean =>
+      server.clients.has(clientId);
+    onClientClosed = <Shape extends SchemaShape>(server: ServerDocument<Shape>, listener: (clientId: string) => void) => {
+      server.closeListeners.add(listener);
+      return () => { server.closeListeners.delete(listener); };
+    };
+  }
 
   constructor(
     schema: DocumentSchema<S>,
@@ -1344,7 +1362,8 @@ export class ServerDocument<S extends SchemaShape> {
     if (number === undefined || number > this.lastClientNumber) {
       throw new TypeError("Unknown client ID");
     }
-    this.clients.delete(clientId);
+    if (!this.clients.delete(clientId)) return;
+    for (const listener of [...this.closeListeners]) listener(clientId);
   }
 
   /** Lists open writer sessions in opening order, without copying state or history. */

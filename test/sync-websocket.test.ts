@@ -373,6 +373,22 @@ describe("SyncHandler.accept", () => {
     watcher.connection.close();
   });
 
+  it("drops a socket writer's state when server.closeClient() closes its session", async () => {
+    const server = createServer(Board);
+    const handle = createSyncHandler(Board, server, { presence: { ttl: 60_000 } });
+    const watcher = direct(handle);
+    await watcher.ask({ type: "subscribe", since: 0 });
+    const clientId = server.openClient();
+    const writer = direct(handle);
+    await writer.ask({ type: "presence", clientId, state: { name: "Sam" } });
+    server.closeClient(clientId);
+    const updates = () => watcher.sent.filter((entry) => entry.type === "presence").map((entry) => entry.state);
+    assert.deepEqual(updates(), [{ name: "Sam" }, null], "removed at once, while the socket is still open");
+    writer.connection.close();
+    assert.deepEqual(updates(), [{ name: "Sam" }, null], "and the socket closing later changes nothing");
+    watcher.connection.close();
+  });
+
   it("clears presence only for the socket that last sent it", async () => {
     const server = createServer(Board);
     const handle = createSyncHandler(Board, server, { presence: { ttl: 60_000 } });
