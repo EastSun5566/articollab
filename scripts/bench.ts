@@ -71,7 +71,7 @@ interface ExtendedResult extends Omit<Result, "kind" | "scenario"> {
 
 function extendedSettings(smoke: boolean) {
   return { ...settings(smoke), sizes: smoke ? [32] : [10_000, 50_000, 100_000],
-    historyLimits: smoke ? [0, 2, 4, 8] : [0, 1_000, 10_000, 100_000], seed: 42 };
+    historySizes: smoke ? [0, 2, 4, 8] : [0, 1_000, 10_000, 100_000], seed: 42 };
 }
 
 function settings(smoke: boolean) {
@@ -562,7 +562,7 @@ const gzipLevel = 6, brotliQuality = 4;
 
 function checkpointStorageSettings(smoke: boolean) {
   const { sizes, samples, warmups, seed } = extendedSettings(smoke);
-  return { sizes, historyLimits: smoke ? [0, 2] : [0, 1000], samples, warmups, seed, batchSize: 32,
+  return { sizes, historySizes: smoke ? [0, 2] : [0, 1000], samples, warmups, seed, batchSize: 32,
     gzipLevel, brotliQuality };
 }
 
@@ -1024,7 +1024,7 @@ async function checkpointStorage(smoke: boolean, json: boolean) {
   const config = checkpointStorageSettings(smoke), environment = await metadata();
   const results: Awaited<ReturnType<typeof checkpointStorageWorker>> = [];
   for (const size of config.sizes) {
-    for (const maxHistory of config.historyLimits) {
+    for (const maxHistory of config.historySizes) {
       try {
         const output = await execute(process.execPath, ["--expose-gc", filename, "--checkpoint-storage-worker",
           String(size), String(maxHistory), smoke ? "smoke" : "full"],
@@ -1056,7 +1056,7 @@ async function main(args: string[]): Promise<void> {
     const size = Number(args[1]), maxHistory = Number(args[2]), smoke = args[3] === "smoke";
     const config = checkpointStorageSettings(smoke);
     assert.ok(args.length === 4 && (smoke || args[3] === "full") && config.sizes.includes(size) &&
-      config.historyLimits.includes(maxHistory), "Invalid checkpoint storage worker arguments");
+      config.historySizes.includes(maxHistory), "Invalid checkpoint storage worker arguments");
     console.log(JSON.stringify(await checkpointStorageWorker(size, maxHistory, smoke)));
     return;
   }
@@ -1074,7 +1074,7 @@ async function main(args: string[]): Promise<void> {
     assert.ok(args.length === 5 && (kind === "text" || kind === "history") && scenario !== undefined &&
       (args[4] === "smoke" || args[4] === "full"), "Invalid extended worker arguments");
     const smoke = args[4] === "smoke", config = extendedSettings(smoke);
-    assert.ok(kind === "history" ? scenario === "history-receive" && config.historyLimits.includes(size) :
+    assert.ok(kind === "history" ? scenario === "history-receive" && config.historySizes.includes(size) :
       scenario !== "history-receive" && config.sizes.includes(size), "Invalid extended workload");
     console.log(JSON.stringify(await extendedWorker(kind, size, scenario, smoke)));
     return;
@@ -1119,7 +1119,7 @@ async function main(args: string[]): Promise<void> {
     const extended = extendedSettings(values.smoke === true);
     const workloads = [
       ...extended.sizes.flatMap((size) => extendedScenarios.map((scenario) => ({ kind: "text", size, scenario }))),
-      ...extended.historyLimits.map((size) => ({ kind: "history", size, scenario: "history-receive" })),
+      ...extended.historySizes.map((size) => ({ kind: "history", size, scenario: "history-receive" })),
     ];
     for (const { kind, size, scenario } of workloads) {
       try {

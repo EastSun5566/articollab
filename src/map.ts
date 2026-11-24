@@ -182,8 +182,8 @@ export function freezeMapOperation<Path extends string, T extends JsonValue>(
     : Object.freeze({ type: operation.type, path: operation.path, key: operation.key });
 }
 
-function requireKey(key: unknown): asserts key is string {
-  if (typeof key !== "string") throw new TypeError(`Map keys must be strings: ${String(key)}`);
+export function requireKey(key: unknown, kind = "Map"): asserts key is string {
+  if (typeof key !== "string") throw new TypeError(`${kind} keys must be strings: ${String(key)}`);
 }
 
 /** Internal mutable API wrapper around a persistent MapState. */

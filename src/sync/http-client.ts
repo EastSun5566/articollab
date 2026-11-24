@@ -1,4 +1,5 @@
 import type { ClientBatch, JsonValue } from "../index.ts";
+import { isJsonObject } from "../json.ts";
 import type { SyncSubscription, SyncTransport } from "./client.ts";
 import { SyncRequestError, SyncResponseError } from "./errors.ts";
 import { readServerSentEvents } from "./sse.ts";
@@ -13,8 +14,7 @@ export interface HttpTransportOptions {
 
 /** Checks a registration answer, from either transport. */
 export function readRegistration(input: unknown): { readonly clientId: string; readonly snapshot: unknown } {
-  if (input === null || typeof input !== "object" || Array.isArray(input) ||
-    !("clientId" in input) || typeof input.clientId !== "string" || !("snapshot" in input)) {
+  if (!isJsonObject(input) || typeof input.clientId !== "string" || !("snapshot" in input)) {
     throw new SyncResponseError("Invalid registration response");
   }
   return { clientId: input.clientId, snapshot: input.snapshot };

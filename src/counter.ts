@@ -1,5 +1,5 @@
 import { CollectionConflictError } from "./conflict.ts";
-import { MapState } from "./map.ts";
+import { MapState, requireKey } from "./map.ts";
 import { CollectionObservers, type ObserverTargets } from "./observe.ts";
 
 /** Adds a nonzero safe integer to a Counter. */
@@ -191,10 +191,6 @@ export function freezeCounterMapOperation<Path extends string>(
     : Object.freeze({ type: operation.type, path: operation.path, key: operation.key });
 }
 
-function requireKey(key: unknown): asserts key is string {
-  if (typeof key !== "string") throw new TypeError(`CounterMap keys must be strings: ${String(key)}`);
-}
-
 /** Internal mutable API wrapper around one Counter's total. */
 export class RuntimeCounter implements Counter {
   private current: number;
@@ -270,17 +266,17 @@ export class RuntimeCounterMap implements CounterMap {
   }
 
   get(key: string): number {
-    requireKey(key);
+    requireKey(key, "CounterMap");
     return this.current.get(key);
   }
 
   has(key: string): boolean {
-    requireKey(key);
+    requireKey(key, "CounterMap");
     return this.current.has(key);
   }
 
   add(key: string, delta: number): void {
-    requireKey(key);
+    requireKey(key, "CounterMap");
     requireDelta(delta, [this.path, key]);
     if (!Number.isSafeInteger(this.current.get(key) + delta)) {
       throw new RangeError(`Counter total leaves the safe integer range: ${this.path}/${key}`);
@@ -293,7 +289,7 @@ export class RuntimeCounterMap implements CounterMap {
   }
 
   delete(key: string): boolean {
-    requireKey(key);
+    requireKey(key, "CounterMap");
     this.beforeMutation();
     const present = this.current.has(key);
     const operation = freezeCounterMapOperation({ type: "counterMap/delete", path: this.path, key });

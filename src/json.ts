@@ -3,6 +3,10 @@ import type { JsonValue } from "./schema.ts";
 export type JsonPathSegment = string | number;
 type JsonFailure = (path: readonly JsonPathSegment[], message: string) => never;
 
+/** A non-null, non-array object, such as `JSON.parse` returns for `{...}`. */
+export const isJsonObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
 export function jsonPointer(path: readonly JsonPathSegment[]): string {
   if (path.length === 0) return "/";
   return path.map((segment) =>

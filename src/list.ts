@@ -628,8 +628,7 @@ export class ListState<T extends JsonValue> {
     }
   }
 
-  // Lists that never moved an element skip the lookups, and their key strings, entirely.
-  /** Where a known element sits, or its last position if deleted. */
+  /** Where a known element sits, or its last position if deleted. Lists that never moved skip the lookup. */
   positionFor(id: Readonly<ElementId>): Readonly<ElementId> {
     return this.positionOf.size === 0 ? id : this.positionOf.get(idKey(id)) ?? id;
   }
