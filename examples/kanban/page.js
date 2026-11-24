@@ -4,8 +4,8 @@ import { connectSync, createHttpTransport } from "../../dist/sync/index.js";
 import { createOfflineSwitch, describeSync } from "../shared/sync-ui.js";
 import { clearWriterStores, openWriterStore, readDocumentId } from "../shared/writer-store.js";
 import {
-  addCard, Board, cardFor, cardsIn, COLUMNS, createSelection, deleteCard, findCard, moveCard, renameCard, voteCard,
-  watchDroppedEdits,
+  addCard, Board, cardFor, cardsIn, COLUMNS, createSelection, deleteCard, findCard, moveCard, onDroppedEdits, renameCard,
+  voteCard,
 } from "./board.js";
 
 /** @typedef {import("./board.js").Card} Card */
@@ -306,9 +306,7 @@ function mountWriter(parent, name, sync, network, slot, restored = 0) {
       const length = cardsIn(doc, found.column).length;
       if (action === "delete") { selection.select(cardId); deleteCard(doc, cardId); return; }
       if (action === "vote") {
-        // Tracked, so a vote the server drops because the card was deleted is reported.
-        const { value: voted, settled } = doc.track(() => voteCard(doc, cardId));
-        if (voted) dropped.follow(settled);
+        voteCard(doc, cardId);
         refocus = { cardId, action };
         return;
       }
@@ -338,9 +336,7 @@ function mountWriter(parent, name, sync, network, slot, restored = 0) {
     const cardId = selection.cardId;
     if (cardId === undefined) return;
     act(() => {
-      // Tracked, so a rename the server drops is reported for this very edit.
-      const { value: renamed, settled } = doc.track(() => renameCard(doc, cardId, titleInput.value));
-      if (renamed) dropped.follow(settled); else message.textContent = "That card no longer exists.";
+      if (!renameCard(doc, cardId, titleInput.value)) message.textContent = "That card no longer exists.";
     });
   }
 
@@ -422,10 +418,9 @@ function mountWriter(parent, name, sync, network, slot, restored = 0) {
   }
 
   const stopChange = doc.on("change", () => { refresh(); schedule(); });
-  // The server dropped this writer's rename or move of a card a peer deleted first.
-  const dropped = watchDroppedEdits(doc, notify);
-  // Renames restored from before a reload are followed too, by their pending batches.
-  for (const batch of doc.checkpoint().pendingBatches) dropped.follow(doc.settled(batch));
+  // Edits the server dropped because another writer deleted the card first; not the ones this writer cancels.
+  let cancelling = false;
+  const stopDropped = onDroppedEdits(doc, (text) => { if (!cancelling) notify(text); });
   cleanups.push(doc.state.order.observe(schedule), doc.state.columns.observe(schedule));
   // Titles live in `titles`: update the card's row in place, wherever it is.
   cleanups.push(doc.state.titles.observe(({ changes }) => {
@@ -462,8 +457,10 @@ function mountWriter(parent, name, sync, network, slot, restored = 0) {
     refresh();
     if (!offline.checked) sync.sync().catch(() => {}); // Like the browser's online event.
   };
-  // Edits this writer cancels itself are not news.
-  const onDiscard = () => { dropped.cancel(() => sync.rejectPending()).catch(() => {}).finally(refresh); };
+  const onDiscard = () => {
+    cancelling = true;
+    sync.rejectPending().catch(() => {}).finally(() => { cancelling = false; refresh(); });
+  };
   columns.addEventListener("click", onClick);
   undoButton.addEventListener("click", onUndo);
   redoButton.addEventListener("click", onRedo);
@@ -482,7 +479,7 @@ function mountWriter(parent, name, sync, network, slot, restored = 0) {
     stopped = true;
     sync.close();
     for (const cleanup of cleanups) cleanup();
-    stopChange(); dropped.stop(); stopHistory(); history.destroy(); stopStatus(); stopPush();
+    stopChange(); stopDropped(); stopHistory(); history.destroy(); stopStatus(); stopPush();
     clearTimeout(refreshing);
     columns.removeEventListener("click", onClick);
     undoButton.removeEventListener("click", onUndo);

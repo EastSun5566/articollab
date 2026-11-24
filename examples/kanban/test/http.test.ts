@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { IDBFactory } from "fake-indexeddb";
 import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../../dist/sync/index.js";
 import { createOfflineSwitch } from "../../shared/sync-ui.js";
-import { addCard, Board, cardsIn, COLUMNS, deleteCard, findCard, lostRename, moveCard, renameCard } from "../board.js";
+import { addCard, Board, cardsIn, COLUMNS, deleteCard, findCard, moveCard, onDroppedEdits, renameCard } from "../board.js";
 import { createBoardServer, SEED_CARDS, startKanbanServer } from "../server.ts";
 
 /** Waits for `condition` with real timers: writers synchronize on their own. */
@@ -36,16 +36,14 @@ async function fixture(t: TestContext) {
     const network = createOfflineSwitch();
     const sync = await connectSync(Board, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 },
       transport: createHttpTransport({ url: host.url + "/sync/", fetch: network.fetch }) });
-    // The page's check: a tracked rename the server dropped because a peer deleted the card first.
-    const lost: string[] = [];
-    const rename = (cardId: string, title: string) => {
-      const { settled } = sync.doc.track(() => renameCard(sync.doc, cardId, title));
-      void settled.then((outcome) => { const card = outcome && lostRename(outcome); if (card !== undefined) lost.push(card.title); });
-    };
-    stops.push(() => { sync.close(); });
+    // What the page tells this writer: edits the server dropped because a peer deleted the card first.
+    const notices: string[] = [];
+    const stopNotices = onDroppedEdits(sync.doc, (message) => notices.push(message));
+    const rename = (cardId: string, title: string) => renameCard(sync.doc, cardId, title);
+    stops.push(() => { stopNotices(); sync.close(); });
     await sync.sync();
     await until(() => sync.push === "open", "the push channel");
-    return { sync, network, lost, rename,
+    return { sync, network, notices, rename,
       board: () => [sync.doc.state.order.toArray(), sync.doc.state.columns.toObject(), sync.doc.state.titles.toObject()],
       settled: () => sync.doc.checkpoint().pendingBatches.length === 0 && sync.doc.checkpoint().snapshot.serverSeq === server.snapshot().serverSeq,
     };
@@ -83,7 +81,7 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
       assert.deepEqual([found?.column, found?.index, found?.card], ["done", 1, { id: "seed-tests", title: "Renamed offline" }]);
       assert.deepEqual(writer.board(), f.serverBoard());
     }
-    assert.deepEqual(a.lost, []);
+    assert.deepEqual(a.notices, []);
   });
 
   it("reports an offline rename of a card another writer deleted meanwhile, leaving no orphan data", async (t) => {
@@ -94,8 +92,8 @@ describe("Kanban board over HTTP", { timeout: 30_000 }, () => {
     await until(() => b.settled(), "B's delete");
     a.network.set(false);
     void a.sync.sync().catch(() => {});
-    await until(() => a.settled() && b.settled() && a.lost.length === 1, "the lost rename");
-    assert.deepEqual(a.lost, ["Lost rename"]);
+    await until(() => a.settled() && b.settled() && a.notices.length === 1, "the lost rename");
+    assert.deepEqual(a.notices, ["Not saved: “Lost rename”. Another writer deleted this card."]);
     for (const writer of [a, b]) {
       assert.equal(findCard(writer.sync.doc, "seed-sketch"), undefined);
       assert.equal(writer.sync.doc.state.titles.has("seed-sketch"), false);
