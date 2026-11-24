@@ -568,7 +568,6 @@ async function start<S extends SchemaShape>(
         clearTimer();
         if (status !== "failed") setStatus("closed");
       }
-      // Last, once the push channel and presence have ended.
       if (ownsTransport) { ownsTransport = false; transport.close?.(); }
     },
   };

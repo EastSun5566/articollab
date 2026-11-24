@@ -91,7 +91,7 @@ const LABELS = ["A", "B"];
 /** Tabs that can run each writer at once; every tab is its own writer in a free slot. */
 const SLOTS = 4;
 
-/** Explicit mount keeps imports free of DOM, requests and writer registration.
+/** Mounts two writers into `root`, synced with the host at `url`.
  * @param {HTMLElement} root @param {string} url */
 export async function mountKanban(root, url) {
   const status = element("p", undefined, "Opening two writer sessions…");
@@ -391,7 +391,7 @@ function mountWriter(parent, name, sync, network, slot, restored = 0) {
 
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let refreshing;
-  // checkpoint() copies the document, so the pending count is refreshed at most every 250 ms.
+  // At most every 250 ms: checkpoint() copies the document.
   function refresh() {
     const shown = describeSync(sync.status, sync.push, network.offline);
     badge.textContent = shown.text;

@@ -40,7 +40,7 @@ function nodeOf(event) {
   return item instanceof HTMLElement ? item.dataset.id : undefined;
 }
 
-/** Explicit mount keeps imports free of DOM, requests and writer registration.
+/** Mounts two writers into `root`, synced with the host at `url`.
  * @param {HTMLElement} root @param {string} url */
 export async function mountFileTree(root, url) {
   const status = element("p", undefined, "Opening two writer sessions…");
@@ -288,7 +288,7 @@ function mountWriter(parent, name, sync, network, names, restored) {
 
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let refreshing;
-  // checkpoint() copies the document, so the pending count is refreshed at most every 250 ms.
+  // At most every 250 ms: checkpoint() copies the document.
   function refresh() {
     const shown = describeSync(sync.status, sync.push, network.offline);
     badge.textContent = shown.text;

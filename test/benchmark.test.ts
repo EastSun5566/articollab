@@ -163,7 +163,7 @@ describe("collection benchmark", () => {
       assert.match(String(environment.gitSha), /^[a-f0-9]{40}$/);
       assert.equal(typeof environment.dirty, "boolean");
       assert.deepEqual(report.config, { sizes: [32], samples: 2, iterations: 2, pending: 20, warmups: 1,
-        historyLimits: [0, 2, 4, 8], seed: 42 });
+        historySizes: [0, 2, 4, 8], seed: 42 });
       assert.ok(Array.isArray(report.results));
       assert.equal(report.results.length, 13);
       const cases: string[] = [], structures: unknown[] = [];
@@ -218,7 +218,7 @@ describe("collection benchmark", () => {
       assert.equal(output.stderr, "");
       const report = record(JSON.parse(output.stdout));
       assert.equal(record(report.environment).node, process.version);
-      assert.deepEqual(report.config, { sizes: [32], historyLimits: [0, 2], samples: 2, warmups: 1,
+      assert.deepEqual(report.config, { sizes: [32], historySizes: [0, 2], samples: 2, warmups: 1,
         seed: 42, batchSize: 32, gzipLevel: 6, brotliQuality: 4 });
       assert.ok(Array.isArray(report.results));
       const rows = report.results.map(record);

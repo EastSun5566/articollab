@@ -7,7 +7,7 @@ import {
   type ServerCheckpoint,
   type ServerDocument,
 } from "../index.ts";
-import { jsonEquals, validateJsonValue } from "../json.ts";
+import { isJsonObject, jsonEquals, validateJsonValue } from "../json.ts";
 import { integerOption } from "../options.ts";
 import { checkPayload, type PayloadSchema } from "../payload.ts";
 import type { JsonValue } from "../schema.ts";
@@ -390,14 +390,13 @@ export function createSyncHandler<S extends SchemaShape>(
     try { input = JSON.parse(message); } catch { return error(400, "Invalid JSON"); }
 
     if (route === "presence") {
-      if (input === null || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== 2 ||
-        !("clientId" in input) || typeof input.clientId !== "string" || !("state" in input)) {
+      if (!isJsonObject(input) || Object.keys(input).length !== 2 || typeof input.clientId !== "string" || !("state" in input)) {
         return error(400, "Expected { clientId, state }");
       }
       return toResponse(await core.publish(input.clientId, input.state, allowed));
     }
     if (route === "clients") {
-      if (input === null || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== 0) {
+      if (!isJsonObject(input) || Object.keys(input).length !== 0) {
         return error(400, "Expected an empty registration object");
       }
       return toResponse(await core.register(allowed));

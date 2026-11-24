@@ -2,6 +2,7 @@ import type { ClientBatch, JsonValue } from "../index.ts";
 import type { SyncSubscription, SyncTransport } from "./client.ts";
 import { SyncRequestError, SyncResponseError } from "./errors.ts";
 import { readRegistration } from "./http-client.ts";
+import { isJsonObject } from "../json.ts";
 
 /** The part of the standard `WebSocket` the transport uses. */
 export interface WebSocketLike {
@@ -26,9 +27,6 @@ class SyncConnectionError extends Error {}
 
 interface Answer { readonly status: number; readonly body?: unknown }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
 function expect(answer: Answer, status: number): Answer {
   if (answer.status !== status) throw new SyncRequestError(answer.status);
   return answer;
@@ -42,7 +40,6 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): Sy
   const { url } = options;
   // Fails now rather than on every retry.
   if (typeof url !== "function" && !URL.canParse(url)) throw new TypeError(`Invalid WebSocket URL: ${String(url)}`);
-  // Read once, like the HTTP transport's fetch.
   const Socket = options.WebSocket ?? globalThis.WebSocket;
   let connecting: Promise<WebSocketLike> | undefined;
   let current: WebSocketLike | undefined;
@@ -73,7 +70,7 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): Sy
     let message: unknown;
     try { message = typeof data === "string" ? JSON.parse(data) : undefined; }
     catch (cause) { invalid(socket, "Invalid message JSON", cause); return; }
-    if (!isRecord(message)) { invalid(socket, "Expected a JSON object message"); return; }
+    if (!isJsonObject(message)) { invalid(socket, "Expected a JSON object message"); return; }
     if ("id" in message) {
       const { id, status } = message;
       const waiter = typeof id === "number" ? waiting.get(id) : undefined;

@@ -201,7 +201,7 @@ export async function openIndexedDbStore(options: IndexedDbStoreOptions): Promis
   const factory = options.indexedDB ?? (globalThis as { indexedDB?: IdbFactoryLike }).indexedDB;
   if (factory === undefined) throw new Error("indexedDB is unavailable; pass `indexedDB`");
   const keys = Array.from({ length: slots }, (_, slot) => slot === 0 ? options.key : `${options.key}#${slot}`);
-  // With one slot, lock before opening the database, exactly as before slots existed.
+  // With one slot, a held lock fails before the database is opened.
   let release: ((after?: Promise<unknown>) => void) | undefined =
     slots === 1 ? await acquireLock(`articollab:${database}:${keys[0]!}`, options.locks) : undefined;
   let slot = 0;

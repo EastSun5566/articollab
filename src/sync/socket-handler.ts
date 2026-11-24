@@ -1,11 +1,9 @@
 import type { ServerCommit } from "../index.ts";
+import { isJsonObject } from "../json.ts";
 import type { JsonValue } from "../schema.ts";
 import type { SyncAction } from "./http-handler.ts";
 
-/**
- * The part of a server-side WebSocket that `SyncHandler.accept` uses. Sockets from `ws`, Bun, Deno
- * and Cloudflare Workers fit with a small wrapper.
- */
+/** The part of a server-side WebSocket that `SyncHandler.accept` uses; `ws` and Deno sockets fit as they are. */
 export interface SyncSocket {
   send(message: string): void;
   close(code?: number, reason?: string): void;
@@ -74,8 +72,6 @@ export interface SyncCore {
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const encoder = new TextEncoder();
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 const isNonNegativeInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
@@ -200,7 +196,7 @@ export function acceptSocket(core: SyncCore, socket: SyncSocket, request: Reques
       }
       let input: unknown;
       try { input = JSON.parse(text); } catch { shut(1008, "Expected a JSON message"); return; }
-      if (!isRecord(input) || !isNonNegativeInteger(input.id) || typeof input.type !== "string") {
+      if (!isJsonObject(input) || !isNonNegativeInteger(input.id) || typeof input.type !== "string") {
         shut(1008, "Expected { id, type }");
         return;
       }
