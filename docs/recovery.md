@@ -1,6 +1,6 @@
 # Recovery
 
-Use a snapshot for a new writer and a checkpoint to resume an existing one. Before resubmitting work, catch up so already-accepted batches are acknowledged first. The [sync adapter](sync.md) follows these rules over HTTP; this page explains them for custom transports.
+Use a snapshot for a new writer and a checkpoint to resume an existing one. Before resubmitting work, catch up so already-accepted batches are acknowledged first. The [sync adapter](sync.md) follows these rules for you; this page explains them for custom transports.
 
 The snippets use `Board` from [Collections](collections.md) and import factories/decoders from `"articollab"`. `sendLater` is your application's outbound buffer, not a package helper. These are synchronous, in-memory steps; your transport must coordinate catch-up with live delivery.
 
@@ -136,99 +136,5 @@ A callback failure does not imply runtime rollback. If server saving fails after
 Your storage and subscription handoff are application responsibilities. Same URL or origin does not prove document identity: bind checkpoints to the same lineage and coordinate one writer per identity. The core provides neither a lineage marker nor a writer lock.
 
 The repository's browser recovery demo uses document-ID envelopes/headers and session storage. Those are application examples, not core wire fields or authentication. Neither ordinary checkpoint containers nor these examples promise power-loss durability or cross-file transactions.
-
-## Upgrading from 0.9 to 0.10
-
-Articollab 0.10 introduces [Counters](collections.md#counter-additions-that-all-count). The new runtime can restore valid 0.9 snapshots and checkpoints with the same schema and document lineage, and pending batches keep their original operations and sequence numbers.
-
-Upgrade the server, every client and every snapshot or checkpoint reader before adding a `counter()` or `counterMap()` path. A 0.9 reader cannot process `counter/add`, `counterMap/add` or `counterMap/delete` in batches, commits, pending work, retry records or history. Adding a Counter path, or replacing a `value()` that held a count with `counter()`, changes the schema: a whole-number Value snapshot decodes as a Counter, but pending `value/set` operations for that path do not, so send or cancel them first. Keep the original checkpoints for rollback.
-
-0.10 also renames a few existing APIs so they follow one style. Update your code when you upgrade:
-
-| 0.9 | 0.10 |
-| --- | --- |
-| `createServer(schema, { historyLimit })` | `createServer(schema, { maxHistory })` |
-| `createSyncHandler(schema, server, { bodyLimit })` | `createSyncHandler(schema, server, { maxBodySize })` |
-| `SyncHttpError` | `SyncRequestError`, with the same `status` and `retryable` |
-| `sync.stop()` and status `"stopped"` | `sync.close()` and status `"closed"` |
-
-Numeric options now throw `TypeError` when they are not numbers and `RangeError` when they are numbers out of range or not integers; some threw `TypeError` or `Error` before. List and Text indices and counts follow the same rule: `TypeError` for a non-number, `RangeError` when out of range, instead of `Error`.
-
-## Upgrading from 0.8 to 0.9
-
-Articollab 0.9 introduces [List moves](collections.md#move-an-element). The new runtime can restore valid 0.8 snapshots and checkpoints with the same schema and document lineage. Existing pending batches retain their original operations and sequence numbers.
-
-1. Stop the old writers and preserve matching client and server checkpoint backups.
-2. Upgrade the server, every client and every snapshot or checkpoint reader, including offline clients that may restore later. Restore writers with their original session IDs, then catch up.
-3. Enable `List.move()` once all readers are ready. If you maintain a List view with `observe()`, add a `move` handler and apply changes in the supplied order. See the [List view example](transactions.md#update-a-list-view-incrementally).
-
-A 0.8 runtime rejects `list/move` in batches, commits, pending work, retry records or history. It also rejects the `moves` field in snapshots that contain moved elements. Keep a copy of the original data for rollback planning. Removing the field or converting a move to delete and insert can lose position or element identity.
-
-The [`transform` event](reference.md#mutations-transactions-and-events) is a local notification for the writer whose batch was changed or rejected. It uses the original batch and the acknowledged commit without adding fields to either.
-
-## Upgrading from 0.7 to 0.8
-
-Version 0.8 adds [Map collections](collections.md) and optional [Sync Client checkpoint stores](sync.md#persist-checkpoints). Existing 0.7.2 snapshots and checkpoints for Value, List and Text can be restored with the same schema, document lineage and open writer sessions. Back up both sides, stop the old writers, then restore and catch up before resuming edits. Pending batches keep their original sequence numbers.
-
-Upgrade every client, server and checkpoint reader that handles a document before using Map in it. A 0.7 reader cannot process `map/set` or `map/delete`, including operations stored in pending batches, retry records or history. Adding a Map path or replacing an existing collection with Map changes the schema. Plan a data migration separately and keep the original checkpoints available for rolling back.
-
-If you already pass a `save` callback to `connectSync`, it can now run after a local edit while a network request is still pending. Saves remain serialized. To switch to a built-in store, put the existing client checkpoint in the store for the same document and writer, then pass `store` without `checkpoint` or `save`.
-
-## Upgrading from 0.3 to 0.4
-
-Version 0.4 adds opt-in `Text.observe()` notifications and the optional Text snapshot boundary field. Neither changes batch/commit operations or checkpoint envelopes.
-
-Existing valid 0.3 snapshots and checkpoints can be restored without conversion for the same schema and document lineage. `Text.observe()` is a new local subscription API, not a wire feature. Initialize your element mirror from the restored Text and subscribe again; subscriptions are not saved in checkpoints. See the [incremental view example](transactions.md#update-a-text-view-incrementally).
-
-Coordinate the upgrade before resuming writes:
-
-1. Preserve matching client/server checkpoint backups and stop the old writers.
-2. Upgrade the server, participating clients and every other snapshot/checkpoint reader, including offline clients that will restore later. Keep their original writer identities and document lineage.
-3. Restore from the saved checkpoints, catch up and handle pending work through the normal recovery flow, then resume editing. Do not open replacement sessions for restored writers.
-
-Ordinary Text snapshots keep the old format, but adjacent surrogate halves from separate elements require `surrogateBoundaries`. Older runtimes reject that field, even though batches and commits still use the same operations. Once a saved snapshot contains it, a package downgrade is not enough: preserve the data and use compatible readers. Do not strip the field, merge elements or discard IDs to make it load. See [Text snapshot boundaries](#text-snapshot-boundaries), including the limits on recovering older invalid saves.
-
-## Upgrading from 0.2 to 0.3
-
-The 0.3 release adds List `set()` and its `list/set` wire operation. Install the stable release with `pnpm add articollab`.
-
-Roll out support before allowing the new operation:
-
-1. Preserve matching client/server checkpoint backups and stop the old writers.
-2. Upgrade the server and every participating client, including writers that will later restore from a checkpoint. Restore their original identities against the same document lineage; do not open replacement sessions.
-3. Allow List `set()` only after those runtimes support `list/set`.
-
-Snapshot and checkpoint envelopes have not changed. The 0.3 runtime accepts existing legal 0.2 checkpoints for the same schema and document lineage; no conversion is needed. A 0.2 runtime cannot decode or apply `list/set` in a batch, commit, pending work, retry result or history. Once the document contains this operation, rolling back is not just a package downgrade: do not strip saved operations, clear checkpoints or attach old writers to a fresh server to bypass the incompatibility.
-
-Set updates target the original stable ID even if its index changes. A target deleted by a peer makes the update a no-op, not a replay conflict or resurrection; unrelated operations in that batch can still apply. An unknown ID, such as one from a rejected insertion, still blocks pending replay and requires normal recovery. See [List update semantics](collections.md#update-an-existing-element).
-
-## Upgrading from 0.1
-
-The 0.2 API requires an explicitly opened server session for a fresh writer. Use `server.openClient()` for creation; use the original checkpoint ID for restore. Disconnect keeps the session; `closeClient()` permanently retires it. `maxClients` counts open sessions, including those with no batch.
-
-Server checkpoints changed from `{ snapshot, replays, history }` to `{ snapshot, lastClientNumber, clients, history }`. Old server checkpoints are rejected without migration or fresh fallback.
-
-If you have 0.1 data, preserve its original files and compatible 0.1 server. Plan data transfer in a separate environment. Do not delete the server checkpoint and attach old client checkpoints to a fresh 0.2 server.
-
-Batch, commit and client checkpoint shapes did not change, but they are not portable across document lineages. See the [checkpoint contract](reference.md#snapshots-checkpoints-and-catch-up).
-
-## Upgrading from 0.2.0-beta.0
-
-Starting with `0.2.0-beta.1`, new incoming List/Text insertions require canonical namespaces by default. Normal package clients already generate these IDs.
-
-If your application supplies custom incoming IDs, keep its own namespace policy and explicitly opt out on creation and restore:
-
-```ts
-const server = createServer(Board, {
-  checkpoint: savedServerCheckpoint,
-  allowCustomClientNamespaces: true,
-});
-```
-
-The option is not serialized. It skips only incoming namespace checks, not session, sequence, retry-payload or state validation. Authenticate the writer separately. Resolver-generated authoritative IDs do not need this opt-out.
-
-Wire/checkpoint formats remain unchanged from beta.0. Existing state and saved results are not retrospectively checked; identical retained retries return their original result. New custom-ID submissions require opt-out, while trusted `reject()` can acknowledge their originals.
-
-Do not clear checkpoints or open replacement sessions to bypass an error. See the [namespace contract](reference.md#incoming-insertion-namespaces).
 
 [Previous: Server policy and wire](server-wire.md) · [Next: Sync adapter](sync.md)

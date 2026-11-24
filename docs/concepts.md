@@ -17,10 +17,10 @@ Clients edit optimistically so a view does not wait for a network round trip. Th
 | Authoritative commit | The server accepts, transforms or rejects the effect and assigns `serverSeq`. | Clients may not have received it yet. |
 | Acknowledgement | The source receives the commit in order and removes its earliest pending batch. | It does not imply a change event or durable storage. |
 
-In the [Counter example](quick-start.md), this assignment changes only the local view until the application submits its batch:
+In the [quick start](quick-start.md), this assignment changes only the local view until the application submits its batch:
 
 ```ts
-doc.state.count.value = 5;
+doc.state.points.value = 5;
 // Visible: 5. The batch stays pending until its commit is received.
 ```
 
@@ -42,17 +42,17 @@ A client must receive commits 1, 2, 3 in order, exactly once. Its own commit 3 c
 
 A client keeps authoritative state separately from pending batches. Its visible state is the authoritative state with the complete replayable pending prefix applied.
 
-Suppose the authoritative count is 1 and you locally set it to 5:
+Suppose the authoritative score is 1 and you locally set it to 5:
 
-| Received result | Authoritative count | Visible count |
+| Received result | Authoritative score | Visible score |
 | --- | --- | --- |
 | No result yet | 1 | 5 |
-| A peer sets count to 2 | 2 | 5 |
+| A peer sets the score to 2 | 2 | 5 |
 | The server rejects your pending write | 2 | 2 |
 
 The peer's result changes the base, but your pending write still applies over it. Rejection removes that write, revealing the base.
 
-Replay uses the recorded operations, not a rerun of your transaction callback. A pending `set(5)` stays `set(5)`; it is not an intent such as “increment the latest count.” To record increments, use a [Counter](collections.md#counter-additions-that-all-count): a pending `add(1)` replays as an addition to the latest count.
+Replay uses the recorded operations, not a rerun of your transaction callback. A pending `set(5)` stays `set(5)`; it is not an intent such as “increment the latest score.” To record increments, use a [Counter](collections.md#counter-additions-that-all-count): a pending `add(1)` replays as an addition to the latest total.
 
 ## Why List and Text use stable IDs
 
@@ -66,4 +66,4 @@ The core provides collection semantics, sequence checks, reconciliation and chec
 
 For example, an open client session reserves a writer identity. It does not authenticate the caller or prevent a second process from using that identity.
 
-[Previous: Counter quick start](quick-start.md) · [Next: Collections](collections.md)
+[Previous: Quick start](quick-start.md) · [Next: Collections](collections.md)

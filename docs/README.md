@@ -1,17 +1,17 @@
 # Articollab
 
-Build collaborative state in TypeScript. Clients show local edits immediately, then reconcile with commits in the order the server assigns.
+Build collaborative state in TypeScript. Each client shows its own edits at once, and the server decides the final order and result.
 
 ## When to use it
 
-Use Articollab when the server needs to accept, transform or reject edits. For example, a shared task board can show a move immediately while the server decides whether to keep it.
+Use Articollab when the server must be able to accept, change or reject edits. For example, a task board can show a card move immediately while the server checks whether the move is allowed.
 
-Choose [collections](collections.md) for whole JSON values, ordered items, plain text, keyed values or counts. Each client uses the same document schema.
+Pick [collections](collections.md) for what you store: a whole JSON value, an ordered list, plain text, keyed values or counts. Every client uses the same document schema.
 
 ## Connect your application
 
-Use the [HTTP sync adapter](sync.md) to deliver commits and resume after a disconnect, or provide your own transport.
+Use the [sync adapter](sync.md) to carry edits and commits over HTTP or a WebSocket, or write your own transport.
 
-Your application authenticates writers, stores server checkpoints and binds each writer to the right document. For saved documents, read the [upgrade guide](recovery.md#upgrading-from-08-to-09) before using List moves.
+Your application still owns authentication, saving server checkpoints and making sure each writer opens the right document. When you change versions with saved data, read [Upgrading](upgrading.md).
 
-[Next: Counter quick start](quick-start.md)
+[Next: Quick start](quick-start.md)

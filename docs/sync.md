@@ -70,7 +70,13 @@ const store = await openIndexedDbStore({ database: "my-app", key: `${documentId}
 console.log(store.slot); // 0 in the first tab, 1 in the second, …
 ```
 
-Each tab takes a free slot and is its own writer, with its own session, pending edits, undo history and presence. Tabs see each other's edits through the server, as other devices do, so not while offline. When a tab closes, the browser releases its lock and the next tab that opens takes that slot over, including edits the closed tab had not sent yet: free slots with pending edits are taken first, then slots with a saved checkpoint, then the lowest. Opening throws `CheckpointLockedError` only when every slot is held. At most `slots` writers of a key are open at once in one browser profile. Each slot keeps its session across reloads, and a session is registered only when a tab takes an empty slot, as without `slots`. Slot 0 is the key itself, so a writer saved without `slots` is kept.
+Each tab takes a free slot and is its own writer, with its own session, pending edits, undo history and presence. Tabs see each other's edits through the server, as other devices do, so not while offline.
+
+- When a tab closes, the browser releases its lock, and the next tab that opens takes that slot over, including edits the closed tab had not sent yet.
+- Free slots with pending edits are taken first, then slots with a saved checkpoint, then the lowest.
+- Opening throws `CheckpointLockedError` only when every slot is held, so at most `slots` writers of a key are open at once in one browser profile.
+- Each slot keeps its session across reloads. A session is registered only when a tab takes an empty slot, as without `slots`.
+- Slot 0 is the key itself, so a writer saved without `slots` is kept.
 
 Include the document's identity in the storage key, and verify that it matches the server document before calling `connectSync`. The same rule applies to file paths. The lock coordinates access to one stored writer; your application binds that writer's checkpoint to its [document lineage](recovery.md#persistence-and-lineage).
 
@@ -155,17 +161,19 @@ Presence requires [Articollab 0.10 or later](reference.md#compatibility).
 Presence is what each writer wants the others to see right now, such as a name and a selection, but that is not part of the document. Enable it on the handler and the client, and it travels over the same push channel:
 
 ```ts
-const handleSync = createSyncHandler(Counter, server, { presence: {} });
+const handleSync = createSyncHandler(Board, server, { presence: {} });
 const transport = createHttpTransport({ url: "https://example.test/sync/" });
-const sync = await connectSync(Counter, { transport, presence: {} });
+const sync = await connectSync(Board, { transport, presence: {} });
 
-sync.presence.set({ name: "Ann", editing: "count" });
+sync.presence.set({ name: "Ann", editing: "items" });
 sync.presence.on("change", (peers) => {
   for (const [clientId, state] of peers) console.log(clientId, state);
 });
 ```
 
-`peers` holds every other writer's latest state, never your own. A state is any JSON value; pass a `schema` to either side to validate it, as with [payloads](collections.md#validate-payloads). The client sends its state again every 10 seconds, and the handler drops a state it has not received for 30 seconds, so a closed tab disappears on its own; `set(null)` or `sync.close()` removes it at once, and so does a WebSocket closing. To share a text selection, send [cursors](collections.md#stable-positions-with-cursors) and resolve them with `decodeCursor()` and `cursorIndex()` on arrival.
+`peers` holds every other writer's latest state, never your own. A state is any JSON value; pass a `schema` to either side to validate it, as with [payloads](collections.md#validate-payloads).
+
+The client sends its state again every 10 seconds, and the handler drops a state it has not received for 30 seconds, so a closed tab disappears on its own. `set(null)` or `sync.close()` removes it at once, and so does a WebSocket closing. To share a text selection, send [cursors](collections.md#stable-positions-with-cursors) and resolve them with `decodeCursor()` and `cursorIndex()` on arrival.
 
 Presence lives only in the handler's memory: it is not saved, not part of checkpoints or history, and not shared between server instances. Delivery is best-effort, and while the push channel is down `peers` is empty.
 

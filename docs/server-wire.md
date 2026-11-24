@@ -4,7 +4,7 @@ Submit batches to decide their authoritative effect, decode untrusted messages a
 
 ## Submit a batch
 
-Use the `server`, buffered `batch`, `doc` and `peer` from the [Counter quick start](quick-start.md). Replace its submission step with:
+Use the `server`, buffered `batch`, `doc` and `peer` from the [Quick start](quick-start.md). Replace its submission step with:
 
 ```ts
 const receipt = server.receive(batch);
@@ -19,12 +19,12 @@ Fresh writers need an ID from `server.openClient()`. Persist that session before
 
 ## Accept, transform or reject
 
-Import `createServer` from `"articollab"` and use the Counter schema from the quick start. Create this server instead of the accept-only server:
+Import `createServer` from `"articollab"` and use the `Score` schema from the quick start. Create this server instead of the accept-only server:
 
 ```ts
-const server = createServer(Counter, {
+const server = createServer(Score, {
   resolve({ batch, snapshot }) {
-    if (snapshot.data.count >= 10) return [];
+    if (snapshot.data.points >= 10) return [];
     return batch.operations.map((operation) => ({
       ...operation, value: Math.min(operation.value, 10),
     }));
@@ -32,7 +32,7 @@ const server = createServer(Counter, {
 });
 ```
 
-A pending `set(12)` displays 12 locally, then becomes 10 after receiving its transformed commit. Once the authoritative count is 10, this policy rejects later batches.
+A pending `set(12)` displays 12 locally, then becomes 10 after receiving its transformed commit. Once the authoritative score is 10, this policy rejects later batches.
 
 The `transform` event requires [Articollab 0.9 or later](reference.md#compatibility). Listen on the writer's client to learn which operations the server dropped or added when it acknowledged the batch:
 
@@ -46,9 +46,9 @@ const stop = doc.on("transform", ({ commit, added }) => {
 To follow one change rather than every batch, make it with `doc.track()`, which requires [Articollab 0.10 or later](reference.md#compatibility). It works like `transact()` and also returns the batch and a promise of what the server did with it:
 
 ```ts
-const { settled } = doc.track(() => { doc.state.count.value = 12; });
+const { settled } = doc.track(() => { doc.state.points.value = 12; });
 const outcome = await settled;
-console.log(outcome?.status, outcome?.added); // transformed [ { type: 'value/set', path: 'count', value: 10 } ]
+console.log(outcome?.status, outcome?.added); // transformed [ { type: 'value/set', path: 'points', value: 10 } ]
 ```
 
 The promise resolves once the acknowledgement is received, with `status` `"accepted"`, `"transformed"` or `"rejected"`, and never rejects. `doc.settled(batch)` returns the same promise for any pending batch, such as one restored from a checkpoint. See the [exact contract](reference.md#mutations-transactions-and-events).
@@ -63,13 +63,13 @@ Resolver throws or invalid output leave server state and sequences unchanged. Si
 
 ## Decode at the transport boundary
 
-Import `decodeClientBatch` and `decodeServerCommit` from `"articollab"`. With a Counter server/client and a JSON message containing its original batch:
+Import `decodeClientBatch` and `decodeServerCommit` from `"articollab"`. With the `Score` server and client and a JSON message containing its original batch:
 
 ```ts
-const batch = decodeClientBatch(Counter, JSON.parse(batchMessage));
+const batch = decodeClientBatch(Score, JSON.parse(batchMessage));
 const { commit } = server.receive(batch);
 const commitMessage = JSON.stringify(commit);
-doc.receive(decodeServerCommit(Counter, JSON.parse(commitMessage)));
+doc.receive(decodeServerCommit(Score, JSON.parse(commitMessage)));
 ```
 
 The source receives the authoritative result through the same decoding boundary as peers. In a networked application, deliver earlier missing commits before this one.
@@ -105,7 +105,7 @@ This option defaults to `false`, does not disable other validation, and must be 
 
 To cancel a namespace-invalid original, verify its writer binding, then call `server.reject(batch)` without the standalone namespace helper. Rejection skips the server namespace check. Both entrypoints return the last identical result before checking new submissions, including a saved rejection or custom-ID acceptance.
 
-A guard failure or runtime throw is not an acknowledgement. See the [exact namespace contract](reference.md#incoming-insertion-namespaces) and [upgrade guidance](recovery.md#upgrading-from-020-beta0).
+A guard failure or runtime throw is not an acknowledgement. See the [exact namespace contract](reference.md#incoming-insertion-namespaces).
 
 ## Close idle writer sessions
 
@@ -114,12 +114,12 @@ Each `server.openClient()` holds a session, and a writer that disappears without
 ```ts
 import { createServer, defineDocument, value } from "articollab";
 
-const Counter = defineDocument({ count: value(0) });
-const server = createServer(Counter, { maxClients: 100 });
+const Score = defineDocument({ points: value(0) });
+const server = createServer(Score, { maxClients: 100 });
 const active = server.openClient();
 const idle = server.openClient();
 for (let seq = 1; seq <= 3; seq++) {
-  server.receive({ clientId: active, seq, operations: [{ type: "value/set", path: "count", value: seq }] });
+  server.receive({ clientId: active, seq, operations: [{ type: "value/set", path: "points", value: seq }] });
 }
 
 const current = server.snapshot().serverSeq;
@@ -143,7 +143,7 @@ For each new result:
 2. Deliver the commit to every relevant client, including the source.
 3. Finish that delivery before processing a listener's new submission.
 
-Use an application-owned queue when listeners can submit during delivery. The small Counter example has no such listeners; it is not a production broadcast loop.
+Use an application-owned queue when listeners can submit during delivery. The quick start has no such listeners; it is not a production broadcast loop.
 
 For a retained retry, do not broadcast again to peers. [Catch up the source](recovery.md#catch-up-before-resubmitting) from its watermark; skip results it has already consumed. `receipt.replayed` does not create a new commit or catch up other clients.
 

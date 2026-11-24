@@ -12,7 +12,7 @@ const source = join(root, "docs");
 const output = join(root, ".docs-site");
 const prefix = "/articollab/";
 const pages = ["README.md", "quick-start.md", "concepts.md", "collections.md",
-  "transactions.md", "server-wire.md", "recovery.md", "sync.md", "reference.md", "faq.md"];
+  "transactions.md", "server-wire.md", "recovery.md", "sync.md", "reference.md", "upgrading.md", "faq.md"];
 const files = ["index.html", "_sidebar.md", ".nojekyll", ...pages];
 const retiredPages = ["development.md", "examples.md"];
 const execute = promisify(execFile);
@@ -53,7 +53,7 @@ function headingId(heading: string): string {
   return heading.toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s/g, "-");
 }
 
-/** Check staged links/assets, then typecheck and execute the exact documented Counter. */
+/** Check staged links/assets, then typecheck and execute the exact quick start example. */
 export async function checkDocs(): Promise<void> {
   // Reader and contributor links must work directly in the checkout too.
   for (const name of ["README.md", "CONTRIBUTING.md", "examples/README.md",
@@ -106,14 +106,14 @@ export async function checkDocs(): Promise<void> {
   assert.match(index, /executeScript: false/);
 
   const quickStart = markdown.get("quick-start.md")!;
-  const snippet = /<!-- checked-counter:start -->\s*```ts\n([\s\S]*?)\n```\s*<!-- checked-counter:end -->/.exec(quickStart);
-  assert.ok(snippet, "Missing complete checked Counter snippet");
+  const snippet = /<!-- checked-quick-start:start -->\s*```ts\n([\s\S]*?)\n```\s*<!-- checked-quick-start:end -->/.exec(quickStart);
+  assert.ok(snippet, "Missing complete checked quick start snippet");
   const expected = /Expected output:\s*```text\n([\s\S]*?)\n```/.exec(quickStart);
-  assert.ok(expected, "Missing expected Counter output");
-  const temporary = await mkdtemp(join(output, ".counter-"));
+  assert.ok(expected, "Missing expected quick start output");
+  const temporary = await mkdtemp(join(output, ".quick-start-"));
   try {
     // Inside the checkout only for self-package resolution; no source imports or paths aliases.
-    const filename = join(temporary, "counter.ts");
+    const filename = join(temporary, "score.ts");
     await writeFile(filename, snippet[1]!);
     const require = createRequire(import.meta.url);
     const compiler = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
@@ -145,7 +145,7 @@ export async function checkDocs(): Promise<void> {
   } finally {
     await host.close();
   }
-  console.log("Docs links, HTTP asset boundaries and Counter typecheck/runtime passed");
+  console.log("Docs links, HTTP asset boundaries and quick start typecheck/runtime passed");
 }
 
 /** Local project-site preview: fixed allowlist, no directory traversal or checkout serving. */
