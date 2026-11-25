@@ -191,7 +191,7 @@ One string insertion uses a continuous ID range. One delete produces one operati
 
 ### Format text
 
-Text marks require [Articollab 0.11 or later](reference.md#compatibility).
+Text marks require [Articollab 0.10 or later](reference.md#compatibility).
 
 List the marks a Text accepts, then format ranges of it:
 

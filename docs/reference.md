@@ -4,7 +4,7 @@ Look up the public API and exact collaboration contracts here. For a runnable in
 
 ## Compatibility
 
-Articollab 0.11 adds Text marks. Articollab 0.10 added undo and redo, `track()` and `settled()`, payload schemas, Counters, presence, store `slots` and the WebSocket transport. Articollab 0.9 added List moves and the `transform` event.
+Articollab 0.10 adds Text marks, undo and redo, `track()` and `settled()`, payload schemas, Counters, presence, store `slots` and the WebSocket transport. Articollab 0.9 added List moves and the `transform` event.
 
 Upgrade every runtime that reads a document before it exchanges new operations or snapshot formats; see [Upgrading](upgrading.md).
 
