@@ -100,6 +100,12 @@ export function applyOperations(
         }
         states.set(operation.path, current.mark(operation));
         break;
+      case "text/block":
+        if (!(current instanceof TextState)) {
+          throw wrongCollectionKind(operation.path);
+        }
+        states.set(operation.path, current.block(operation));
+        break;
       case "map/set":
         if (!(current instanceof MapState)) {
           throw wrongCollectionKind(operation.path);

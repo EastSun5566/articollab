@@ -10,7 +10,8 @@ import {
 } from "../src/index.ts";
 
 const Board = defineDocument({
-  count: value(0), items: list<string>(), body: text({ marks: { bold: { expand: "after" }, link: { expand: "none" } } }),
+  count: value(0), items: list<string>(),
+  body: text({ marks: { bold: { expand: "after" }, link: { expand: "none" } }, blocks: { heading: {} } }),
 });
 type Shape = typeof Board.definition;
 type Batch = ClientBatch<DocumentOperation<Shape>>;
@@ -21,7 +22,7 @@ function json(input: unknown): unknown { return JSON.parse(JSON.stringify(input)
 
 function visible(doc: ClientDocument<Shape>) {
   return { count: doc.state.count.value, items: doc.state.items.toArray(), body: doc.state.body.toString(),
-    formats: json(doc.state.body.toDelta()) };
+    formats: json(doc.state.body.toDelta()), blocks: json(doc.state.body.blocks()) };
 }
 
 function transformed(batch: Batch): readonly DocumentOperation<Shape>[] {
@@ -252,7 +253,7 @@ function setup(maxHistory = 1000) {
       const reader = createClient(Board, { clientId: "reader", snapshot: server.snapshot(), onBatch: () => {} });
       assert.deepEqual(visible(target.doc), { count: server.snapshot().data.count,
         items: server.snapshot().data.items.values, body: server.snapshot().data.body.value,
-        formats: json(reader.state.body.toDelta()) });
+        formats: json(reader.state.body.toDelta()), blocks: json(reader.state.body.blocks()) });
     }
     check();
   }
@@ -297,6 +298,11 @@ function run(seed: number) {
             const index = pick(doc.state.body.length), count = 1 + pick(doc.state.body.length - index);
             if (pick(2) === 0) doc.state.body.format(index, count, "bold", pick(4) === 0 ? null : true);
             else doc.state.body.format(index, count, "link", pick(4) === 0 ? null : "https://" + step);
+          } });
+          actions.push({ name: "text-block " + target.clientId, run: () => {
+            if (pick(2) === 0) doc.state.body.insert(pick(doc.state.body.length + 1), "\n");
+            const index = pick(doc.state.body.length + 1), count = pick(doc.state.body.length - index + 1);
+            doc.state.body.formatBlocks(index, count, "heading", pick(4) === 0 ? null : 1 + pick(2));
           } });
           actions.push({ name: "mixed " + target.clientId, run: () => {
             doc.transact(() => {
@@ -352,7 +358,7 @@ function run(seed: number) {
     currentAction = "finish";
     h.finish();
     currentAction = "coverage";
-    for (const action of ["value", "list-insert", "list-delete", "text-insert", "text-delete", "text-format", "mixed",
+    for (const action of ["value", "list-insert", "list-delete", "text-insert", "text-delete", "text-format", "text-block", "mixed",
       "rollback", "accept", "policy-reject", "transform", "explicit-reject", "deliver",
       "partial-catch-up", "retry-receive", "retry-reject", "restore-client", "restore-server", "resolver-throw"]) {
       assert.ok(h.coverage.has(action), "seed did not exercise " + action);

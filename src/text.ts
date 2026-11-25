@@ -14,11 +14,11 @@ import { cursorAt, cursorIndex, requireCursor, type Cursor } from "./cursor.ts";
 import { historyWriter } from "./history-access.ts";
 import { requireNumber } from "./options.ts";
 import {
-  addMark, attributesAtKnown, changedIntervals, knownAttributes, gapRank, NO_ATTRIBUTES, sameMarks,
+  addMark, attributesAtKnown, changedIntervals, knownAttributes, gapRank, NO_ATTRIBUTES, sameMarks, withAttribute,
   type TextAttributes, type TextMark,
 } from "./marks.ts";
 import { checkPayload } from "./payload.ts";
-import type { JsonValue, MarkShape, MarkValue } from "./schema.ts";
+import type { BlockShape, JsonValue, MarkShape, MarkValue } from "./schema.ts";
 
 export interface TextSnapshotData {
   readonly idList: readonly SavedIdRange[];
@@ -27,6 +27,14 @@ export interface TextSnapshotData {
   readonly surrogateBoundaries?: readonly number[];
   /** Formatting marks in the order they were applied; absent when there are none. */
   readonly marks?: readonly TextMark[];
+  /** Paragraph attributes in document order, for paragraphs that have any; absent when none do. */
+  readonly blocks?: readonly TextBlockEntry[];
+}
+
+/** One paragraph's attributes, by the "\n" that starts it, or `null` for the first paragraph. */
+export interface TextBlockEntry {
+  readonly id: Readonly<ElementId> | null;
+  readonly attributes: TextAttributes;
 }
 
 type BoundaryFailure = (path: readonly JsonPathSegment[], message: string) => never;
@@ -88,15 +96,31 @@ export interface TextMarkOperation<Path extends string = string, K extends strin
   readonly value: V | null;
 }
 
+/** Sets paragraph attribute `key` to `value`, or removes it with `null`, on the paragraph `id` starts. */
+export interface TextBlockOperation<Path extends string = string, K extends string = string, V extends JsonValue = JsonValue> {
+  readonly type: "text/block";
+  readonly path: Path;
+  /** The "\n" that starts the paragraph, or `null` for the first paragraph. */
+  readonly id: Readonly<ElementId> | null;
+  readonly key: K;
+  readonly value: V | null;
+}
+
+/** One block operation type per key of `B`; none for a Text without paragraph attributes. */
+type TextBlockOperationFor<Path extends string, B extends BlockShape> = {
+  [K in keyof B & string]: TextBlockOperation<Path, K, MarkValue<B[K]>>;
+}[keyof B & string];
+
 /** One mark operation type per key of `M`; none for a Text without marks. */
 type TextMarkOperationFor<Path extends string, M extends MarkShape> = {
   [K in keyof M & string]: TextMarkOperation<Path, K, MarkValue<M[K]>>;
 }[keyof M & string];
 
-export type TextOperation<Path extends string = string, M extends MarkShape = MarkShape> =
+export type TextOperation<Path extends string = string, M extends MarkShape = MarkShape, B extends BlockShape = BlockShape> =
   | TextInsertOperation<Path>
   | TextDeleteOperation<Path>
-  | TextMarkOperationFor<Path, M>;
+  | TextMarkOperationFor<Path, M>
+  | TextBlockOperationFor<Path, B>;
 
 export interface TextChange {
   readonly index: number;
@@ -117,10 +141,25 @@ export interface TextChangeEvent {
   readonly changes: readonly TextChange[];
   /** Runs whose attributes changed, and every inserted run, once the Text has marks; absent when empty. */
   readonly formats?: readonly TextFormatChange[];
+  /** Paragraphs whose attributes changed, and every new paragraph, once any has attributes; absent when empty. */
+  readonly blocks?: readonly TextBlockChange[];
+}
+
+/** A paragraph's complete attributes after the event; `index` is its first element, after the "\n" that starts it. */
+export interface TextBlockChange {
+  readonly index: number;
+  readonly attributes: TextAttributes;
+}
+
+/** One paragraph: `length` elements from `index`, not counting the "\n" before or after it. */
+export interface TextBlock<B extends BlockShape = BlockShape> {
+  readonly index: number;
+  readonly length: number;
+  readonly attributes: TextAttributesOf<B>;
 }
 
 /** One mark's value per key; absent keys are unformatted. */
-export type TextAttributesOf<M extends MarkShape> = { readonly [K in keyof M]?: MarkValue<M[K]> };
+export type TextAttributesOf<M extends BlockShape> = { readonly [K in keyof M]?: MarkValue<M[K]> };
 
 /** A run of equally formatted text, as in a Quill Delta. */
 export interface TextDeltaOp<M extends MarkShape = MarkShape> {
@@ -129,7 +168,7 @@ export interface TextDeltaOp<M extends MarkShape = MarkShape> {
 }
 
 /** An optimistic collaborative string indexed by Unicode code point, formatted with the marks `M`. */
-export interface Text<M extends MarkShape = {}> extends Iterable<string> {
+export interface Text<M extends MarkShape = {}, B extends BlockShape = {}> extends Iterable<string> {
   readonly length: number;
   insert(index: number, value: string): void;
   delete(index: number, count?: number): void;
@@ -150,6 +189,15 @@ export interface Text<M extends MarkShape = {}> extends Iterable<string> {
   attributesAt(index: number): TextAttributesOf<M>;
   /** The visible text as runs of equal attributes. */
   toDelta(): readonly TextDeltaOp<M>[];
+  /**
+   * Sets paragraph attribute `key` to `value`, or removes it with `null`, on every paragraph that
+   * `count` elements from `index` touch; with `count` 0, on the paragraph that holds gap `index`.
+   */
+  formatBlocks<K extends keyof B & string>(index: number, count: number, key: K, value: MarkValue<B[K]> | null): void;
+  /** The attributes of the paragraph that holds gap `index`. */
+  blockAt(index: number): TextAttributesOf<B>;
+  /** Every paragraph, in order. */
+  blocks(): readonly TextBlock<B>[];
 }
 
 function idKey(id: Readonly<ElementId>): string {
@@ -168,6 +216,9 @@ function requireObject(value: unknown, name: string): object {
 }
 
 const NO_MARKS: readonly TextMark[] = Object.freeze([]);
+const NO_BLOCKS = HamtMap.empty<TextAttributes>();
+/** The most paragraph changes a state remembers it came from. */
+const MAX_BLOCK_RUN = 64;
 
 /** A frozen copy of a mark's own fields; checks their shapes, not that the anchors exist. */
 function ownMark(input: unknown): TextMark {
@@ -214,20 +265,31 @@ export class TextState {
   private readonly valuesById: HamtMap<string>;
   /** Formatting marks in application order. */
   readonly marks: readonly TextMark[];
+  /** Paragraph attributes by `blockKey()` of the paragraph's start; only nonempty ones. */
+  private readonly blockAttributes: HamtMap<TextAttributes>;
+  /**
+   * When this state came from earlier ones by paragraph attribute changes alone, each earlier state
+   * and the paragraph it changed, oldest first: comparing with one of them needs only those paragraphs.
+   */
+  private readonly blockRun: readonly { readonly from: TextState; readonly id: Readonly<ElementId> | null }[] | undefined;
   private knownAttributeCache: TextAttributes[] | undefined;
 
   private constructor(
     idList: IdList,
     valuesById: HamtMap<string>,
-    marks: readonly TextMark[]
+    marks: readonly TextMark[],
+    blockAttributes: HamtMap<TextAttributes>,
+    blockRun?: readonly { readonly from: TextState; readonly id: Readonly<ElementId> | null }[]
   ) {
     this.idList = idList;
     this.valuesById = valuesById;
     this.marks = marks;
+    this.blockAttributes = blockAttributes;
+    this.blockRun = blockRun;
   }
 
   static empty(): TextState {
-    return new TextState(IdList.new(), HamtMap.empty<string>(), NO_MARKS);
+    return new TextState(IdList.new(), HamtMap.empty<string>(), NO_MARKS, NO_BLOCKS);
   }
 
   static load(snapshot: TextSnapshotData, failBoundary: BoundaryFailure = (path, message) => {
@@ -263,7 +325,25 @@ export class TextState {
       if (!Array.isArray(data.marks)) throw new Error("Text snapshot marks must be an array");
       for (const mark of data.marks as readonly unknown[]) marks = addMark(idList, marks, ownMark(mark));
     }
-    return new TextState(idList, valuesById, marks);
+    let state = new TextState(idList, valuesById, marks, NO_BLOCKS);
+    if (Object.hasOwn(data, "blocks")) {
+      if (!Array.isArray(data.blocks)) throw new Error("Text snapshot blocks must be an array");
+      for (const input of data.blocks as readonly unknown[]) {
+        const entry = requireObject(input, "Text snapshot block") as Partial<TextBlockEntry>;
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Decoded snapshots hold JSON; values are not checked here, like List values.
+        const attributes = requireObject(entry.attributes, "Text snapshot block attributes") as Readonly<Record<string, JsonValue>>;
+        const id = entry.id === null || entry.id === undefined ? null : ownId(entry.id);
+        if (id !== null && !(idList.has(id) && state.valueFor(id) === "\n")) {
+          throw new Error(`Text snapshot block must start at a visible line break: ${idKey(id)}`);
+        }
+        const key = state.blockKey(id);
+        if (state.blockAttributes.get(key) !== undefined) throw new Error(`Duplicate Text snapshot block: ${key}`);
+        let merged = NO_ATTRIBUTES;
+        for (const name of Object.keys(attributes)) merged = withAttribute(merged, name, attributes[name]!);
+        if (merged !== NO_ATTRIBUTES) state = new TextState(idList, valuesById, marks, state.blockAttributes.set(key, merged));
+      }
+    }
+    return state;
   }
 
   get length(): number {
@@ -340,7 +420,7 @@ export class TextState {
         draft.set(idKey(ids[index]!), values[index]!);
       }
     });
-    return new TextState(nextIdList, nextValues, this.marks);
+    return new TextState(nextIdList, nextValues, this.marks, this.blockAttributes);
   }
 
   delete(operation: TextDeleteOperation): TextState {
@@ -358,22 +438,132 @@ export class TextState {
     }
 
     let nextIdList = this.idList;
+    // A deleted line break takes its paragraph's attributes with it.
+    let nextBlocks = this.blockAttributes;
     const nextValues = this.valuesById.mutate((draft) => {
       for (const range of ranges) {
         nextIdList = nextIdList.delete(range.start, range.count);
         for (const id of idsInRange(range.start, range.count)) {
           draft.delete(idKey(id));
+          if (nextBlocks.size !== 0 && nextBlocks.get(idKey(id)) !== undefined) nextBlocks = nextBlocks.delete(idKey(id));
         }
       }
     });
     // All targets were already tombstones; preserve identity for visible equality.
     if (nextIdList.length === this.idList.length) return this;
-    return new TextState(nextIdList, nextValues, this.marks);
+    return new TextState(nextIdList, nextValues, this.marks, nextBlocks);
+  }
+
+  /** The key of the paragraph a line break starts, or "" for the first paragraph. */
+  private blockKey(id: Readonly<ElementId> | null): string {
+    return id === null ? "" : idKey(id);
+  }
+
+  /**
+   * Sets one paragraph attribute. An unknown line break is a conflict; a deleted one has no effect,
+   * since its paragraph is gone; any other element is invalid.
+   */
+  block(operation: TextBlockOperation): TextState {
+    const { id } = operation;
+    if (id !== null) {
+      if (!this.idList.isKnown(id)) throw new CollectionConflictError(`Unknown text line break: ${idKey(id)}`);
+      if (!this.idList.has(id)) return this;
+      if (this.valueFor(id) !== "\n") throw new Error(`Text block must start at a line break: ${idKey(id)}`);
+    }
+    const key = this.blockKey(id);
+    const before = this.blockAttributes.get(key) ?? NO_ATTRIBUTES;
+    const after = withAttribute(before, operation.key, operation.value);
+    if (jsonEquals(before, after)) return this;
+    const run = [...(this.blockRun ?? []), { from: this as TextState, id }];
+    return new TextState(this.idList, this.valuesById, this.marks,
+      after === NO_ATTRIBUTES ? this.blockAttributes.delete(key) : this.blockAttributes.set(key, after),
+      run.length > MAX_BLOCK_RUN ? undefined : run);
+  }
+
+  /** The paragraphs whose attributes can differ in `other`, when it came from this state by paragraph changes alone. */
+  private blocksChangedBy(other: TextState): (Readonly<ElementId> | null)[] | undefined {
+    const run = other.blockRun;
+    const start = run?.findIndex(({ from }) => from === this) ?? -1;
+    return start === -1 ? undefined : run!.slice(start).map(({ id }) => id);
+  }
+
+  /** The attributes of the paragraph a line break starts, or of the first paragraph for `null`. */
+  blockAttributesOf(id: Readonly<ElementId> | null): TextAttributes {
+    return this.blockAttributes.get(this.blockKey(id)) ?? NO_ATTRIBUTES;
+  }
+
+  /** The line break that starts the paragraph holding gap `index`, or `null` for the first paragraph. */
+  blockStartAt(index: number): ElementId | null {
+    for (let position = index - 1; position >= 0; position--) {
+      const id = this.idList.at(position);
+      if (this.valueFor(id) === "\n") return id;
+    }
+    return null;
+  }
+
+  /** Every paragraph in order, with the line break that starts it. */
+  blockList(): { id: ElementId | null; index: number; length: number; attributes: TextAttributes }[] {
+    const blocks: { id: ElementId | null; index: number; length: number; attributes: TextAttributes }[] = [];
+    let start: ElementId | null = null, startIndex = 0, index = 0;
+    const close = () => { blocks.push({ id: start, index: startIndex, length: index - startIndex, attributes: this.blockAttributesOf(start) }); };
+    for (const id of this.idList) {
+      if (this.valueFor(id) === "\n") {
+        close();
+        start = id;
+        startIndex = index + 1;
+      }
+      index++;
+    }
+    close();
+    return blocks;
+  }
+
+  /** Paragraphs in `other` whose attributes differ from here, and every paragraph new since. */
+  private blocksTo(other: TextState, targets?: readonly Readonly<ElementId>[]): TextBlockChange[] {
+    if (this.blockAttributes.size === 0 && other.blockAttributes.size === 0) return [];
+    const changes: TextBlockChange[] = [];
+    const changed = this.blocksChangedBy(other);
+    if (changed !== undefined) {
+      // Only these paragraphs can differ; each appears once, at its index in `other`.
+      const seen = new Set<string>();
+      for (const id of changed) {
+        const key = this.blockKey(id);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const attributes = other.blockAttributesOf(id);
+        if (!jsonEquals(this.blockAttributesOf(id), attributes)) {
+          changes.push(Object.freeze({ index: id === null ? 0 : other.idList.indexOf(id) + 1, attributes }));
+        }
+      }
+      return changes.sort((a, b) => a.index - b.index);
+    }
+    if (this.blockAttributes === other.blockAttributes) {
+      if (this.sameContent(other)) return [];
+      if (targets !== undefined) {
+        // With the same attributes, only line breaks inserted since start new paragraphs, all without attributes.
+        const starts: number[] = [];
+        for (const id of targets) {
+          if (other.idList.has(id) && !this.idList.has(id) && other.valueFor(id) === "\n") starts.push(other.idList.indexOf(id) + 1);
+        }
+        return starts.sort((a, b) => a - b).map((index) => Object.freeze({ index, attributes: NO_ATTRIBUTES }));
+      }
+    }
+    for (const { id, index, attributes } of other.blockList()) {
+      const known = id === null || this.idList.has(id);
+      if (!known || !jsonEquals(this.blockAttributesOf(id), attributes)) changes.push(Object.freeze({ index, attributes }));
+    }
+    return changes;
+  }
+
+  /** Whether every paragraph seen on both sides has the same attributes; requires the same content. */
+  private sameBlocks(other: TextState): boolean {
+    if (this.blockAttributes === other.blockAttributes) return true;
+    return this.blocksTo(other).length === 0;
   }
 
   /** Applies a mark; unknown anchors are a conflict, and the start must come before the end. */
   mark(operation: TextMarkOperation): TextState {
-    return new TextState(this.idList, this.valuesById, addMark(this.idList, this.marks, operation));
+    return new TextState(this.idList, this.valuesById, addMark(this.idList, this.marks, operation), this.blockAttributes);
   }
 
   private attributesByKnownIndex(): TextAttributes[] {
@@ -507,8 +697,10 @@ export class TextState {
     const targets = targetIds === undefined ? undefined : [...targetIds];
     const result = (): TextChangeEvent => {
       const formats = this === other ? [] : this.formatsTo(other, targets);
+      const blocks = this === other ? [] : this.blocksTo(other, targets);
       return Object.freeze({ beforeLength: this.length, afterLength: other.length,
-        changes: Object.freeze(changes.reverse()), ...(formats.length === 0 ? {} : { formats: Object.freeze(formats) }) });
+        changes: Object.freeze(changes.reverse()), ...(formats.length === 0 ? {} : { formats: Object.freeze(formats) }),
+        ...(blocks.length === 0 ? {} : { blocks: Object.freeze(blocks) }) });
     };
     if (this === other || this.sameContent(other)) return result();
 
@@ -565,7 +757,9 @@ export class TextState {
     if (this === other) return true;
     if (this.length !== other.length) return false;
     // Equal marks give elements seen on both sides equal attributes; a mark can change any of them.
-    if (!sameMarks(this.marks, other.marks) || operations.some((operation) => operation.type === "text/mark")) {
+    // Paragraph attributes too.
+    if (!sameMarks(this.marks, other.marks) || this.blockAttributes !== other.blockAttributes ||
+      operations.some((operation) => operation.type === "text/mark" || operation.type === "text/block")) {
       return this.visibleEquals(other);
     }
 
@@ -594,7 +788,7 @@ export class TextState {
   visibleEquals(other: TextState): boolean {
     if (this === other) return true;
     if (this.length !== other.length) return false;
-    if (this.sameContent(other)) return this.markChanges(other).next().done === true;
+    if (this.sameContent(other)) return this.sameBlocks(other) && this.markChanges(other).next().done === true;
 
     const left = this.idList.values();
     const right = other.idList.values();
@@ -610,6 +804,7 @@ export class TextState {
         return false;
       }
     }
+    if (!this.sameBlocks(other)) return false;
     if (sameMarks(this.marks, other.marks)) return true;
     const otherFormatted = other.formatted();
     for (const { attributes } of this.formatted()) {
@@ -639,6 +834,9 @@ export class TextState {
     return Object.freeze({ idList, value: values.join(""),
       ...(boundaries.length === 0 ? {} : { surrogateBoundaries: Object.freeze(boundaries) }),
       ...(this.marks.length === 0 ? {} : { marks: Object.freeze(this.marks.map(ownMark)) }),
+      ...(this.blockAttributes.size === 0 ? {} : { blocks: Object.freeze(this.blockList()
+        .filter(({ attributes }) => attributes !== NO_ATTRIBUTES)
+        .map(({ id, attributes }) => Object.freeze({ id: id === null ? null : ownId(id), attributes }))) }),
     });
   }
 
@@ -663,6 +861,9 @@ export function freezeTextOperation<Path extends string>(
   operation: TextMarkOperation<Path>
 ): TextMarkOperation<Path>;
 export function freezeTextOperation<Path extends string>(
+  operation: TextBlockOperation<Path>
+): TextBlockOperation<Path>;
+export function freezeTextOperation<Path extends string>(
   operation: TextOperation<Path>
 ): TextOperation<Path>;
 export function freezeTextOperation<Path extends string>(
@@ -680,6 +881,12 @@ export function freezeTextOperation<Path extends string>(
   if (operation.type === "text/mark") {
     const { start, end, key, value } = ownMark(operation);
     return Object.freeze({ type: operation.type, path: operation.path, start, end, key, value });
+  }
+  if (operation.type === "text/block") {
+    const { id, key, value } = operation;
+    if (typeof key !== "string" || key.length === 0) throw new Error("Text block key must be a nonempty string");
+    if (value === undefined) throw new Error("Text block value must be JSON or null");
+    return Object.freeze({ type: operation.type, path: operation.path, id: id === null ? null : ownId(id), key, value });
   }
 
   const ranges = Object.freeze(
@@ -722,9 +929,11 @@ function* textOperationIds(operation: TextOperation): IterableIterator<Readonly<
 }
 
 /** Internal mutable API wrapper around a persistent TextState. */
-export class RuntimeText implements Text<MarkShape> {
+export class RuntimeText implements Text<MarkShape, BlockShape> {
   private current: TextState;
   private readonly markConfigs: MarkShape;
+  private readonly blockConfigs: BlockShape;
+  private readonly transact: (callback: () => void) => void;
   private readonly path: string;
   private readonly mutate: (operation: TextOperation) => void;
   private readonly idGenerator: ElementIdGenerator;
@@ -740,12 +949,16 @@ export class RuntimeText implements Text<MarkShape> {
     beforeMutation: () => void,
     lastBunchSeq: number,
     beforeObserve: () => () => void,
-    marks: MarkShape = {}
+    marks: MarkShape = {},
+    blocks: BlockShape = {},
+    transact: (callback: () => void) => void = (callback) => { callback(); }
   ) {
     this.mutate = mutate;
     this.path = path;
     this.current = initialState;
     this.markConfigs = marks;
+    this.blockConfigs = blocks;
+    this.transact = transact;
 
     this.beforeMutation = beforeMutation;
     this.observers = new CollectionObservers(() => this.current, beforeObserve, elementTargets);
@@ -862,6 +1075,54 @@ export class RuntimeText implements Text<MarkShape> {
     return this.current.toDelta();
   }
 
+  formatBlocks(index: number, count: number, key: string, value: JsonValue | null): void {
+    requireNumber(index, "Index");
+    requireNumber(count, "Count");
+    if (!Number.isSafeInteger(index) || index < 0 || index > this.length) {
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
+    }
+    if (!Number.isSafeInteger(count) || count < 0) throw new RangeError(`Invalid format count: ${count}`);
+    if (count > this.length - index) {
+      throw new RangeError(`Format range out of bounds: ${index} + ${count} (length: ${this.length})`);
+    }
+    if (typeof key !== "string") throw new TypeError("Block attribute key must be a string");
+    const config = Object.hasOwn(this.blockConfigs, key) ? this.blockConfigs[key] : undefined;
+    if (config === undefined) throw new Error(`Unknown block attribute for ${this.path}: ${key}`);
+    if (value !== null) {
+      validateJsonValue(value, [this.path, key]);
+      checkPayload(config.payload, value, [this.path, key]);
+    }
+    // The paragraph holding the range's start, then each one a line break inside the range starts.
+    const starts: (ElementId | null)[] = [this.current.blockStartAt(index)];
+    for (let position = index; position < index + count - 1; position++) {
+      const id = this.current.idAt(position);
+      if (this.current.valueFor(id) === "\n") starts.push(id);
+    }
+    const changed = starts.filter((id) => !jsonEquals(this.current.blockAttributesOf(id)[key] ?? null, value));
+    if (changed.length === 0) return;
+    // One batch for the whole range.
+    this.transact(() => {
+      for (const id of changed) {
+        this.beforeMutation();
+        const operation = freezeTextOperation({ type: "text/block", path: this.path, id, key, value });
+        this.current = this.current.block(operation);
+        this.mutate(operation);
+      }
+    });
+  }
+
+  blockAt(index: number): TextAttributes {
+    requireNumber(index, "Index");
+    if (!Number.isSafeInteger(index) || index < 0 || index > this.length) {
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
+    }
+    return this.current.blockAttributesOf(this.current.blockStartAt(index));
+  }
+
+  blocks(): readonly TextBlock[] {
+    return Object.freeze(this.current.blockList().map(({ index, length, attributes }) => Object.freeze({ index, length, attributes })));
+  }
+
   /** ID-targeted writes for the undo manager; each records one operation like the index-based API. */
   [historyWriter]() {
     return {
@@ -879,6 +1140,13 @@ export class RuntimeText implements Text<MarkShape> {
         this.beforeMutation();
         const operation = freezeTextOperation({ type: "text/delete", path: this.path, ranges: compressIds(ids) });
         this.current = this.current.delete(operation);
+        this.mutate(operation);
+      },
+      /** Sets a paragraph attribute on the paragraph a line break starts, or the first for `null`. */
+      block: (id: Readonly<ElementId> | null, key: string, value: JsonValue | null): void => {
+        this.beforeMutation();
+        const operation = freezeTextOperation({ type: "text/block", path: this.path, id, key, value });
+        this.current = this.current.block(operation);
         this.mutate(operation);
       },
       /** Sets `key` between two gaps, which must be known here. */

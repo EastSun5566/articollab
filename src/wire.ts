@@ -216,6 +216,14 @@ function decodeCursorAt(input: unknown, path: readonly PathSegment[]): Cursor {
   return Object.freeze({ anchor: decodeOptionalElementId(record.anchor, [...path, "anchor"]), bind });
 }
 
+/** A paragraph attribute key, which must be one of the Text's block attributes. */
+function decodeBlockKey(input: unknown, descriptor: CollectionSchema, path: readonly PathSegment[]): string {
+  const key = decodeString(input, path, "Block attribute key", true);
+  const blocks = descriptor.kind === "text" ? descriptor.blocks ?? {} : {};
+  if (!Object.hasOwn(blocks, key)) fail(path, `unknown block attribute key: ${key}`);
+  return key;
+}
+
 /** The fields of a mark, for an operation or a snapshot; the key must be one of the Text's marks. */
 function decodeMarkFields(
   record: WireRecord, descriptor: CollectionSchema, path: readonly PathSegment[]
@@ -370,6 +378,17 @@ function decodeOperation<S extends SchemaShape>(
         path: descriptor.path,
         ...decodeMarkFields(record, descriptor.descriptor, path),
       }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path, collection kind and mark key were checked above.
+    }
+    case "text/block": {
+      requireExactFields(record, path, ["type", "path", "id", "key", "value"]);
+      requireKind(descriptor.kind, "text", [...path, "path"]);
+      return Object.freeze({
+        type,
+        path: descriptor.path,
+        id: decodeOptionalElementId(record.id, [...path, "id"]),
+        key: decodeBlockKey(record.key, descriptor.descriptor, [...path, "key"]),
+        value: record.value === null ? null : decodeJsonValue(record.value, [...path, "value"]),
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path, collection kind and block key were checked above.
     }
     case "map/set": {
       requireExactFields(record, path, ["type", "path", "key", "value"]);
@@ -624,9 +643,26 @@ function decodeSnapshotCollection(
   }
 
   const hasBoundaries = Object.hasOwn(record, "surrogateBoundaries");
-  const hasMarks = Object.hasOwn(record, "marks");
+  const hasMarks = Object.hasOwn(record, "marks"), hasBlocks = Object.hasOwn(record, "blocks");
   requireExactFields(record, path, ["idList", "value",
-    ...(hasBoundaries ? ["surrogateBoundaries"] : []), ...(hasMarks ? ["marks"] : [])]);
+    ...(hasBoundaries ? ["surrogateBoundaries"] : []), ...(hasMarks ? ["marks"] : []), ...(hasBlocks ? ["blocks"] : [])]);
+  const blocks = hasBlocks ? Object.freeze(decodeDenseArray(record.blocks, [...path, "blocks"], "Text snapshot blocks")
+    .map((entry, index) => {
+      const blockPath = [...path, "blocks", index];
+      const block = decodeRecord(entry, blockPath, "Text snapshot block");
+      requireExactFields(block, blockPath, ["id", "attributes"]);
+      const attributes = decodeRecord(block.attributes, [...blockPath, "attributes"], "Block attributes");
+      const names = Object.keys(attributes);
+      if (names.length === 0) fail([...blockPath, "attributes"], "Block attributes must not be empty");
+      return Object.freeze({
+        id: decodeOptionalElementId(block.id, [...blockPath, "id"]),
+        attributes: Object.freeze(Object.fromEntries(names.map((name) => {
+          decodeBlockKey(name, descriptor, [...blockPath, "attributes", name]);
+          if (attributes[name] === null) fail([...blockPath, "attributes", name], "Block attribute values must not be null");
+          return [name, decodeJsonValue(attributes[name], [...blockPath, "attributes", name])];
+        }))),
+      });
+    })) : undefined;
   const marks = hasMarks ? Object.freeze(decodeDenseArray(record.marks, [...path, "marks"], "Text snapshot marks")
     .map((entry, index) => {
       const markPath = [...path, "marks", index];
@@ -646,6 +682,7 @@ function decodeSnapshotCollection(
     ),
     ...(boundaries === undefined ? {} : { surrogateBoundaries: boundaries }),
     ...(marks === undefined ? {} : { marks }),
+    ...(blocks === undefined ? {} : { blocks }),
   });
   validateSnapshotCollection(kind, snapshot, path);
   return snapshot;
