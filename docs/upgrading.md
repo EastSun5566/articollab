@@ -11,17 +11,13 @@ New operation types are different: a runtime that does not know an operation rej
 
 Keep the original checkpoints until you no longer need to roll back. Once saved data contains a new operation, rolling back means restoring those backups, not just installing the old package.
 
-## Upgrading from 0.10 to 0.11
-
-0.11 adds [Text marks](collections.md#format-text). A 0.10 reader rejects `text/mark`, and it rejects Text snapshots that have a `marks` field, so finish the steps above before calling `format()`.
-
-Adding `marks` to an existing `text()` changes the schema but not the saved data: snapshots and pending batches from 0.10 restore unchanged. Removing a mark key that saved data uses makes that data fail to decode.
-
 ## Upgrading from 0.9 to 0.10
 
-0.10 adds [Counters](collections.md#counter-additions-that-all-count). A 0.9 reader rejects `counter/add`, `counterMap/add` and `counterMap/delete`, so finish the steps above before adding a `counter()` or `counterMap()` path.
+0.10 adds [Counters](collections.md#counter-additions-that-all-count) and [Text marks](collections.md#format-text). A 0.9 reader rejects `counter/add`, `counterMap/add`, `counterMap/delete` and `text/mark`, and it rejects Text snapshots that have a `marks` field. So finish the steps above before adding a `counter()` or `counterMap()` path or calling `format()`.
 
 Adding a Counter path changes the schema. If you replace a `value()` that held a count with `counter()`, its whole-number snapshot decodes as a Counter, but pending `value/set` operations for that path do not: send or cancel them first.
+
+Adding `marks` to an existing `text()` also changes the schema, but not the saved data: snapshots and pending batches restore unchanged. Removing a mark key that saved data uses makes that data fail to decode.
 
 0.10 also renames some APIs so that they follow one style:
 
