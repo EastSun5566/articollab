@@ -373,7 +373,9 @@ function randomEdit(doc: ClientDocument<Shape>, pick: (length: number) => number
 }
 
 describe("Undo Text formatting", () => {
-  const Rich = defineDocument({ body: text({ marks: { bold: { expand: "after" }, link: { expand: "none" } } }) });
+  const Rich = defineDocument({
+    body: text({ marks: { bold: { expand: "after" }, italic: { expand: "both" }, link: { expand: "none" } } }),
+  });
   type RichShape = typeof Rich.definition;
   type RichBatch = ClientBatch<DocumentOperation<RichShape>>;
   const delta = (doc: ClientDocument<RichShape>) => JSON.stringify(doc.state.body.toDelta());
@@ -431,6 +433,47 @@ describe("Undo Text formatting", () => {
     b.send(); a.receive();
     assert.equal(a.history.undo(), true);
     assert.equal(delta(a.doc), JSON.stringify([{ insert: "Hello " }, { insert: "world", attributes: { link: "https://b" } }]));
+  });
+
+  it("stops an undone mark from expanding, and redo makes it expand again", () => {
+    const a = richSetup()();
+    const body = a.doc.state.body;
+    body.insert(0, "Hello world");
+    body.format(6, 5, "bold", true); // Ends at the end of the text, so typing there continues it.
+    body.format(0, 5, "italic", true);
+    a.history.undo();
+    a.history.undo();
+    a.history.redo();
+    a.history.redo();
+    body.insert(11, "!");
+    body.insert(5, "X");
+    assert.equal(delta(a.doc), JSON.stringify([{ insert: "HelloX", attributes: { italic: true } }, { insert: " " },
+      { insert: "world!", attributes: { bold: true } }]));
+    for (let step = 0; step < 4; step++) a.history.undo(); // The insertions, then the marks.
+    body.insert(11, "!");
+    body.insert(5, "X");
+    assert.equal(delta(a.doc), JSON.stringify([{ insert: "HelloX world!" }]));
+  });
+
+  it("reverts text others typed into the mark since, and keeps what was formatted before", () => {
+    const writer = richSetup();
+    const a = writer(), b = writer();
+    a.doc.state.body.insert(0, "Hello world");
+    a.doc.state.body.format(0, 5, "bold", true);
+    a.send(); b.receive();
+    a.doc.transact(() => {
+      a.doc.state.body.format(0, 11, "bold", true);
+      a.doc.state.body.format(0, 11, "italic", true);
+    });
+    a.send(); b.receive();
+    b.doc.state.body.insert(0, ">"); // At the italic mark's start, which expands before.
+    b.doc.state.body.insert(7, "big "); // ">Hello big world"
+    b.send(); a.receive();
+    assert.equal(delta(a.doc), JSON.stringify([{ insert: ">", attributes: { italic: true } },
+      { insert: "Hello big world", attributes: { bold: true, italic: true } }]));
+    a.history.undo(); // Both marks: one step.
+    assert.equal(delta(a.doc), JSON.stringify([{ insert: ">" }, { insert: "Hello", attributes: { bold: true } },
+      { insert: " big world" }]));
   });
 
   it("gives deleted text back its marks, including marks that do not expand", () => {

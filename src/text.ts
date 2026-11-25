@@ -881,11 +881,10 @@ export class RuntimeText implements Text<MarkShape> {
         this.current = this.current.delete(operation);
         this.mutate(operation);
       },
-      /** Sets `key` on exactly the visible elements from `first` to `last`, without expanding. */
-      format: (first: Readonly<ElementId>, last: Readonly<ElementId>, key: string, value: JsonValue | null): void => {
+      /** Sets `key` between two gaps, which must be known here. */
+      mark: (start: Cursor, end: Cursor, key: string, value: JsonValue | null): void => {
         this.beforeMutation();
-        const operation = freezeTextOperation({ type: "text/mark", path: this.path,
-          start: { anchor: first, bind: "right" }, end: { anchor: last, bind: "left" }, key, value });
+        const operation = freezeTextOperation({ type: "text/mark", path: this.path, start, end, key, value });
         this.current = this.current.mark(operation);
         this.mutate(operation);
       },

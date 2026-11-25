@@ -408,7 +408,7 @@ A non-number option throws `TypeError`, and an out-of-range one `RangeError`. A 
 | List element set or moved | it still holds the step's value, or still sits at the step's position | `list/set` of the earlier value, or `list/move` back right after its earlier position |
 | Text elements inserted | they are still visible | `text/delete` |
 | Text elements deleted | they are still deleted | `text/insert` of the earlier text with new IDs, after the deleted run's last element, then `text/mark` to give it back its earlier marks |
-| Text marks | an element still has the value the step left for that key | `text/mark` of the earlier value, one per run of such elements, covering exactly that run |
+| Text marks | an element still has the value the step left for that key; text typed into the mark since follows its neighbor | `text/mark` over the step's own range with the most common earlier value, so the old mark stops expanding, then `text/mark` on exactly each run that needs another value |
 
 - All writes of one undo form one transaction, so one batch.
 - A reinserted element or text gets new IDs. The manager maps old IDs to new ones, so earlier and later steps keep following it; cursors and application references to the old IDs do not.
