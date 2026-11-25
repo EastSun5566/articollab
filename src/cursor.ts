@@ -17,7 +17,7 @@ function requireBind(bind: unknown): asserts bind is Cursor["bind"] {
   }
 }
 
-function requireCursor(cursor: unknown): asserts cursor is Cursor {
+export function requireCursor(cursor: unknown): asserts cursor is Cursor {
   if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) {
     throw new TypeError("Cursor must be an object");
   }

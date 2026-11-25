@@ -18,6 +18,7 @@ import {
   type Text,
   type TextDeleteOperation,
   type TextInsertOperation,
+  type TextMarkOperation,
   type TextOperation,
 } from "./text.ts";
 import {
@@ -88,6 +89,7 @@ export type Operation =
   | ListMoveOperation
   | TextInsertOperation
   | TextDeleteOperation
+  | TextMarkOperation
   | MapSetOperation
   | MapDeleteOperation
   | CounterAddOperation
@@ -99,8 +101,8 @@ type OperationFor<D, Path extends string> =
     ? ValueSetOperation<Path, T>
     : D extends ListSchema<infer T extends JsonValue>
       ? ListOperation<Path, T>
-      : D extends TextSchema
-        ? TextOperation<Path>
+      : D extends TextSchema<infer M>
+        ? TextOperation<Path, M>
         : D extends MapSchema<infer T extends JsonValue>
           ? MapOperation<Path, T>
           : D extends CounterSchema
@@ -446,6 +448,11 @@ function sameOperations(
             const otherRange = other.ranges[rangeIndex]!;
             return range.count === otherRange.count && equalsId(range.start, otherRange.start);
           });
+      case "text/mark":
+        // A changed mark value changes what is visible, so it never counts as a payload change.
+        return other.type === "text/mark" && operation.key === other.key && jsonEquals(operation.value, other.value) &&
+          sameAnchor(operation.start.anchor, other.start.anchor) && operation.start.bind === other.start.bind &&
+          sameAnchor(operation.end.anchor, other.end.anchor) && operation.end.bind === other.end.bind;
       case "map/set":
         return other.type === "map/set" && operation.key === other.key &&
           (allowValueChanges || Object.is(operation.value, other.value));
@@ -544,6 +551,7 @@ function freezeOperation(operation: Operation): Operation {
       return freezeListOperation(operation);
     case "text/insert":
     case "text/delete":
+    case "text/mark":
       return freezeTextOperation(operation);
     case "map/set":
     case "map/delete":
@@ -572,8 +580,8 @@ type DocumentCollection<D> =
     ? Value<T>
     : D extends ListSchema<infer T extends JsonValue>
       ? List<T>
-      : D extends TextSchema
-        ? Text
+      : D extends TextSchema<infer M>
+        ? Text<M>
         : D extends MapSchema<infer T extends JsonValue>
           ? MapCollection<T>
           : D extends CounterSchema
@@ -790,7 +798,8 @@ export class ClientDocument<S extends SchemaShape> {
           collectionState,
           beforeMutation,
           lastBunchSeqs?.[path] ?? 0,
-          () => this.registerObserver("Text")
+          () => this.registerObserver("Text"),
+          descriptor.marks
         );
       }
       this.collections.set(path, runtime);
@@ -1093,7 +1102,8 @@ export class ClientDocument<S extends SchemaShape> {
           keys.push(operation.key);
           mapComparisonKeys!.set(operation.path, keys);
         } else if (textComparisonOperations !== undefined &&
-          (operation.type === "text/insert" || operation.type === "text/delete")) {
+          // A mark makes the Text compare in full; see TextState.visibleEqualsAt.
+          (operation.type === "text/insert" || operation.type === "text/delete" || operation.type === "text/mark")) {
           const operations = textComparisonOperations.get(operation.path) ?? [];
           operations.push(operation);
           textComparisonOperations.set(operation.path, operations);
@@ -1196,6 +1206,10 @@ export class ClientDocument<S extends SchemaShape> {
         case "text/insert": case "text/delete":
           if (runtime instanceof RuntimeText) runtime.track(operation);
           break;
+        case "text/mark":
+          // A mark can change the attributes of any element in its range.
+          if (runtime instanceof RuntimeText) runtime.requireFullComparison();
+          break;
         case "list/insert": case "list/delete": case "list/set": case "list/move":
           if (runtime instanceof RuntimeList) runtime.track(operation);
           break;
@@ -1256,6 +1270,13 @@ export class ClientDocument<S extends SchemaShape> {
 function checkOperationPayloads(definition: Readonly<SchemaShape>, operations: readonly Operation[]): void {
   for (const operation of operations) {
     const descriptor = Object.hasOwn(definition, operation.path) ? definition[operation.path] : undefined;
+    if (operation.type === "text/mark" && descriptor?.kind === "text") {
+      const marks = descriptor.marks ?? {};
+      const config = Object.hasOwn(marks, operation.key) ? marks[operation.key] : undefined;
+      if (config === undefined) throw new Error(`Unknown mark for ${operation.path}: ${operation.key}`);
+      if (operation.value !== null) checkPayload(config.payload, operation.value, [operation.path, operation.key]);
+      continue;
+    }
     const payload = descriptor === undefined || !("payload" in descriptor) ? undefined : descriptor.payload;
     if (payload === undefined) continue;
     switch (operation.type) {

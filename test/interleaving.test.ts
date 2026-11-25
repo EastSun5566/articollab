@@ -9,7 +9,9 @@ import {
   type DocumentOperation, type DocumentSnapshot, type ServerCommit, type ServerResolver,
 } from "../src/index.ts";
 
-const Board = defineDocument({ count: value(0), items: list<string>(), body: text() });
+const Board = defineDocument({
+  count: value(0), items: list<string>(), body: text({ marks: { bold: { expand: "after" }, link: { expand: "none" } } }),
+});
 type Shape = typeof Board.definition;
 type Batch = ClientBatch<DocumentOperation<Shape>>;
 type Commit = ServerCommit<DocumentOperation<Shape>>;
@@ -18,7 +20,8 @@ type Mode = "accept" | "policy-reject" | "transform" | "explicit-reject";
 function json(input: unknown): unknown { return JSON.parse(JSON.stringify(input)); }
 
 function visible(doc: ClientDocument<Shape>) {
-  return { count: doc.state.count.value, items: doc.state.items.toArray(), body: doc.state.body.toString() };
+  return { count: doc.state.count.value, items: doc.state.items.toArray(), body: doc.state.body.toString(),
+    formats: json(doc.state.body.toDelta()) };
 }
 
 function transformed(batch: Batch): readonly DocumentOperation<Shape>[] {
@@ -246,8 +249,10 @@ function setup(maxHistory = 1000) {
       assert.deepEqual(target.doc.checkpoint().pendingBatches, []);
       assert.equal(target.doc.replayConflict, null);
       assert.deepEqual(target.doc.checkpoint().snapshot, server.snapshot());
+      const reader = createClient(Board, { clientId: "reader", snapshot: server.snapshot(), onBatch: () => {} });
       assert.deepEqual(visible(target.doc), { count: server.snapshot().data.count,
-        items: server.snapshot().data.items.values, body: server.snapshot().data.body.value });
+        items: server.snapshot().data.items.values, body: server.snapshot().data.body.value,
+        formats: json(reader.state.body.toDelta()) });
     }
     check();
   }
@@ -287,6 +292,11 @@ function run(seed: number) {
           if (doc.state.body.length > 0) actions.push({ name: "text-delete " + target.clientId, run: () => {
             const index = pick(doc.state.body.length);
             doc.state.body.delete(index, 1 + pick(doc.state.body.length - index));
+          } });
+          if (doc.state.body.length > 0) actions.push({ name: "text-format " + target.clientId, run: () => {
+            const index = pick(doc.state.body.length), count = 1 + pick(doc.state.body.length - index);
+            if (pick(2) === 0) doc.state.body.format(index, count, "bold", pick(4) === 0 ? null : true);
+            else doc.state.body.format(index, count, "link", pick(4) === 0 ? null : "https://" + step);
           } });
           actions.push({ name: "mixed " + target.clientId, run: () => {
             doc.transact(() => {
@@ -342,7 +352,7 @@ function run(seed: number) {
     currentAction = "finish";
     h.finish();
     currentAction = "coverage";
-    for (const action of ["value", "list-insert", "list-delete", "text-insert", "text-delete", "mixed",
+    for (const action of ["value", "list-insert", "list-delete", "text-insert", "text-delete", "text-format", "mixed",
       "rollback", "accept", "policy-reject", "transform", "explicit-reject", "deliver",
       "partial-catch-up", "retry-receive", "retry-reject", "restore-client", "restore-server", "resolver-throw"]) {
       assert.ok(h.coverage.has(action), "seed did not exercise " + action);

@@ -24,6 +24,7 @@ import {
   type TextIdRange,
   type TextSnapshotData,
 } from "./text.ts";
+import type { TextMark } from "./marks.ts";
 import type {
   ClientBatch,
   ClientBatchRef,
@@ -198,15 +199,36 @@ function descriptorForPath<S extends SchemaShape>(
   schema: DocumentSchema<S>,
   pathValue: unknown,
   path: readonly PathSegment[]
-): { readonly path: string; readonly kind: CollectionKind } {
+): { readonly path: string; readonly kind: CollectionKind; readonly descriptor: CollectionSchema } {
   const operationPath = decodeString(pathValue, path, "Operation path", true);
   if (!Object.hasOwn(schema.definition, operationPath)) {
     fail(path, `unknown document path: ${operationPath}`);
   }
-  return {
-    path: operationPath,
-    kind: schema.definition[operationPath]!.kind,
-  };
+  const descriptor = schema.definition[operationPath]!;
+  return { path: operationPath, kind: descriptor.kind, descriptor };
+}
+
+function decodeCursorAt(input: unknown, path: readonly PathSegment[]): Cursor {
+  const record = decodeRecord(input, path, "Cursor");
+  requireExactFields(record, path, ["anchor", "bind"]);
+  const bind = decodeString(record.bind, [...path, "bind"], "Cursor bind");
+  if (bind !== "left" && bind !== "right") fail([...path, "bind"], `Cursor bind must be "left" or "right"`);
+  return Object.freeze({ anchor: decodeOptionalElementId(record.anchor, [...path, "anchor"]), bind });
+}
+
+/** The fields of a mark, for an operation or a snapshot; the key must be one of the Text's marks. */
+function decodeMarkFields(
+  record: WireRecord, descriptor: CollectionSchema, path: readonly PathSegment[]
+): TextMark {
+  const key = decodeString(record.key, [...path, "key"], "Mark key", true);
+  const marks = descriptor.kind === "text" ? descriptor.marks ?? {} : {};
+  if (!Object.hasOwn(marks, key)) fail([...path, "key"], `unknown mark key: ${key}`);
+  return Object.freeze({
+    start: decodeCursorAt(record.start, [...path, "start"]),
+    end: decodeCursorAt(record.end, [...path, "end"]),
+    key,
+    value: record.value === null ? null : decodeJsonValue(record.value, [...path, "value"]),
+  });
 }
 
 function requireKind(
@@ -339,6 +361,15 @@ function decodeOperation<S extends SchemaShape>(
         path: descriptor.path,
         ranges,
       }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path and collection kind were checked above; business payload T remains the caller’s responsibility.
+    }
+    case "text/mark": {
+      requireExactFields(record, path, ["type", "path", "start", "end", "key", "value"]);
+      requireKind(descriptor.kind, "text", [...path, "path"]);
+      return Object.freeze({
+        type,
+        path: descriptor.path,
+        ...decodeMarkFields(record, descriptor.descriptor, path),
+      }) as DocumentOperation<S>; // oxlint-disable-line typescript/no-unsafe-type-assertion -- Path, collection kind and mark key were checked above.
     }
     case "map/set": {
       requireExactFields(record, path, ["type", "path", "key", "value"]);
@@ -537,10 +568,11 @@ function validateSnapshotCollection(
 }
 
 function decodeSnapshotCollection(
-  kind: CollectionKind,
+  descriptor: CollectionSchema,
   input: unknown,
   path: readonly PathSegment[]
 ): JsonValue | ListSnapshotData | TextSnapshotData | MapSnapshotData | CounterMapSnapshotData {
+  const { kind } = descriptor;
   if (kind === "value") return decodeJsonValue(input, path);
   if (kind === "counter") return decodeSafeInteger(input, path, "Counter", Number.MIN_SAFE_INTEGER);
   if (kind === "counterMap") {
@@ -592,7 +624,16 @@ function decodeSnapshotCollection(
   }
 
   const hasBoundaries = Object.hasOwn(record, "surrogateBoundaries");
-  requireExactFields(record, path, hasBoundaries ? ["idList", "value", "surrogateBoundaries"] : ["idList", "value"]);
+  const hasMarks = Object.hasOwn(record, "marks");
+  requireExactFields(record, path, ["idList", "value",
+    ...(hasBoundaries ? ["surrogateBoundaries"] : []), ...(hasMarks ? ["marks"] : [])]);
+  const marks = hasMarks ? Object.freeze(decodeDenseArray(record.marks, [...path, "marks"], "Text snapshot marks")
+    .map((entry, index) => {
+      const markPath = [...path, "marks", index];
+      const mark = decodeRecord(entry, markPath, "Text snapshot mark");
+      requireExactFields(mark, markPath, ["start", "end", "key", "value"]);
+      return decodeMarkFields(mark, descriptor, markPath);
+    })) : undefined;
   const boundaries = hasBoundaries ? Object.freeze(decodeDenseArray(record.surrogateBoundaries,
     [...path, "surrogateBoundaries"], "Text snapshot surrogateBoundaries").map((offset, index) =>
       decodeSafeInteger(offset, [...path, "surrogateBoundaries", index], "Surrogate boundary", 1))) : undefined;
@@ -604,6 +645,7 @@ function decodeSnapshotCollection(
       "Text snapshot value"
     ),
     ...(boundaries === undefined ? {} : { surrogateBoundaries: boundaries }),
+    ...(marks === undefined ? {} : { marks }),
   });
   validateSnapshotCollection(kind, snapshot, path);
   return snapshot;
@@ -611,11 +653,7 @@ function decodeSnapshotCollection(
 
 /** Decodes a parsed Text or List cursor, such as one received over an application presence channel. */
 export function decodeCursor(input: unknown): Cursor {
-  const record = decodeRecord(input, [], "Cursor");
-  requireExactFields(record, [], ["anchor", "bind"]);
-  const bind = decodeString(record.bind, ["bind"], "Cursor bind");
-  if (bind !== "left" && bind !== "right") fail(["bind"], `Cursor bind must be "left" or "right"`);
-  return Object.freeze({ anchor: decodeOptionalElementId(record.anchor, ["anchor"]), bind });
+  return decodeCursorAt(input, []);
 }
 
 /** Decodes a parsed client batch before passing it to server.receive(). */
@@ -696,7 +734,7 @@ function decodeSnapshotAt<S extends SchemaShape>(
       schemaPaths.map((documentPath) => [
         documentPath,
         decodeSnapshotCollection(
-          schema.definition[documentPath]!.kind,
+          schema.definition[documentPath]!,
           dataRecord[documentPath],
           [...dataPath, documentPath]
         ),

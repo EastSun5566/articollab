@@ -30,7 +30,7 @@ interface Observer<S, E> {
  */
 export class CollectionObservers<
   S extends ObservableState<S, E, K>,
-  E extends { readonly changes: readonly unknown[] },
+  E extends { readonly changes: readonly unknown[]; readonly formats?: readonly unknown[] },
   K,
 > {
   private readonly current: () => S;
@@ -94,7 +94,7 @@ export class CollectionObservers<
         const event = this.compareTransition?.(observer.state, state) ??
           observer.state.changesTo(state, this.fullComparison ? undefined : this.targets.values());
         observer.state = state;
-        if (event.changes.length > 0) observer.listener(event);
+        if (event.changes.length > 0 || (event.formats?.length ?? 0) > 0) observer.listener(event);
       }
     } finally {
       this.clear();

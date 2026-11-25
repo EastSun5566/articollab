@@ -11,7 +11,8 @@ import { initialStates, replayPending } from "../src/state.ts";
 import { ListState } from "../src/list.ts";
 import { TextState } from "../src/text.ts";
 
-const Board = defineDocument({ count: value(0), items: list<{ label: string } | number | null>(), body: text(),
+const Board = defineDocument({ count: value(0), items: list<{ label: string } | number | null>(),
+  body: text({ marks: { bold: { expand: "after" }, link: { expand: "none" } } }),
   meta: value<{ label: string } | null>(null) });
 type Shape = typeof Board.definition;
 type Doc = ClientDocument<Shape>;
@@ -46,12 +47,14 @@ function view(doc: Doc) {
   assert.equal(visible.length, listSnapshot.values.length);
   for (const [index, payload] of visible.entries()) assert.ok(Object.is(payload, listSnapshot.values[index]));
   assert.equal(doc.state.body.toString(), textSnapshot.value);
+  const formats = JSON.stringify(body.toDelta());
+  assert.equal(JSON.stringify(doc.state.body.toDelta()), formats);
   assert.ok(Object.is(doc.state.count.value, count));
   const meta = states.get("meta");
   assert.ok(Object.is(doc.state.meta.value, meta));
   return { count, meta, items: listSnapshot.values,
     itemIds: visibleIds(listSnapshot.idList).map((position) => permanentIds.get(position) ?? position),
-    body: textSnapshot.value, textIds: visibleIds(textSnapshot.idList), conflict: doc.replayConflict };
+    body: textSnapshot.value, textIds: visibleIds(textSnapshot.idList), formats, conflict: doc.replayConflict };
 }
 
 function changed(before: ReturnType<typeof view>, after: ReturnType<typeof view>): boolean {
@@ -63,7 +66,7 @@ function changed(before: ReturnType<typeof view>, after: ReturnType<typeof view>
   return !sameConflict || !Object.is(before.count, after.count) || !Object.is(before.meta, after.meta) ||
     !sameIds(before.itemIds, after.itemIds) || before.items.length !== after.items.length ||
     before.items.some((payload, index) => !Object.is(payload, after.items[index])) ||
-    !sameIds(before.textIds, after.textIds) || before.body !== after.body;
+    !sameIds(before.textIds, after.textIds) || before.body !== after.body || before.formats !== after.formats;
 }
 
 function setup() {
@@ -81,6 +84,9 @@ function setup() {
         return { ...operation, value: operation.value === null ? null : { label: "server:" + operation.value.label } };
       }
       if (operation.type === "text/insert") return { ...operation, value: operation.value.toUpperCase() };
+      if (operation.type === "text/mark" && operation.key === "link" && operation.value !== null) {
+        return { ...operation, value: "server:" + JSON.stringify(operation.value) };
+      }
       return operation;
     });
   } });
@@ -442,6 +448,11 @@ describe("full visible change comparison", () => {
             } else if (action === 3) {
               target.doc.state.body.insert(position, "q😀"); target.doc.state.body.delete(position, 2);
               network.coverage.add("text-cancel");
+            } else {
+              const count = 1 + choose(length - position);
+              if (step % 3 === 0) target.doc.state.body.format(position, count, "bold", step % 2 === 0 ? true : null);
+              else target.doc.state.body.format(position, count, "link", step % 4 === 0 ? null : String(step));
+              network.coverage.add("text-format");
             }
           });
         } else if (action === 5 || action === 8) {
@@ -467,7 +478,7 @@ describe("full visible change comparison", () => {
       }
       for (const action of ["accept", "reject", "transform", "explicit-reject", "restore",
         "own", "remote", "decoded", "in-memory", "changed", "silent", "remote-pending",
-        "text-insert", "text-delete", "text-replace", "text-cancel"]) {
+        "text-insert", "text-delete", "text-replace", "text-cancel", "text-format"]) {
         assert.ok(network.coverage.has(action), `seed did not cover ${action}`);
       }
     } catch (cause) {
