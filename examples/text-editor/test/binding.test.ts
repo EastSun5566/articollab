@@ -3,7 +3,7 @@ import { describe, it, mock } from "node:test";
 import { EditorSelection, type TransactionSpec } from "@codemirror/state";
 import { createClient, createServer, defineDocument, text, value, type ClientBatch,
   type DocumentOperation } from "../../../dist/index.js";
-import { createTextBinding, formatRanges, remoteRanges } from "../binding.js";
+import { blockLines, createTextBinding, formatRanges, remoteRanges } from "../binding.js";
 import { Note as RichNote } from "../schema.js";
 import { createMirror, editorOffset, elementIndexAt, textEdits } from "../changes.js";
 
@@ -401,5 +401,61 @@ describe("Text editor formatting", () => {
     assert.deepEqual(ranges(binding), [[0, 7, { bold: true }]]);
     binding.toggleMark("bold", true); // All bold: removed.
     assert.deepEqual(ranges(binding), []);
+  });
+});
+
+function lines(binding: ReturnType<typeof bind>) {
+  return binding.state.field(blockLines).map(({ from, attributes }) => [from, attributes]);
+}
+
+function paragraphNetwork() {
+  const server = createServer(RichNote);
+  const outbox: ClientBatch<DocumentOperation<typeof RichNote.definition>>[] = [];
+  const writer = () => {
+    const doc = createClient(RichNote, { clientId: server.openClient(), onBatch(batch) { outbox.push(batch); } });
+    let seen = 0;
+    return { doc, deliver() {
+      for (const commit of server.commitsSince(seen) ?? []) { doc.receive(commit); seen = commit.serverSeq; }
+    } };
+  };
+  const a = writer(), b = writer();
+  const sync = () => { for (const batch of outbox.splice(0)) server.receive(batch); a.deliver(); b.deliver(); };
+  return { a, b, sync };
+}
+
+describe("Text editor paragraphs", () => {
+  it("starts from the Text's paragraphs and follows remote changes, splits and joins", (t) => {
+    const { a, b, sync } = paragraphNetwork();
+    a.doc.state.body.insert(0, "Title\n😀 item");
+    a.doc.state.body.formatBlocks(0, 0, "heading", 1);
+    sync();
+    const binding = bind(b.doc); t.after(() => binding.destroy());
+    assert.deepEqual(lines(binding), [[0, { heading: 1 }]]);
+    a.doc.state.body.formatBlocks(6, 0, "list", "bullet");
+    sync();
+    assert.deepEqual(lines(binding), [[0, { heading: 1 }], [6, { list: "bullet" }]]);
+    a.doc.state.body.delete(5); // Joins the list item to the title
+    sync();
+    assert.deepEqual(lines(binding), [[0, { heading: 1 }]]);
+  });
+
+  it("continues a list on Enter, ends it on Enter in an empty item, and toggles paragraphs", (t) => {
+    const { a } = paragraphNetwork();
+    const binding = bind(a.doc); t.after(() => binding.destroy());
+    binding.dispatch([binding.state.update({ changes: { from: 0, insert: "one" } })]);
+    binding.toggleBlock({ key: "list", value: "bullet" });
+    binding.dispatch([binding.state.update({ selection: EditorSelection.cursor(3) })]);
+    assert.equal(binding.enter(), true);
+    binding.dispatch([binding.state.update({ changes: { from: 4, insert: "two" }, selection: EditorSelection.cursor(7) })]);
+    assert.deepEqual(a.doc.state.body.blocks().map(({ attributes }) => attributes), [{ list: "bullet" }, { list: "bullet" }]);
+    binding.enter();
+    binding.enter(); // An empty item: the list ends instead of another line
+    assert.equal(binding.state.doc.toString(), "one\ntwo\n");
+    assert.deepEqual(a.doc.state.body.blocks().map(({ attributes }) => attributes), [{ list: "bullet" }, { list: "bullet" }, {}]);
+    assert.deepEqual(lines(binding), [[0, { list: "bullet" }], [4, { list: "bullet" }]]);
+    binding.dispatch([binding.state.update({ selection: EditorSelection.single(0, 5) })]);
+    binding.toggleBlock({ key: "list", value: "bullet" }); // Both items have it: removed from both
+    binding.toggleBlock({ key: "heading", value: 2 });
+    assert.deepEqual(lines(binding), [[0, { heading: 2 }], [4, { heading: 2 }]]);
   });
 });

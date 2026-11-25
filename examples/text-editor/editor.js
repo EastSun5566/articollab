@@ -1,12 +1,14 @@
 // @ts-check
 import { Compartment, EditorState } from "@codemirror/state";
-import { createTextBinding, formatRanges, remoteRanges } from "./binding.js";
+import { blockLines, createTextBinding, formatRanges, remoteRanges } from "./binding.js";
+
+/** @typedef {"bold" | "italic" | "link" | "heading1" | "heading2" | "list" | "undo" | "redo"} Command */
 
 /** @param {HTMLElement} parent
  * @param {Parameters<typeof createTextBinding>[0]} doc
  * @param {{label: string, canEdit: () => boolean, onError: (error: unknown) => void,
  *   onLocalEdit: () => void, onComposition: () => void, onSelection: () => void,
- *   onShortcut: (command: "bold" | "italic" | "link" | "undo" | "redo") => void,
+ *   onShortcut: (command: Command) => void,
  *   onRemote: (statuses: readonly import("./binding.js").RemoteStatus[]) => void}} options
  */
 export async function createTextEditor(parent, doc, options) {
@@ -38,9 +40,16 @@ export async function createTextEditor(parent, doc, options) {
       return Decoration.mark({ class: classes.join(" "), ...(typeof link === "string" ? { attributes: { title: link } } : {}) })
         .range(from, to);
     }), true));
-  /** @param {"bold" | "italic" | "link" | "undo" | "redo"} command */
+  const lineDecorations = EditorView.decorations.compute([blockLines], (state) => Decoration.set(
+    state.field(blockLines).map(({ from, attributes }) => Decoration.line({ class: [
+      ...(attributes.heading === 1 || attributes.heading === 2 ? ["cm-heading-" + String(attributes.heading)] : []),
+      ...(attributes.list === "bullet" ? ["cm-list-bullet"] : []),
+    ].join(" ") }).range(from)), true));
+  /** @param {Command} command */
   const run = (command) => () => { options.onShortcut(command); return true; };
   const shortcuts = keymap.of([
+    { key: "Enter", run: () => binding.enter() },
+    { key: "Mod-Alt-1", run: run("heading1") }, { key: "Mod-Alt-2", run: run("heading2") }, { key: "Mod-Shift-8", run: run("list") },
     { key: "Mod-b", run: run("bold") }, { key: "Mod-i", run: run("italic") }, { key: "Mod-k", run: run("link") },
     { key: "Mod-z", run: run("undo"), shift: run("redo") }, { key: "Mod-y", run: run("redo") },
   ]);
@@ -52,7 +61,7 @@ export async function createTextEditor(parent, doc, options) {
     canEdit: options.canEdit, onError: options.onError, onLocalEdit: options.onLocalEdit,
     onSelection: options.onSelection, onRemote: options.onRemote,
     extensions: [readOnly.of([EditorState.readOnly.of(true), EditorView.editable.of(false)]), remoteDecorations,
-      formatDecorations, shortcuts,
+      formatDecorations, lineDecorations, shortcuts,
       EditorView.contentAttributes.of({ "aria-label": options.label }),
       EditorView.lineWrapping],
     update: (transactions) => { view?.update(transactions); },
@@ -71,6 +80,8 @@ export async function createTextEditor(parent, doc, options) {
     selectionCursors: () => binding.selectionCursors(),
     /** @param {Parameters<typeof binding.toggleMark>[0]} key @param {string | true} value */
     toggleMark: (key, value) => binding.toggleMark(key, value),
+    /** @param {Parameters<typeof binding.toggleBlock>[0]} attribute */
+    toggleBlock: (attribute) => binding.toggleBlock(attribute),
     /** @param {readonly import("./binding.js").RemoteSelection[]} selections */
     setRemote: (selections) => binding.setRemote(selections),
     /** @param {boolean} value */

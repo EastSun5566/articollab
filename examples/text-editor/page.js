@@ -100,11 +100,13 @@ export async function mountTextEditors(root, url) {
       toolbar.className = "toolbar";
       toolbar.setAttribute("role", "toolbar");
       toolbar.setAttribute("aria-label", "Writer " + label + " formatting");
-      /** @type {Record<"bold" | "italic" | "link" | "undo" | "redo", HTMLButtonElement>} */
+      /** @type {Record<import("./editor.js").Command, HTMLButtonElement>} */
       const tools = { bold: document.createElement("button"), italic: document.createElement("button"),
-        link: document.createElement("button"), undo: document.createElement("button"), redo: document.createElement("button") };
+        link: document.createElement("button"), heading1: document.createElement("button"), heading2: document.createElement("button"),
+        list: document.createElement("button"), undo: document.createElement("button"), redo: document.createElement("button") };
       for (const [name, text, title] of /** @type {const} */ ([["bold", "B", "Bold (Ctrl+B)"], ["italic", "I", "Italic (Ctrl+I)"],
-        ["link", "Link", "Link (Ctrl+K)"], ["undo", "Undo", "Undo (Ctrl+Z)"], ["redo", "Redo", "Redo (Ctrl+Shift+Z)"]])) {
+        ["link", "Link", "Link (Ctrl+K)"], ["heading1", "H1", "Heading 1 (Ctrl+Alt+1)"], ["heading2", "H2", "Heading 2 (Ctrl+Alt+2)"],
+        ["list", "• List", "Bullet list (Ctrl+Shift+8)"], ["undo", "Undo", "Undo (Ctrl+Z)"], ["redo", "Redo", "Redo (Ctrl+Shift+Z)"]])) {
         tools[name].type = "button";
         tools[name].textContent = text;
         tools[name].title = title;
@@ -173,12 +175,14 @@ export async function mountTextEditors(root, url) {
       let editor;
       const history = createUndoManager(sync.doc, { paths: ["body"] });
       /** Runs a toolbar command; formatting and undo throw while this writer's edits are blocked.
-       * @param {"bold" | "italic" | "link" | "undo" | "redo"} name */
+       * @param {import("./editor.js").Command} name */
       function command(name) {
         if (readOnly || editor === undefined) return;
         try {
           if (name === "undo") history.undo();
           else if (name === "redo") history.redo();
+          else if (name === "heading1" || name === "heading2") editor.toggleBlock({ key: "heading", value: name === "heading1" ? 1 : 2 });
+          else if (name === "list") editor.toggleBlock({ key: "list", value: "bullet" });
           else if (name === "link") {
             const address = prompt("Link address (the server keeps only http: and https: links)", "https://");
             if (address !== null && address !== "" && !editor.toggleMark("link", address)) message.textContent = "Select some text first.";
@@ -186,7 +190,7 @@ export async function mountTextEditors(root, url) {
         } catch (error) { message.textContent = "Not changed: " + (error instanceof Error ? error.message : String(error)); }
         refresh();
       }
-      const toolClicks = /** @type {const} */ (["bold", "italic", "link", "undo", "redo"]).map((name) => {
+      const toolClicks = /** @type {const} */ (["bold", "italic", "link", "heading1", "heading2", "list", "undo", "redo"]).map((name) => {
         const listener = () => { command(name); };
         tools[name].addEventListener("click", listener);
         return () => { tools[name].removeEventListener("click", listener); };
