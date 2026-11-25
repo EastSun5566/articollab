@@ -62,6 +62,8 @@ interface PathStep {
   readonly ranges: TextIdRange[];
   /** Text marks the step set, by their gaps and key. */
   readonly marks: { readonly start: Cursor; readonly end: Cursor; readonly key: string }[];
+  /** Paragraph attributes the step set, by the line break that starts the paragraph, or `null`. */
+  readonly blocks: { readonly id: Readonly<ElementId> | null; readonly key: string }[];
   /** Counter paths: the net amount each key changed, summed over the step's batches ("" for a Counter). */
   readonly deltas: Map<string, number>;
 }
@@ -97,6 +99,8 @@ function joinsSurrogates(left: string, right: string): boolean {
 }
 
 type MarkWriter = (start: Cursor, end: Cursor, key: string, value: JsonValue | null) => void;
+
+const NO_BLOCK: TextAttributes = Object.freeze({});
 
 /** Gaps around exactly the elements from `first` to `last`: text typed at either edge stays outside. */
 function exactly(first: Readonly<ElementId>, last: Readonly<ElementId>): [Cursor, Cursor] {
@@ -186,6 +190,21 @@ export function createUndoManager<S extends SchemaShape>(
     map.set(idKey(from), to);
   };
   const current = (path: string, id: Readonly<ElementId>) => resolve(elements, path, id);
+  /** For a path, the ID an element stood for before undo or redo replaced it, through every replacement. */
+  const sourceOf = (path: string) => {
+    const earlier = new Map<string, Readonly<ElementId>>();
+    for (const [old, replacement] of elements.get(path) ?? []) {
+      const parsed: unknown = JSON.parse(old);
+      if (Array.isArray(parsed) && typeof parsed[0] === "string" && typeof parsed[1] === "number") {
+        earlier.set(idKey(replacement), { bunchId: parsed[0], counter: parsed[1] });
+      }
+    }
+    return (id: Readonly<ElementId>): Readonly<ElementId> => {
+      let found = id;
+      for (let previous = earlier.get(idKey(found)); previous !== undefined; previous = earlier.get(idKey(found))) found = previous;
+      return found;
+    };
+  };
 
   function capture(step: LocalStep<S>): Step | undefined {
     const entries = new Map<string, PathStep>();
@@ -194,7 +213,7 @@ export function createUndoManager<S extends SchemaShape>(
       let entry = entries.get(operation.path);
       if (entry === undefined) {
         entry = { before: step.before.get(operation.path)!, after: step.after.get(operation.path)!,
-          keys: new Set(), ids: [], ranges: [], marks: [], deltas: new Map() };
+          keys: new Set(), ids: [], ranges: [], marks: [], blocks: [], deltas: new Map() };
         entries.set(operation.path, entry);
       }
       switch (operation.type) {
@@ -204,6 +223,7 @@ export function createUndoManager<S extends SchemaShape>(
         case "text/insert": entry.ranges.push({ start: operation.id, count: [...operation.value].length }); break;
         case "text/delete": entry.ranges.push(...operation.ranges); break;
         case "text/mark": entry.marks.push({ start: operation.start, end: operation.end, key: operation.key }); break;
+        case "text/block": entry.blocks.push({ id: operation.id, key: operation.key }); break;
         case "counter/add": entry.keys.add(""); break;
         case "counterMap/add": case "counterMap/delete": entry.keys.add(operation.key); break;
         case "value/set": break;
@@ -233,6 +253,7 @@ export function createUndoManager<S extends SchemaShape>(
       existing.ids.push(...entry.ids);
       existing.ranges.push(...entry.ranges);
       existing.marks.push(...entry.marks);
+      existing.blocks.push(...entry.blocks);
       for (const [key, delta] of entry.deltas) existing.deltas.set(key, (existing.deltas.get(key) ?? 0) + delta);
     }
   }
@@ -333,7 +354,9 @@ export function createUndoManager<S extends SchemaShape>(
     const before = entry.before as TextState, after = entry.after as TextState;
     const now = text.state, writer = text[historyWriter]();
     const inserted: Readonly<ElementId>[] = [];
-    const deleted: { index: number; target: Readonly<ElementId>; value: string; attributes: TextAttributes }[] = [];
+    const deleted: {
+      index: number; target: Readonly<ElementId>; value: string; attributes: TextAttributes; block: TextAttributes;
+    }[] = [];
     const seen = new Set<string>();
     for (const id of idsIn(entry.ranges)) {
       if (seen.has(idKey(id))) continue;
@@ -341,11 +364,15 @@ export function createUndoManager<S extends SchemaShape>(
       const target = current(path, id), was = before.has(id), is = after.has(id);
       if (!was && is && now.has(target)) inserted.push(target);
       else if (was && !is && !now.has(target) && now.knows(target)) {
-        deleted.push({ index: now.knownIndexOf(target), target, value: before.valueFor(id), attributes: before.attributesOf(id) });
+        deleted.push({ index: now.knownIndexOf(target), target, value: before.valueFor(id), attributes: before.attributesOf(id),
+          block: before.valueFor(id) === "\n" ? before.blockAttributesOf(id) : NO_BLOCK });
       }
     }
     // Marks first: later writes insert elements that exact mark ranges must not cover.
-    const writes: (() => void)[] = markReverts(entry, before, after, now, (id) => current(path, id), writer.mark);
+    const writes: (() => void)[] = [
+      ...markReverts(entry, before, after, now, (id) => current(path, id), sourceOf(path), writer.mark),
+      ...blockReverts(entry, before, after, now, (id) => current(path, id), writer.block),
+    ];
     if (inserted.length > 0) writes.push(() => { writer.delete(inserted); });
     // Each run of deleted elements with no other known element between them, tombstones included,
     // goes back right after the tombstone of its last element, so it keeps its place and order.
@@ -370,6 +397,10 @@ export function createUndoManager<S extends SchemaShape>(
         // New IDs take whatever marks surround them; give them back the marks they had.
         restoreAttributes(run.map(({ target, attributes }) => ({ id: current(path, target), attributes })),
           text.state, writer.mark);
+        // A line break that comes back starts its paragraph again, with the paragraph's attributes.
+        for (const { target, block } of run) {
+          for (const [key, value] of Object.entries(block)) writer.block(current(path, target), key, value);
+        }
       });
       start = end;
     }
@@ -385,7 +416,8 @@ export function createUndoManager<S extends SchemaShape>(
    */
   function markReverts(
     entry: PathStep, before: TextState, after: TextState, now: TextState,
-    resolveId: (id: Readonly<ElementId>) => Readonly<ElementId>, mark: MarkWriter
+    resolveId: (id: Readonly<ElementId>) => Readonly<ElementId>,
+    originalOf: (id: Readonly<ElementId>) => Readonly<ElementId>, mark: MarkWriter
   ): (() => void)[] {
     const byKey = new Map<string, { readonly start: Cursor; readonly end: Cursor }[]>();
     for (const { start, end, key } of entry.marks) {
@@ -396,24 +428,31 @@ export function createUndoManager<S extends SchemaShape>(
     const writes: (() => void)[] = [];
     for (const [key, ranges] of byKey) {
       // The step's elements under their current IDs, which undo or redo may have replaced.
-      const original = new Map<string, Readonly<ElementId>>();
+      const original = new Map<string, { readonly id: Readonly<ElementId>; readonly source: Readonly<ElementId> }>();
       for (const { start, end } of ranges) {
-        for (const id of after.visibleIdsBetween(start, end)) original.set(idKey(resolveId(id)), id);
+        for (const source of after.visibleIdsBetween(start, end)) {
+          const id = resolveId(source);
+          original.set(idKey(id), { id, source });
+        }
       }
       const inside = new Map<string, Readonly<ElementId>>();
       for (const { start, end } of ranges) for (const id of now.visibleIdsBetween(start, end)) inside.set(idKey(id), id);
-      const ordered = [...inside.values()].map((id) => ({ id, index: now.indexOf(id) }))
+      // Text that undo or redo put back after a deleted edge can sit outside the step's gaps.
+      const members = new Map(inside);
+      for (const [name, { id }] of original) if (now.has(id)) members.set(name, id);
+      const ordered = [...members].map(([name, id]) => ({ id, index: now.indexOf(id), covered: inside.has(name) }))
         .sort((left, right) => left.index - right.index);
       /** Each element's value now, the value the step left, and the value it should get. */
-      const plan = ordered.map(({ id, index }) => {
-        const value = now.attributesOf(id)[key], source = original.get(idKey(id));
+      const plan = ordered.map(({ id, index, covered }) => {
+        const value = now.attributesOf(id)[key], source = original.get(idKey(id))?.source;
         let target = value, stepValue = value;
         if (source !== undefined && before.has(source)) {
           const was = before.attributesOf(source)[key];
           stepValue = after.attributesOf(source)[key];
           if (!sameEntry(was, stepValue) && sameEntry(value, stepValue)) target = was;
         }
-        return { id, index, value, is: stepValue, target, typed: source === undefined };
+        // Only text new since the step follows its neighbors; text undo or redo put back keeps its value.
+        return { id, index, covered, value, is: stepValue, target, typed: source === undefined && !after.knows(originalOf(id)) };
       });
       // Text typed into the mark since the step follows its neighbor, the one before it first,
       // when it took the same value.
@@ -441,12 +480,38 @@ export function createUndoManager<S extends SchemaShape>(
         while (end < plan.length && plan[end]!.index === plan[end - 1]!.index + 1 &&
           sameEntry(plan[end]!.target, plan[start]!.target)) end++;
         const { target } = plan[start]!;
-        if (!sameEntry(target, common)) {
+        // The marks over the step's gaps set `common` only on the elements inside them.
+        if (!sameEntry(target, common) || plan.slice(start, end).some(({ covered }) => !covered)) {
           const gaps = exactly(plan[start]!.id, plan[end - 1]!.id);
           writes.push(() => { mark(...gaps, key, target ?? null); });
         }
         start = end;
       }
+    }
+    return writes;
+  }
+
+  /**
+   * The writes that give each paragraph whose attributes the step set its earlier value, where the
+   * paragraph still exists and still has the value the step left.
+   */
+  function blockReverts(
+    entry: PathStep, before: TextState, after: TextState, now: TextState,
+    resolveId: (id: Readonly<ElementId>) => Readonly<ElementId>,
+    block: (id: Readonly<ElementId> | null, key: string, value: JsonValue | null) => void
+  ): (() => void)[] {
+    const writes: (() => void)[] = [], seen = new Set<string>();
+    for (const { id, key } of entry.blocks) {
+      const name = JSON.stringify([id === null ? null : idKey(id), key]);
+      if (seen.has(name)) continue;
+      seen.add(name);
+      // Paragraphs the step started go away with their line break.
+      if (id !== null && !(before.has(id) && after.has(id))) continue;
+      const target = id === null ? null : resolveId(id);
+      if (target !== null && !now.has(target)) continue;
+      const was = before.blockAttributesOf(id)[key], is = after.blockAttributesOf(id)[key];
+      if (sameEntry(was, is) || !sameEntry(now.blockAttributesOf(target)[key], is)) continue;
+      writes.push(() => { block(target, key, was ?? null); });
     }
     return writes;
   }
