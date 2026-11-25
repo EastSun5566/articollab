@@ -8,6 +8,8 @@ import { attachHistory, isTransacting, type ClientDocument, type LocalStep, type
 import type { JsonValue, SchemaShape } from "./schema.ts";
 import type { CollectionState } from "./state.ts";
 import { RuntimeText, type TextIdRange, type TextState } from "./text.ts";
+import type { Cursor } from "./cursor.ts";
+import type { TextAttributes } from "./marks.ts";
 
 export interface UndoManagerOptions<S extends SchemaShape = SchemaShape> {
   /** Local batches less than this many milliseconds apart form one step. Default 500; 0 never merges. */
@@ -58,6 +60,8 @@ interface PathStep {
   readonly keys: Set<string>;
   readonly ids: Readonly<ElementId>[];
   readonly ranges: TextIdRange[];
+  /** Text marks the step set, by their gaps and key. */
+  readonly marks: { readonly start: Cursor; readonly end: Cursor; readonly key: string }[];
   /** Counter paths: the net amount each key changed, summed over the step's batches ("" for a Counter). */
   readonly deltas: Map<string, number>;
 }
@@ -90,6 +94,29 @@ function sameEntry(left: JsonValue | undefined, right: JsonValue | undefined): b
 function joinsSurrogates(left: string, right: string): boolean {
   const high = left.charCodeAt(left.length - 1), low = right.charCodeAt(0);
   return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
+}
+
+type MarkWriter = (first: Readonly<ElementId>, last: Readonly<ElementId>, key: string, value: JsonValue | null) => void;
+
+/** Sets the marks of consecutive visible elements to `attributes` where their current marks differ. */
+function restoreAttributes(
+  elements: readonly { readonly id: Readonly<ElementId>; readonly attributes: TextAttributes }[],
+  state: TextState, format: MarkWriter
+): void {
+  const current = elements.map(({ id }) => state.attributesOf(id));
+  const keys = new Set([...elements.flatMap(({ attributes }) => Object.keys(attributes)),
+    ...current.flatMap((attributes) => Object.keys(attributes))]);
+  for (const key of keys) {
+    for (let start = 0; start < elements.length;) {
+      const wanted = elements[start]!.attributes[key];
+      let end = start + 1;
+      while (end < elements.length && sameEntry(elements[end]!.attributes[key], wanted)) end++;
+      if (current.slice(start, end).some((attributes) => !sameEntry(attributes[key], wanted))) {
+        format(elements[start]!.id, elements[end - 1]!.id, key, wanted ?? null);
+      }
+      start = end;
+    }
+  }
 }
 
 /**
@@ -162,7 +189,7 @@ export function createUndoManager<S extends SchemaShape>(
       let entry = entries.get(operation.path);
       if (entry === undefined) {
         entry = { before: step.before.get(operation.path)!, after: step.after.get(operation.path)!,
-          keys: new Set(), ids: [], ranges: [], deltas: new Map() };
+          keys: new Set(), ids: [], ranges: [], marks: [], deltas: new Map() };
         entries.set(operation.path, entry);
       }
       switch (operation.type) {
@@ -171,6 +198,7 @@ export function createUndoManager<S extends SchemaShape>(
         // oxlint-disable-next-line typescript/no-misused-spread -- Text elements are Unicode code points.
         case "text/insert": entry.ranges.push({ start: operation.id, count: [...operation.value].length }); break;
         case "text/delete": entry.ranges.push(...operation.ranges); break;
+        case "text/mark": entry.marks.push({ start: operation.start, end: operation.end, key: operation.key }); break;
         case "counter/add": entry.keys.add(""); break;
         case "counterMap/add": case "counterMap/delete": entry.keys.add(operation.key); break;
         case "value/set": break;
@@ -199,6 +227,7 @@ export function createUndoManager<S extends SchemaShape>(
       for (const key of entry.keys) existing.keys.add(key);
       existing.ids.push(...entry.ids);
       existing.ranges.push(...entry.ranges);
+      existing.marks.push(...entry.marks);
       for (const [key, delta] of entry.deltas) existing.deltas.set(key, (existing.deltas.get(key) ?? 0) + delta);
     }
   }
@@ -299,7 +328,7 @@ export function createUndoManager<S extends SchemaShape>(
     const before = entry.before as TextState, after = entry.after as TextState;
     const now = text.state, writer = text[historyWriter]();
     const inserted: Readonly<ElementId>[] = [];
-    const deleted: { index: number; target: Readonly<ElementId>; value: string }[] = [];
+    const deleted: { index: number; target: Readonly<ElementId>; value: string; attributes: TextAttributes }[] = [];
     const seen = new Set<string>();
     for (const id of idsIn(entry.ranges)) {
       if (seen.has(idKey(id))) continue;
@@ -307,10 +336,11 @@ export function createUndoManager<S extends SchemaShape>(
       const target = current(path, id), was = before.has(id), is = after.has(id);
       if (!was && is && now.has(target)) inserted.push(target);
       else if (was && !is && !now.has(target) && now.knows(target)) {
-        deleted.push({ index: now.knownIndexOf(target), target, value: before.valueFor(id) });
+        deleted.push({ index: now.knownIndexOf(target), target, value: before.valueFor(id), attributes: before.attributesOf(id) });
       }
     }
-    const writes: (() => void)[] = [];
+    // Marks first: later writes insert elements that exact mark ranges must not cover.
+    const writes: (() => void)[] = markReverts(entry, before, after, now, (id) => current(path, id), writer.format);
     if (inserted.length > 0) writes.push(() => { writer.delete(inserted); });
     // Each run of deleted elements with no other known element between them, tombstones included,
     // goes back right after the tombstone of its last element, so it keeps its place and order.
@@ -332,8 +362,54 @@ export function createUndoManager<S extends SchemaShape>(
           anchor = { bunchId: first.bunchId, counter: first.counter + chunk.length - 1 };
           piece = stop;
         }
+        // New IDs take whatever marks surround them; give them back the marks they had.
+        restoreAttributes(run.map(({ target, attributes }) => ({ id: current(path, target), attributes })),
+          text.state, writer.format);
       });
       start = end;
+    }
+    return writes;
+  }
+
+  /**
+   * For each key a step's marks set, the writes that give its elements back their earlier value,
+   * where their value is still the one the step left. Consecutive elements with the same earlier
+   * value share one mark.
+   */
+  function markReverts(
+    entry: PathStep, before: TextState, after: TextState, now: TextState,
+    resolveId: (id: Readonly<ElementId>) => Readonly<ElementId>, format: MarkWriter
+  ): (() => void)[] {
+    const byKey = new Map<string, Readonly<ElementId>[]>();
+    for (const mark of entry.marks) {
+      const ids = byKey.get(mark.key) ?? [];
+      ids.push(...after.visibleIdsBetween(mark.start, mark.end));
+      byKey.set(mark.key, ids);
+    }
+    const writes: (() => void)[] = [];
+    for (const [key, ids] of byKey) {
+      const changes: { index: number; target: Readonly<ElementId>; value: JsonValue | undefined }[] = [];
+      const seen = new Set<string>();
+      for (const id of ids) {
+        if (seen.has(idKey(id))) continue;
+        seen.add(idKey(id));
+        // Elements the step inserted go away with the insertion.
+        if (!before.has(id)) continue;
+        const target = resolveId(id);
+        if (!now.has(target)) continue;
+        const was = before.attributesOf(id)[key], is = after.attributesOf(id)[key];
+        if (sameEntry(was, is) || !sameEntry(now.attributesOf(target)[key], is)) continue;
+        changes.push({ index: now.indexOf(target), target, value: was });
+      }
+      changes.sort((left, right) => left.index - right.index);
+      for (let start = 0; start < changes.length;) {
+        let end = start + 1;
+        while (end < changes.length && changes[end]!.index === changes[end - 1]!.index + 1 &&
+          sameEntry(changes[end]!.value, changes[start]!.value)) end++;
+        const first = changes[start]!.target, last = changes[end - 1]!.target, value = changes[start]!.value ?? null;
+        writes.push(() => { format(first, last, key, value); });
+        start = end;
+      }
     }
     return writes;
   }
