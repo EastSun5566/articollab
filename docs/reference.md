@@ -4,7 +4,7 @@ Look up the public API and exact collaboration contracts here. For a runnable in
 
 ## Compatibility
 
-Articollab 0.10 adds undo and redo, `track()` and `settled()`, payload schemas, Counters, presence, store `slots` and the WebSocket transport. Articollab 0.9 added List moves and the `transform` event.
+Articollab 0.11 adds Text marks. Articollab 0.10 added undo and redo, `track()` and `settled()`, payload schemas, Counters, presence, store `slots` and the WebSocket transport. Articollab 0.9 added List moves and the `transform` event.
 
 Upgrade every runtime that reads a document before it exchanges new operations or snapshot formats; see [Upgrading](upgrading.md).
 
@@ -18,7 +18,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 
 | API | Purpose |
 | --- | --- |
-| `defineDocument(definition)`, `value(initialValue)`, `list<T>()`, `text()`, `map<T>()`, `counter(initialValue = 0)`, `counterMap()` | Fixed typed schema; property keys are wire paths. List, Text, Map and `counterMap()` start empty. |
+| `defineDocument(definition)`, `value(initialValue)`, `list<T>()`, `text(options?)`, `map<T>()`, `counter(initialValue = 0)`, `counterMap()` | Fixed typed schema; property keys are wire paths. List, Text, Map and `counterMap()` start empty. `text({ marks })` lists the marks a Text accepts. |
 | `value(initialValue, schema)`, `list(schema)`, `map(schema)`, `PayloadValidationError` | Validate every written payload with a Standard Schema, locally and on the server; the payload type comes from the schema. |
 | `createClient(schema, options)` | Requires nonempty `clientId` and `onBatch`; optional `snapshot` or `checkpoint`, never both. |
 | `doc.state` | Readonly collection bindings; mutate through Value/List/Text/Map/Counter methods. |
@@ -28,7 +28,8 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.on("transform", listener)` | Subscribes to this writer's batches that the server transformed or rejected. |
 | `doc.track(callback)`, `doc.settled(batch)` | Like `transact`, and also return the batch and a promise of its outcome; or that promise for any pending batch. |
 | `createUndoManager(doc, options?)` | Undo and redo for this writer's own changes; optional `captureTimeout` (default 500 ms) and `paths`. |
-| `doc.state.body.observe(listener)` | Opt-in visible Text edits; returns an unsubscribe function. |
+| `doc.state.body.observe(listener)` | Opt-in visible Text edits and format changes; returns an unsubscribe function. |
+| `format(index, count, key, value)`, `attributesAt(index)`, `toDelta()` on Text | Set or remove a mark on a range; read one element's marks; read the text as runs of equal marks. |
 | `doc.state.items.observe(listener)` | Opt-in visible List moves, splices and in-place sets; returns an unsubscribe function. |
 | `doc.state.settings.observe(listener)` | Opt-in visible Map sets and deletes, with previous values; returns an unsubscribe function. |
 | `doc.state.votes.observe(listener)` | Opt-in visible `counterMap()` changes, each key's new and previous count; returns an unsubscribe function. |
@@ -52,15 +53,17 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | --- | --- |
 | `JsonPrimitive`, `JsonValue` | JSON-compatible payload types. |
 | `SchemaShape`, `CollectionSchema`, `ValueSchema`, `ListSchema`, `TextSchema`, `MapSchema`, `CounterSchema`, `CounterMapSchema`, `ValueType`, `ListType`, `MapType` | Schema descriptors and inferred element types. |
+| `MarkConfig`, `MarkExpand`, `MarkShape`, `MarkValue` | Text mark configuration and the value type of each mark. |
 | `Value`, `List`, `Text`, `MapCollection`, `Counter`, `CounterMap`, `DocumentState` | Typed collection views. |
 | `CreateClientOptions`, `CreateServerOptions`, `ServerResolveContext`, `ServerResolver` | Construction and batch policy contracts. |
 | `ServerClientSession` | One open writer session from `server.listClients()`. |
-| `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation`, `ListMoveOperation`, `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextOperation`, `TextIdRange`, `MapSetOperation`, `MapDeleteOperation`, `MapOperation`, `CounterAddOperation`, `CounterMapAddOperation`, `CounterMapDeleteOperation`, `CounterMapOperation`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
+| `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation`, `ListMoveOperation`, `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextMarkOperation`, `TextOperation`, `TextIdRange`, `MapSetOperation`, `MapDeleteOperation`, `MapOperation`, `CounterAddOperation`, `CounterMapAddOperation`, `CounterMapDeleteOperation`, `CounterMapOperation`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
 | `ClientBatchRef`, `ClientBatch`, `ServerCommit`, `ServerReceipt`, `ServerReplayEntry` | Batch identity, authoritative result, local routing metadata and retry entries. |
 | `LocalChangeEvent`, `ServerChangeEvent`, `ChangeEvent`, `PendingReplayConflict` | Local/server notifications and the first blocked pending operation. |
 | `DiscardEvent` | This writer's List sets and moves that had no effect because their element was already deleted. |
 | `TransformEvent` | This writer's original batch, the acknowledged commit and the operations the server dropped. |
-| `TextChange`, `TextChangeEvent` | Visible Text element edits from an opt-in subscription. |
+| `TextChange`, `TextChangeEvent`, `TextFormatChange` | Visible Text element edits and format changes from an opt-in subscription. |
+| `TextMark`, `TextAttributes`, `TextAttributesOf`, `TextDeltaOp` | Saved marks, an element's marks, and `toDelta()` runs. |
 | `ListChange`, `ListChangeEvent` | Visible List moves, splices and in-place sets from an opt-in subscription. |
 | `MapChange`, `MapChangeEvent` | Visible Map sets and deletes, with previous values, from an opt-in subscription. |
 | `CounterMapChange`, `CounterMapChangeEvent` | Visible `counterMap()` changes, with 0 for an absent key, from an opt-in subscription. |
@@ -76,7 +79,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | --- | --- | --- |
 | `Value<T>` | `.value` | `.value = next` or `.set(next)`; replace the whole JSON value. |
 | `List<T>` | `.length`, `.get(index)`, `.values()`, `.toArray()`, iteration | `.insert(index, value)`, `.push(value)`, `.delete(index)`; `.set(index, value)` updates one element and `.move(from, to)` repositions it, both without changing its ID. |
-| `Text` | `.length`, `.values()`, `.toString()`, iteration | `.insert(index, string)`, `.delete(index, count = 1)`; Unicode code points. |
+| `Text` | `.length`, `.values()`, `.toString()`, iteration, `.attributesAt(index)`, `.toDelta()` | `.insert(index, string)`, `.delete(index, count = 1)`, `.format(index, count, key, value)`; Unicode code points. |
 | `MapCollection<T>` | `.size`, `.get(key)`, `.has(key)`, `.keys()`, `.values()`, `.entries()`, `.toObject()`, iteration of `[key, value]` | `.set(key, value)`, `.delete(key)`, `.clear()`; each key holds one whole JSON value. |
 
 #### Immutable payloads
@@ -132,6 +135,18 @@ The entrypoint also exports these types, grouped by role rather than implementat
 - Deleted known IDs stay as tombstones and can still anchor pending insertions.
 - Text insertion allocates consecutive IDs; deletion compresses consecutive targets into ranges.
 - Deleting a known tombstone is a no-op on the server. Unknown targets and colliding insertion IDs are errors.
+
+#### Text marks
+
+- `text({ marks })` takes one entry per mark key: nonempty keys, each `{ expand, payload? }`. `expand` is `"none"`, `"before"`, `"after"` or `"both"`; `payload` is a Standard Schema.
+- `format(index, count, key, value)` follows the Text deletion bounds rules. A key the schema does not list throws. A value is JSON or `null`; a non-null value is checked by the key's payload schema locally and on the server, before and after its resolver. `count` 0 checks, then records nothing.
+- It records `{ type: "text/mark", path, start, end, key, value }`. `start` and `end` are cursors: `start` binds `"left"` when `expand` includes before, otherwise `"right"`; `end` binds `"right"` when `expand` includes after, otherwise `"left"`.
+- A mark covers every element, visible or deleted, between its two gaps, including elements inserted there later.
+- Each element's value for a key is the value of the last applied mark that covers it; `null` means unmarked. On the server this is commit order. On a client, pending marks apply after authoritative ones.
+- An unknown anchor is a [collection conflict](#collection-conflicts). A `start` that is not before `end` is invalid.
+- `attributesAt()` returns a frozen object with one entry per mark that is set, keys sorted. `toDelta()` returns frozen `{ insert, attributes? }` runs; neighbors with equal marks merge.
+- Snapshots save marks in application order, in a `marks` field that is absent when there are none. A mark that a later mark of its key covers completely is dropped; this never changes any element's marks.
+- `attributesAt()` costs O(m log n) for m marks. `toDelta()` reads the whole Text. After a mark, observers and change events compute every element's marks once, then compare only the elements inside the marks that changed.
 
 #### List `set()`
 
@@ -239,7 +254,7 @@ Edge cases:
 #### Server `change` events
 
 - Server events are `{ origin: "server", commit }`. They fire only when visible state or the replay-conflict descriptor changes, not just because an acknowledgement or watermark advanced.
-- Value, List and Map payloads compare with `Object.is`. List also compares visible permanent element IDs and their order, Text visible stable IDs, and Map visible keys.
+- Value, List and Map payloads compare with `Object.is`. List also compares visible permanent element IDs and their order, Text visible stable IDs and their marks, and Map visible keys.
 - List moves can require comparing the whole List. For a single remote move with no pending work or replay conflict, the moved element's index decides whether the order changed.
 - An accepted own commit is silent when that comparison and the conflict are unchanged.
 - Deep-equal JSON objects decoded into new references can still fire a change.
@@ -291,7 +306,8 @@ Edge cases:
 `Text.observe(listener): () => void` subscribes to visible content changes.
 
 - It starts at the current view without an initial event. Subscribing inside a transaction throws. Unsubscribing twice is harmless.
-- The event is `{ beforeLength, afterLength, changes }`; each change is `{ index, deleteCount, insert: readonly string[] }`. All containers are owned and frozen.
+- The event is `{ beforeLength, afterLength, changes, formats? }`; each change is `{ index, deleteCount, insert: readonly string[] }`. All containers are owned and frozen.
+- Once the Text has marks, `formats` lists `{ index, count, attributes }` runs: every run whose marks changed and every inserted run, with their complete marks, at post-event indices. Apply `changes` first, then `formats`. It is absent when empty.
 - Indices use pre-event element positions. Changes are disjoint and sorted in descending order, so you can apply them one after another.
 - Each inserted string is one Text element, including separately inserted surrogate halves.
 - There is no minimum-edit or stable-segmentation guarantee, and these offsets are not editor UTF-16 offsets.
@@ -301,7 +317,7 @@ Delivery rules, shared by every `observe()`:
 - Observers run after existing callbacks, at successful outermost local commit or receive boundaries, with synchronous reentrant work coalesced.
 - Each subscriber has its own baseline, so notifications are neither one per batch nor one per commit.
 - Mutations made by an observer are delivered in later passes, not recursively.
-- Only content changes notify, not ID, conflict or acknowledgement changes alone.
+- Only content and format changes notify, not ID, conflict or acknowledgement changes alone.
 - Normal changes compare affected IDs. Conflicts and unproven targets may scan the whole Text. Without subscribers, no diff work runs and no observer state is kept.
 
 See the [incremental example](transactions.md#update-a-text-view-incrementally).
@@ -391,7 +407,8 @@ A non-number option throws `TypeError`, and an out-of-range one `RangeError`. A 
 | List element deleted | it is still deleted | `list/insert` of its earlier value with a new ID, right after its last position, so it returns to its place |
 | List element set or moved | it still holds the step's value, or still sits at the step's position | `list/set` of the earlier value, or `list/move` back right after its earlier position |
 | Text elements inserted | they are still visible | `text/delete` |
-| Text elements deleted | they are still deleted | `text/insert` of the earlier text with new IDs, after the deleted run's last element |
+| Text elements deleted | they are still deleted | `text/insert` of the earlier text with new IDs, after the deleted run's last element, then `text/mark` to give it back its earlier marks |
+| Text marks | an element still has the value the step left for that key | `text/mark` of the earlier value, one per run of such elements, covering exactly that run |
 
 - All writes of one undo form one transaction, so one batch.
 - A reinserted element or text gets new IDs. The manager maps old IDs to new ones, so earlier and later steps keep following it; cursors and application references to the old IDs do not.
