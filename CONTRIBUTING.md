@@ -46,7 +46,7 @@ Run the same four checks for `examples/kanban` and `examples/file-tree` (they ne
 
 ### Find the relevant tests
 
-- Collections, transactions and callbacks: `runtime.test.ts`, `list.test.ts`, `text.test.ts`, `map.test.ts`, `counter.test.ts`.
+- Collections, transactions and callbacks: `runtime.test.ts`, `list.test.ts`, `text.test.ts`, `text-marks.test.ts`, `map.test.ts`, `counter.test.ts`.
 - Wire decoding, checkpoints, history and retries: `wire.test.ts`, `client-checkpoint.test.ts`, `history.test.ts`, `retry.test.ts` and the `*-resume` suites.
 - Undo, outcomes and events: `undo.test.ts`, `settled.test.ts`, `transform-event.test.ts`, `discard.test.ts`.
 - Sync: the `sync-*` suites, including `sync-websocket.test.ts`.
@@ -102,6 +102,7 @@ Add `--smoke` for a quick run with tiny fixtures, or `--json` (with `pnpm --sile
 - Replay records fixed IDs, deletes keep tombstones, and nothing undeletes or replays an intent.
 - With no replay conflict on either side, only the commit's target IDs can change what is visible.
 - One remote move with no pending work changes only the moved element's position.
+- An element's marks depend only on the mark list and known order. With equal mark lists, only inserted elements need their marks read; with equal content, only elements inside marks that one side lacks. Any Text mark in a commit makes that Text compare in full.
 
 Adding undelete, same-ID Text replacement or intent-based replay breaks these facts: revisit the shortcuts first. After changing one, run `reconciliation-change.test.ts`, the observe tests and the receive benchmarks.
 

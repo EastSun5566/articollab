@@ -189,6 +189,48 @@ Text snapshots preserve these boundaries across restore. See [Text snapshot boun
 
 One string insertion uses a continuous ID range. One delete produces one operation containing compressed target ranges. `insert(index, "")` and `delete(index, 0)` validate bounds, then do nothing. Counts/indices must be safe integers; deletions must fit completely.
 
+### Format text
+
+Text marks require [Articollab 0.11 or later](reference.md#compatibility).
+
+List the marks a Text accepts, then format ranges of it:
+
+```ts
+const Note = defineDocument({
+  body: text({
+    marks: {
+      bold: { expand: "after" },
+      link: { expand: "none", payload: z.string().url() },
+    },
+  }),
+});
+
+doc.state.body.insert(0, "Hello world");
+doc.state.body.format(6, 5, "bold", true);
+doc.state.body.format(6, 5, "link", "https://example.com");
+console.log(doc.state.body.attributesAt(6)); // { bold: true, link: "https://example.com" }
+console.log(doc.state.body.toDelta());
+// [{ insert: "Hello " }, { insert: "world", attributes: { bold: true, link: "https://example.com" } }]
+doc.state.body.format(6, 5, "bold", null); // Removes bold again.
+```
+
+`format(index, count, key, value)` sets one mark on a range, and `null` removes it. The range is tied to the characters at its edges, not to indices, so text that others insert or delete elsewhere does not move it.
+
+`expand` decides whether text typed right at an edge of the range takes the mark:
+
+| `expand` | Typed at the start | Typed at the end | Typical marks |
+| --- | --- | --- | --- |
+| `"after"` | no | yes | bold, italic |
+| `"none"` | no | no | links, comments |
+| `"before"` | yes | no | |
+| `"both"` | yes | yes | |
+
+So typing at the end of a bold word continues in bold, while typing after a link does not extend the link. Inserted text needs no marks of its own: it takes the marks of the place where it lands.
+
+When writers format the same characters with the same key at the same time, the mark the server applied last wins. Until the server answers, your own marks show on top. A server [resolver](server-wire.md#check-formatting) can drop or change a mark like any other operation; the writer then sees it undone, with a `transform` event.
+
+A mark's `payload` schema validates its values like the [payload schemas](#validate-payloads) below. A `text()` without `marks` behaves exactly as before, and adding marks to an existing Text needs no data migration; see [Upgrading](upgrading.md).
+
 ## Validate payloads
 
 Payload schemas require [Articollab 0.10 or later](reference.md#compatibility).

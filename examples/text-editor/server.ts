@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocketServer } from "ws";
 import { createServer, type ServerDocument } from "../../dist/index.js";
 import { createSyncHandler } from "../../dist/sync/index.js";
-import { Note } from "./schema.js";
+import { keepSafeLinks, Note } from "./schema.js";
 import { createBrowserAssetHandler } from "../shared/assets.ts";
 import { toNodeListener } from "../shared/fetch-bridge.ts";
 import { selectionSchema } from "./presence.js";
@@ -16,7 +16,7 @@ import { selectionSchema } from "./presence.js";
  * /sync/, plus the page's fixed assets.
  */
 export async function startTextEditorServer(
-  server: ServerDocument<typeof Note.definition> = createServer(Note), presenceTtl = 30_000
+  server: ServerDocument<typeof Note.definition> = createServer(Note, { resolve: keepSafeLinks }), presenceTtl = 30_000
 ) {
   const directory = import.meta.dirname;
   const state = fileURLToPath(import.meta.resolve("@codemirror/state"));

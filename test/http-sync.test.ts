@@ -1,5 +1,5 @@
 import { decodeClientBatch } from "../src/index.ts";
-import { decodeServerCommit } from "../src/index.ts";
+import { decodeServerCommit, type TextMark } from "../src/index.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { request as httpRequest } from "node:http";
@@ -12,7 +12,8 @@ import {
   type ClientCheckpoint, type ServerDocument,
 } from "../src/index.ts";
 
-type Mutable<T> = T extends object ? { -readonly [K in keyof T]: Mutable<T[K]> } : T;
+// Marks hold arbitrary JSON, whose recursive type is too deep to map; this test does not change them.
+type Mutable<T> = T extends TextMark ? T : T extends object ? { -readonly [K in keyof T]: Mutable<T[K]> } : T;
 
 type Shape = typeof Board.definition;
 const exampleUrl = new URL("./fixtures/http-sync.ts", import.meta.url).href;

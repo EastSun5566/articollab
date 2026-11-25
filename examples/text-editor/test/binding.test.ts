@@ -3,7 +3,8 @@ import { describe, it, mock } from "node:test";
 import { EditorSelection, type TransactionSpec } from "@codemirror/state";
 import { createClient, createServer, defineDocument, text, value, type ClientBatch,
   type DocumentOperation } from "../../../dist/index.js";
-import { createTextBinding, remoteRanges } from "../binding.js";
+import { createTextBinding, formatRanges, remoteRanges } from "../binding.js";
+import { Note as RichNote } from "../schema.js";
 import { createMirror, editorOffset, elementIndexAt, textEdits } from "../changes.js";
 
 const Note = defineDocument({ body: text(), count: value(0) });
@@ -332,5 +333,73 @@ describe("Remote selections", () => {
     f.binding.setRemote([]);
     assert.deepEqual(f.binding.state.field(remoteRanges), []);
     assert.deepEqual(f.errors, []);
+  });
+});
+
+function bind(doc: Parameters<typeof createTextBinding>[0]) {
+  return createTextBinding(doc, { update() {}, canEdit: () => true, onError(error) { throw error; } });
+}
+function ranges(binding: ReturnType<typeof bind>) {
+  return binding.state.field(formatRanges).map(({ from, to, attributes }) => [from, to, attributes]);
+}
+
+describe("Text editor formatting", () => {
+  type RichBatch = ClientBatch<DocumentOperation<typeof RichNote.definition>>;
+  function rich() {
+    const server = createServer(RichNote);
+    const outbox: RichBatch[] = [];
+    const writer = () => {
+      const doc = createClient(RichNote, { clientId: server.openClient(), onBatch(batch) { outbox.push(batch); } });
+      let seen = 0;
+      return { doc, deliver() {
+        for (const commit of server.commitsSince(seen) ?? []) { doc.receive(commit); seen = commit.serverSeq; }
+      } };
+    };
+    const a = writer(), b = writer();
+    /** Submits every batch, then delivers every commit to both writers. */
+    const sync = () => { for (const batch of outbox.splice(0)) server.receive(batch); a.deliver(); b.deliver(); };
+    return { a, b, sync };
+  }
+
+  it("starts from the Text's marks and follows remote formatting in UTF-16 offsets", (t) => {
+    const { a, b, sync } = rich();
+    a.doc.state.body.insert(0, "😀 bold link");
+    a.doc.state.body.format(2, 4, "bold", true);
+    sync();
+    const binding = bind(b.doc); t.after(() => binding.destroy());
+    assert.deepEqual(ranges(binding), [[3, 7, { bold: true }]]);
+    a.doc.state.body.format(7, 4, "link", "https://example.com");
+    a.doc.state.body.format(0, 1, "italic", true);
+    sync();
+    assert.deepEqual(ranges(binding), [[0, 2, { italic: true }], [3, 7, { bold: true }],
+      [8, 12, { link: "https://example.com" }]]);
+  });
+
+  it("formats typed text as the marks' expand rules say", (t) => {
+    const { a, sync } = rich();
+    const binding = bind(a.doc); t.after(() => binding.destroy());
+    binding.dispatch([binding.state.update({ changes: { from: 0, insert: "bold link" } })]);
+    a.doc.state.body.format(0, 4, "bold", true);
+    a.doc.state.body.format(5, 4, "link", "https://example.com");
+    binding.dispatch([binding.state.update({ changes: { from: 4, insert: "er" } })]); // "bolder link"
+    binding.dispatch([binding.state.update({ changes: { from: 11, insert: "s" } })]); // "bolder links"
+    assert.deepEqual(ranges(binding), [[0, 6, { bold: true }], [7, 11, { link: "https://example.com" }]]);
+    sync();
+    assert.deepEqual(ranges(binding), [[0, 6, { bold: true }], [7, 11, { link: "https://example.com" }]]);
+  });
+
+  it("toggles a mark on the selection", (t) => {
+    const { a } = rich();
+    const binding = bind(a.doc); t.after(() => binding.destroy());
+    binding.dispatch([binding.state.update({ changes: { from: 0, insert: "one two" } })]);
+    assert.equal(binding.toggleMark("bold", true), false, "nothing selected");
+    binding.dispatch([binding.state.update({ selection: EditorSelection.single(0, 3) })]);
+    binding.toggleMark("bold", true);
+    assert.deepEqual(a.doc.state.body.toDelta(), [{ insert: "one", attributes: { bold: true } }, { insert: " two" }]);
+    binding.dispatch([binding.state.update({ selection: EditorSelection.single(0, 7) })]);
+    binding.toggleMark("bold", true); // Not all bold yet: bold everywhere.
+    assert.deepEqual(ranges(binding), [[0, 7, { bold: true }]]);
+    binding.toggleMark("bold", true); // All bold: removed.
+    assert.deepEqual(ranges(binding), []);
   });
 });

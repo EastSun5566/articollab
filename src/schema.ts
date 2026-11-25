@@ -28,8 +28,27 @@ export interface ListSchema<T extends JsonValue = JsonValue> {
   readonly payload?: PayloadSchema<T>;
 }
 
-export interface TextSchema {
+/** Whether text typed at a mark's start ("before"), end ("after"), both or neither takes the mark. */
+export type MarkExpand = "none" | "before" | "after" | "both";
+
+export interface MarkConfig<T extends JsonValue = JsonValue> {
+  readonly expand: MarkExpand;
+  /** Validates every value set, locally and on the server; `null` removes the mark and is never validated. */
+  readonly payload?: PayloadSchema<T>;
+}
+
+export type MarkShape = Readonly<Record<string, MarkConfig>>;
+
+/** The value type of one mark: its payload schema's type, or any JSON value. */
+export type MarkValue<C> = C extends { readonly payload: infer P } ? PayloadOf<P> : JsonValue;
+
+declare const textMarkType: unique symbol;
+
+export interface TextSchema<M extends MarkShape = {}> {
   readonly kind: "text";
+  readonly [textMarkType]?: M;
+  /** The formatting marks this Text accepts, by key. */
+  readonly marks?: M;
 }
 
 declare const mapValueType: unique symbol;
@@ -51,7 +70,7 @@ export interface CounterMapSchema {
   readonly kind: "counterMap";
 }
 
-export type CollectionSchema = ValueSchema | ListSchema | TextSchema | MapSchema | CounterSchema | CounterMapSchema;
+export type CollectionSchema = ValueSchema | ListSchema | TextSchema<MarkShape> | MapSchema | CounterSchema | CounterMapSchema;
 
 export type SchemaShape = Record<string, CollectionSchema>;
 
@@ -131,9 +150,32 @@ export function counterMap(): CounterMapSchema {
   return Object.freeze({ kind: "counterMap" });
 }
 
-/** Defines an initially empty collaborative plain-text string. */
-export function text(): TextSchema {
-  return Object.freeze({ kind: "text" });
+const EXPANDS: readonly string[] = ["none", "before", "after", "both"];
+
+/**
+ * Defines an initially empty collaborative string. With `marks`, ranges of it can be formatted:
+ * each mark key has an `expand` rule and an optional Standard Schema for its values.
+ */
+export function text(): TextSchema;
+export function text<const M extends MarkShape>(options: { readonly marks: M }): TextSchema<M>;
+export function text(options?: { readonly marks: MarkShape }): TextSchema {
+  if (options === undefined) return Object.freeze({ kind: "text" });
+  if (typeof options !== "object" || options === null) throw new TypeError("Text options must be an object");
+  const { marks } = options;
+  if (typeof marks !== "object" || marks === null || Array.isArray(marks)) throw new TypeError("Text marks must be an object");
+  const entries = Object.keys(marks).map((key) => {
+    if (key.length === 0) throw new Error("Mark keys must not be empty");
+    const config: unknown = marks[key];
+    if (typeof config !== "object" || config === null) throw new TypeError(`Mark ${key} must be an object`);
+    const { expand, payload } = config as Partial<MarkConfig>;
+    if (typeof expand !== "string" || !EXPANDS.includes(expand)) {
+      throw new TypeError(`Mark ${key} expand must be "none", "before", "after" or "both"`);
+    }
+    if (payload === undefined) return [key, Object.freeze({ expand })] as const;
+    requirePayloadSchema(payload);
+    return [key, Object.freeze({ expand, payload })] as const;
+  });
+  return Object.freeze({ kind: "text", marks: Object.freeze(Object.fromEntries(entries)) });
 }
 
 /** Defines the fixed schema shared by every copy of a document. */

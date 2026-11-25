@@ -18,6 +18,10 @@ export {
   type MapType,
   type SchemaShape,
   type TextSchema,
+  type MarkConfig,
+  type MarkExpand,
+  type MarkShape,
+  type MarkValue,
   type ValueSchema,
   type ValueType,
 } from "./schema.ts";
@@ -65,9 +69,14 @@ export {
   type TextDeleteOperation,
   type TextIdRange,
   type TextInsertOperation,
+  type TextMarkOperation,
   type TextOperation,
   type TextSnapshotData,
+  type TextFormatChange,
+  type TextAttributesOf,
+  type TextDeltaOp,
 } from "./text.ts";
+export type { TextMark, TextAttributes } from "./marks.ts";
 
 export {
   ClientDocument,

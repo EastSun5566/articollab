@@ -1,6 +1,6 @@
 import { equalsId, type ElementId } from "articulated";
 import { historyWriter } from "./history-access.ts";
-import { jsonEquals } from "./json.ts";
+import { canonicalJson, jsonEquals } from "./json.ts";
 import { RuntimeList, type ListState } from "./list.ts";
 import { RuntimeMap, type MapState } from "./map.ts";
 import { RuntimeCounter, RuntimeCounterMap, type CounterMapState } from "./counter.ts";
@@ -8,6 +8,8 @@ import { attachHistory, isTransacting, type ClientDocument, type LocalStep, type
 import type { JsonValue, SchemaShape } from "./schema.ts";
 import type { CollectionState } from "./state.ts";
 import { RuntimeText, type TextIdRange, type TextState } from "./text.ts";
+import type { Cursor } from "./cursor.ts";
+import type { TextAttributes } from "./marks.ts";
 
 export interface UndoManagerOptions<S extends SchemaShape = SchemaShape> {
   /** Local batches less than this many milliseconds apart form one step. Default 500; 0 never merges. */
@@ -58,6 +60,8 @@ interface PathStep {
   readonly keys: Set<string>;
   readonly ids: Readonly<ElementId>[];
   readonly ranges: TextIdRange[];
+  /** Text marks the step set, by their gaps and key. */
+  readonly marks: { readonly start: Cursor; readonly end: Cursor; readonly key: string }[];
   /** Counter paths: the net amount each key changed, summed over the step's batches ("" for a Counter). */
   readonly deltas: Map<string, number>;
 }
@@ -90,6 +94,34 @@ function sameEntry(left: JsonValue | undefined, right: JsonValue | undefined): b
 function joinsSurrogates(left: string, right: string): boolean {
   const high = left.charCodeAt(left.length - 1), low = right.charCodeAt(0);
   return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
+}
+
+type MarkWriter = (start: Cursor, end: Cursor, key: string, value: JsonValue | null) => void;
+
+/** Gaps around exactly the elements from `first` to `last`: text typed at either edge stays outside. */
+function exactly(first: Readonly<ElementId>, last: Readonly<ElementId>): [Cursor, Cursor] {
+  return [{ anchor: first, bind: "right" }, { anchor: last, bind: "left" }];
+}
+
+/** Sets the marks of consecutive visible elements to `attributes` where their current marks differ. */
+function restoreAttributes(
+  elements: readonly { readonly id: Readonly<ElementId>; readonly attributes: TextAttributes }[],
+  state: TextState, format: MarkWriter
+): void {
+  const current = elements.map(({ id }) => state.attributesOf(id));
+  const keys = new Set([...elements.flatMap(({ attributes }) => Object.keys(attributes)),
+    ...current.flatMap((attributes) => Object.keys(attributes))]);
+  for (const key of keys) {
+    for (let start = 0; start < elements.length;) {
+      const wanted = elements[start]!.attributes[key];
+      let end = start + 1;
+      while (end < elements.length && sameEntry(elements[end]!.attributes[key], wanted)) end++;
+      if (current.slice(start, end).some((attributes) => !sameEntry(attributes[key], wanted))) {
+        format(...exactly(elements[start]!.id, elements[end - 1]!.id), key, wanted ?? null);
+      }
+      start = end;
+    }
+  }
 }
 
 /**
@@ -162,7 +194,7 @@ export function createUndoManager<S extends SchemaShape>(
       let entry = entries.get(operation.path);
       if (entry === undefined) {
         entry = { before: step.before.get(operation.path)!, after: step.after.get(operation.path)!,
-          keys: new Set(), ids: [], ranges: [], deltas: new Map() };
+          keys: new Set(), ids: [], ranges: [], marks: [], deltas: new Map() };
         entries.set(operation.path, entry);
       }
       switch (operation.type) {
@@ -171,6 +203,7 @@ export function createUndoManager<S extends SchemaShape>(
         // oxlint-disable-next-line typescript/no-misused-spread -- Text elements are Unicode code points.
         case "text/insert": entry.ranges.push({ start: operation.id, count: [...operation.value].length }); break;
         case "text/delete": entry.ranges.push(...operation.ranges); break;
+        case "text/mark": entry.marks.push({ start: operation.start, end: operation.end, key: operation.key }); break;
         case "counter/add": entry.keys.add(""); break;
         case "counterMap/add": case "counterMap/delete": entry.keys.add(operation.key); break;
         case "value/set": break;
@@ -199,6 +232,7 @@ export function createUndoManager<S extends SchemaShape>(
       for (const key of entry.keys) existing.keys.add(key);
       existing.ids.push(...entry.ids);
       existing.ranges.push(...entry.ranges);
+      existing.marks.push(...entry.marks);
       for (const [key, delta] of entry.deltas) existing.deltas.set(key, (existing.deltas.get(key) ?? 0) + delta);
     }
   }
@@ -299,7 +333,7 @@ export function createUndoManager<S extends SchemaShape>(
     const before = entry.before as TextState, after = entry.after as TextState;
     const now = text.state, writer = text[historyWriter]();
     const inserted: Readonly<ElementId>[] = [];
-    const deleted: { index: number; target: Readonly<ElementId>; value: string }[] = [];
+    const deleted: { index: number; target: Readonly<ElementId>; value: string; attributes: TextAttributes }[] = [];
     const seen = new Set<string>();
     for (const id of idsIn(entry.ranges)) {
       if (seen.has(idKey(id))) continue;
@@ -307,10 +341,11 @@ export function createUndoManager<S extends SchemaShape>(
       const target = current(path, id), was = before.has(id), is = after.has(id);
       if (!was && is && now.has(target)) inserted.push(target);
       else if (was && !is && !now.has(target) && now.knows(target)) {
-        deleted.push({ index: now.knownIndexOf(target), target, value: before.valueFor(id) });
+        deleted.push({ index: now.knownIndexOf(target), target, value: before.valueFor(id), attributes: before.attributesOf(id) });
       }
     }
-    const writes: (() => void)[] = [];
+    // Marks first: later writes insert elements that exact mark ranges must not cover.
+    const writes: (() => void)[] = markReverts(entry, before, after, now, (id) => current(path, id), writer.mark);
     if (inserted.length > 0) writes.push(() => { writer.delete(inserted); });
     // Each run of deleted elements with no other known element between them, tombstones included,
     // goes back right after the tombstone of its last element, so it keeps its place and order.
@@ -332,8 +367,86 @@ export function createUndoManager<S extends SchemaShape>(
           anchor = { bunchId: first.bunchId, counter: first.counter + chunk.length - 1 };
           piece = stop;
         }
+        // New IDs take whatever marks surround them; give them back the marks they had.
+        restoreAttributes(run.map(({ target, attributes }) => ({ id: current(path, target), attributes })),
+          text.state, writer.mark);
       });
       start = end;
+    }
+    return writes;
+  }
+
+  /**
+   * For each key a step's marks set, the writes that give the elements now inside those marks their
+   * earlier value, where their value is still the one the step left. Text typed into a mark since
+   * takes the earlier value of the element before it. The step's own gaps get the most common
+   * earlier value, which also covers those marks completely, so their edges stop expanding; runs
+   * that should differ then get exact marks.
+   */
+  function markReverts(
+    entry: PathStep, before: TextState, after: TextState, now: TextState,
+    resolveId: (id: Readonly<ElementId>) => Readonly<ElementId>, mark: MarkWriter
+  ): (() => void)[] {
+    const byKey = new Map<string, { readonly start: Cursor; readonly end: Cursor }[]>();
+    for (const { start, end, key } of entry.marks) {
+      const ranges = byKey.get(key) ?? [];
+      ranges.push({ start, end });
+      byKey.set(key, ranges);
+    }
+    const writes: (() => void)[] = [];
+    for (const [key, ranges] of byKey) {
+      // The step's elements under their current IDs, which undo or redo may have replaced.
+      const original = new Map<string, Readonly<ElementId>>();
+      for (const { start, end } of ranges) {
+        for (const id of after.visibleIdsBetween(start, end)) original.set(idKey(resolveId(id)), id);
+      }
+      const inside = new Map<string, Readonly<ElementId>>();
+      for (const { start, end } of ranges) for (const id of now.visibleIdsBetween(start, end)) inside.set(idKey(id), id);
+      const ordered = [...inside.values()].map((id) => ({ id, index: now.indexOf(id) }))
+        .sort((left, right) => left.index - right.index);
+      /** Each element's value now, the value the step left, and the value it should get. */
+      const plan = ordered.map(({ id, index }) => {
+        const value = now.attributesOf(id)[key], source = original.get(idKey(id));
+        let target = value, stepValue = value;
+        if (source !== undefined && before.has(source)) {
+          const was = before.attributesOf(source)[key];
+          stepValue = after.attributesOf(source)[key];
+          if (!sameEntry(was, stepValue) && sameEntry(value, stepValue)) target = was;
+        }
+        return { id, index, value, is: stepValue, target, typed: source === undefined };
+      });
+      // Text typed into the mark since the step follows its neighbor, the one before it first,
+      // when it took the same value.
+      const follow = (order: typeof plan) => {
+        for (const [position, element] of order.entries()) {
+          const neighbor = order[position - 1];
+          if (!element.typed || neighbor === undefined || Math.abs(neighbor.index - element.index) !== 1) continue;
+          if (sameEntry(element.value, neighbor.is)) { element.target = neighbor.target; element.is = neighbor.is; element.typed = false; }
+        }
+      };
+      follow(plan);
+      follow(plan.toReversed());
+      if (plan.every(({ target, value }) => sameEntry(target, value))) continue;
+      const counts = new Map<string, { value: JsonValue | undefined; count: number }>();
+      for (const { target } of plan) {
+        const name = target === undefined ? "" : canonicalJson(target);
+        const tally = counts.get(name) ?? { value: target, count: 0 };
+        tally.count++;
+        counts.set(name, tally);
+      }
+      const common = [...counts.values()].reduce((best, next) => (next.count > best.count ? next : best)).value;
+      writes.push(() => { for (const { start, end } of ranges) mark(start, end, key, common ?? null); });
+      for (let start = 0; start < plan.length;) {
+        let end = start + 1;
+        while (end < plan.length && plan[end]!.index === plan[end - 1]!.index + 1 &&
+          sameEntry(plan[end]!.target, plan[start]!.target)) end++;
+        const { target } = plan[start]!;
+        if (!sameEntry(target, common)) {
+          const gaps = exactly(plan[start]!.id, plan[end - 1]!.id);
+          writes.push(() => { mark(...gaps, key, target ?? null); });
+        }
+        start = end;
+      }
     }
     return writes;
   }

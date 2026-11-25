@@ -61,6 +61,20 @@ For explicit cancellation, trusted application code can call `server.reject(orig
 
 Resolver throws or invalid output leave server state and sequences unchanged. Side effects cannot be rolled back; keep decisions pure. If a Text transform reuses incoming IDs, preserve the code-point length. Different-length insertions need globally unique application-supplied ID ranges.
 
+## Check formatting
+
+A [Text mark](collections.md#format-text) is an operation like any other, so a resolver can check it. For the `Note` schema from that page, this resolver keeps only links to `https:` addresses:
+
+```ts
+const server = createServer(Note, {
+  resolve: ({ batch }) => batch.operations.filter((operation) =>
+    operation.type !== "text/mark" || operation.key !== "link" || operation.value === null ||
+    (typeof operation.value === "string" && operation.value.startsWith("https://"))),
+});
+```
+
+The writer sees the dropped link disappear when its batch is acknowledged, and its `transform` event lists the mark under `dropped`. A mark names its range by two [cursors](collections.md#stable-positions-with-cursors), `start` and `end`; to change the range, keep the anchors and change only the `value`, or drop the mark.
+
 ## Decode at the transport boundary
 
 Import `decodeClientBatch` and `decodeServerCommit` from `"articollab"`. With the `Score` server and client and a JSON message containing its original batch:
