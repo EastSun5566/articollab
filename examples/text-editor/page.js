@@ -1,4 +1,5 @@
 // @ts-check
+import { createUndoManager } from "../../dist/index.js";
 import { connectSync, createWebSocketTransport } from "../../dist/sync/index.js";
 import { Note } from "./schema.js";
 import { createTextEditor } from "./editor.js";
@@ -35,7 +36,8 @@ export async function mountTextEditors(root, url) {
   root.append(status, columns);
   /** @type {{sync: import("../../dist/sync/index.js").PresenceSyncClient<typeof Note.definition,
    *   import("./presence.js").SelectionPresence>,
-   * editor: Awaited<ReturnType<typeof createTextEditor>>, details: HTMLPreElement, cleanup: () => void}[]} */
+   * editor: Awaited<ReturnType<typeof createTextEditor>>, details: HTMLPreElement, cleanup: () => void,
+   * history: import("../../dist/index.js").UndoManager}[]} */
   const panes = [];
   let destroyed = false, failed = false;
   // Each writer's requests, commits and carets share one socket.
@@ -76,7 +78,7 @@ export async function mountTextEditors(root, url) {
     if (destroyed) return;
     destroyed = true;
     // close() also tells the other writers this one left, so its caret disappears at once.
-    for (const pane of panes) { pane.sync.close(); pane.cleanup(); pane.editor.destroy(); }
+    for (const pane of panes) { pane.sync.close(); pane.cleanup(); pane.history.destroy(); pane.editor.destroy(); }
   }
   try {
     for (const label of ["A", "B"]) {
@@ -94,6 +96,21 @@ export async function mountTextEditors(root, url) {
       const identity = document.createElement("p");
       identity.className = "identity";
       identity.textContent = clientId;
+      const toolbar = document.createElement("div");
+      toolbar.className = "toolbar";
+      toolbar.setAttribute("role", "toolbar");
+      toolbar.setAttribute("aria-label", "Writer " + label + " formatting");
+      /** @type {Record<"bold" | "italic" | "link" | "undo" | "redo", HTMLButtonElement>} */
+      const tools = { bold: document.createElement("button"), italic: document.createElement("button"),
+        link: document.createElement("button"), undo: document.createElement("button"), redo: document.createElement("button") };
+      for (const [name, text, title] of /** @type {const} */ ([["bold", "B", "Bold (Ctrl+B)"], ["italic", "I", "Italic (Ctrl+I)"],
+        ["link", "Link", "Link (Ctrl+K)"], ["undo", "Undo", "Undo (Ctrl+Z)"], ["redo", "Redo", "Redo (Ctrl+Shift+Z)"]])) {
+        tools[name].type = "button";
+        tools[name].textContent = text;
+        tools[name].title = title;
+        tools[name].className = "tool-" + name;
+        toolbar.append(tools[name]);
+      }
       const parent = document.createElement("div");
       parent.className = "editor";
       const message = document.createElement("p");
@@ -116,7 +133,7 @@ export async function mountTextEditors(root, url) {
       presenceStatus.setAttribute("aria-live", "polite");
       presenceStatus.textContent = "Waiting for other writers' positions…";
       controls.append(offlineLabel, discard, show);
-      section.append(heading, identity, parent, presenceStatus, controls, message, details);
+      section.append(heading, identity, toolbar, parent, presenceStatus, controls, message, details);
       columns.append(section);
       const index = panes.length;
       labels.set(clientId, "Writer " + label);
@@ -154,6 +171,29 @@ export async function mountTextEditors(root, url) {
       }
       /** @type {Awaited<ReturnType<typeof createTextEditor>> | undefined} */
       let editor;
+      const history = createUndoManager(sync.doc, { paths: ["body"] });
+      /** Runs a toolbar command; formatting and undo throw while this writer's edits are blocked.
+       * @param {"bold" | "italic" | "link" | "undo" | "redo"} name */
+      function command(name) {
+        if (readOnly || editor === undefined) return;
+        try {
+          if (name === "undo") history.undo();
+          else if (name === "redo") history.redo();
+          else if (name === "link") {
+            const address = prompt("Link address (the server keeps only http: and https: links)", "https://");
+            if (address !== null && address !== "" && !editor.toggleMark("link", address)) message.textContent = "Select some text first.";
+          } else if (!editor.toggleMark(name, true)) message.textContent = "Select some text first.";
+        } catch (error) { message.textContent = "Not changed: " + (error instanceof Error ? error.message : String(error)); }
+        refresh();
+      }
+      const toolClicks = /** @type {const} */ (["bold", "italic", "link", "undo", "redo"]).map((name) => {
+        const listener = () => { command(name); };
+        tools[name].addEventListener("click", listener);
+        return () => { tools[name].removeEventListener("click", listener); };
+      });
+      const updateHistory = () => { tools.undo.disabled = !history.canUndo; tools.redo.disabled = !history.canRedo; };
+      const stopHistory = history.on("change", updateHistory);
+      updateHistory();
       editor = await createTextEditor(parent, sync.doc, {
         label: "Writer " + label + " text",
         canEdit: () => !destroyed && !failed && sync.status !== "failed" && sync.status !== "gap",
@@ -162,6 +202,7 @@ export async function mountTextEditors(root, url) {
         onComposition() { const pane = panes[index]; if (pane !== undefined) showPeers(pane); },
         onLocalEdit() { details.hidden = true; refresh(); },
         onSelection() { const pane = panes[index]; if (pane !== undefined) publish(pane); },
+        onShortcut: command,
         onRemote(statuses) {
           const text = describePresence(statuses, others);
           if (presenceStatus.textContent !== text) presenceStatus.textContent = text; // Avoid live-region repeats.
@@ -177,9 +218,10 @@ export async function mountTextEditors(root, url) {
       const onDiscard = () => { sync.rejectPending().catch(() => {}).finally(syncChanged); };
       const onShow = () => { const pane = panes[index]; if (pane !== undefined) inspect(pane); };
       offline.addEventListener("change", onOffline); discard.addEventListener("click", onDiscard); show.addEventListener("click", onShow);
-      panes.push({ sync, editor, details,
+      panes.push({ sync, editor, details, history,
         cleanup() {
-          stopStatus(); stopPush(); stopPeers();
+          stopStatus(); stopPush(); stopPeers(); stopHistory();
+          for (const removeClick of toolClicks) removeClick();
           clearTimeout(refreshing);
           offline.removeEventListener("change", onOffline); discard.removeEventListener("click", onDiscard); show.removeEventListener("click", onShow);
         },
