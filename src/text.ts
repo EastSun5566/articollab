@@ -268,10 +268,12 @@ export class TextState {
   /** Paragraph attributes by `blockKey()` of the paragraph's start; only nonempty ones. */
   private readonly blockAttributes: HamtMap<TextAttributes>;
   /**
-   * When this state came from earlier ones by paragraph attribute changes alone, each earlier state
-   * and the paragraph it changed, oldest first: comparing with one of them needs only those paragraphs.
+   * When this state came from earlier ones by paragraph attribute changes alone, each earlier state's
+   * `identity` and the paragraph it changed, oldest first: comparing with one of them needs only those
+   * paragraphs. Identities, not states, so earlier states and their caches are not kept alive.
    */
-  private readonly blockRun: readonly { readonly from: TextState; readonly id: Readonly<ElementId> | null }[] | undefined;
+  private readonly blockRun: readonly { readonly from: object; readonly id: Readonly<ElementId> | null }[] | undefined;
+  private readonly identity = {};
   private knownAttributeCache: TextAttributes[] | undefined;
 
   private constructor(
@@ -279,7 +281,7 @@ export class TextState {
     valuesById: HamtMap<string>,
     marks: readonly TextMark[],
     blockAttributes: HamtMap<TextAttributes>,
-    blockRun?: readonly { readonly from: TextState; readonly id: Readonly<ElementId> | null }[]
+    blockRun?: readonly { readonly from: object; readonly id: Readonly<ElementId> | null }[]
   ) {
     this.idList = idList;
     this.valuesById = valuesById;
@@ -474,7 +476,7 @@ export class TextState {
     const before = this.blockAttributes.get(key) ?? NO_ATTRIBUTES;
     const after = withAttribute(before, operation.key, operation.value);
     if (jsonEquals(before, after)) return this;
-    const run = [...(this.blockRun ?? []), { from: this as TextState, id }];
+    const run = [...(this.blockRun ?? []), { from: this.identity, id }];
     return new TextState(this.idList, this.valuesById, this.marks,
       after === NO_ATTRIBUTES ? this.blockAttributes.delete(key) : this.blockAttributes.set(key, after),
       run.length > MAX_BLOCK_RUN ? undefined : run);
@@ -483,7 +485,7 @@ export class TextState {
   /** The paragraphs whose attributes can differ in `other`, when it came from this state by paragraph changes alone. */
   private blocksChangedBy(other: TextState): (Readonly<ElementId> | null)[] | undefined {
     const run = other.blockRun;
-    const start = run?.findIndex(({ from }) => from === this) ?? -1;
+    const start = run?.findIndex(({ from }) => from === this.identity) ?? -1;
     return start === -1 ? undefined : run!.slice(start).map(({ id }) => id);
   }
 
