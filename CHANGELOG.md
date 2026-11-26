@@ -13,11 +13,9 @@ All notable changes to this project will be documented in this file. See [commit
 * **wire and checkpoints:** Upgrade all readers before using Counters or Text formatting in a shared document. 0.9 rejects `counter/add`, `counterMap/add`, `counterMap/delete`, `text/mark`, `text/block` and Text snapshots containing `marks` or `blocks`.
 * **schema migrations:** Changing a Value to a Counter requires a data migration. Old `value/set` operations can remain in retry records after pending work is confirmed and history is empty. See [Upgrading from 0.9 to 0.10](docs/upgrading.md#upgrading-from-09-to-010).
 
-* **sync:** rename SyncHttpError to SyncRequestError ([b5340fc](https://github.com/EastSun5566/articollab/commit/b5340fcf9c4a8e24e727ca879be809e357fe8da8))
-
 ### Features
 
-* add counter and counters collections ([ebbae79](https://github.com/EastSun5566/articollab/commit/ebbae79fd74d20a722b72d3c6fe7be91e1714bbc))
+* add Counter and CounterMap collections ([ebbae79](https://github.com/EastSun5566/articollab/commit/ebbae79fd74d20a722b72d3c6fe7be91e1714bbc))
 * cap, group and exclude undo steps ([9595976](https://github.com/EastSun5566/articollab/commit/959597654220f5f988e5e62c584d3676a002579f))
 * let several tabs open writers from one store key ([512225f](https://github.com/EastSun5566/articollab/commit/512225f277210ccb1fb7f0af6aaf6c79b0821d23))
 * share presence over the sync channel ([38fa673](https://github.com/EastSun5566/articollab/commit/38fa673453a4f5205e5f0d9d715d783108d933df))
@@ -32,18 +30,7 @@ All notable changes to this project will be documented in this file. See [commit
 
 ### Bug Fixes
 
-* align the new 0.10 APIs before their first release ([f20a7e7](https://github.com/EastSun5566/articollab/commit/f20a7e7f1a82575d6f71128daa638233531ec96d))
-* **examples:** keep IME drafts local until confirmation ([4ef034d](https://github.com/EastSun5566/articollab/commit/4ef034d41ddb3e0924c506a4274d8d5739fa7606))
-* ignore presence states set after the client stops ([51bf786](https://github.com/EastSun5566/articollab/commit/51bf7869737175e0aec633710d81068a9ebf1c89))
-* let startGroup() run after destroy(), as documented ([d647c61](https://github.com/EastSun5566/articollab/commit/d647c6136e8e13955aa48917f02aeffa7cf16320))
-* name limits max*, close sync clients and type option errors ([3b08d42](https://github.com/EastSun5566/articollab/commit/3b08d42bf6aa91f7e99a8313d62cb9370746541f))
-* refuse an undo manager created inside a transaction ([8ab46ff](https://github.com/EastSun5566/articollab/commit/8ab46ffb71623a83e1de1608d16482633a4819eb))
-* **sync:** close two WebSocket races found in review ([c40cf6f](https://github.com/EastSun5566/articollab/commit/c40cf6ff4a21bf36d5779bb9348ab903ef91a38a))
-* **sync:** drop presence when its session closes, without scanning sessions ([ddded6e](https://github.com/EastSun5566/articollab/commit/ddded6e82ba8067be906d2382e863a0b0256d0e8))
-* **sync:** open a WebSocket subscription as its reply arrives ([4974d44](https://github.com/EastSun5566/articollab/commit/4974d44abc8d705a4252e0426c3ccea3b78a4db0))
-* **text:** remember earlier states by identity in a paragraph run ([a90c247](https://github.com/EastSun5566/articollab/commit/a90c2474959ac076e3fa4aa077be6155bf6ddf35))
 * throw TypeError for non-number List and Text indices ([67cc855](https://github.com/EastSun5566/articollab/commit/67cc855d864e55f0854f95d889476fe28dac39dc))
-* **undo:** revert a Text mark over its own range ([482be8d](https://github.com/EastSun5566/articollab/commit/482be8dca9af957c09d0265fbd85811941e24613))
 
 ## [0.10.0-beta.0](https://github.com/EastSun5566/articollab/compare/v0.9.0...v0.10.0-beta.0) (2026-11-26)
 
@@ -56,11 +43,9 @@ All notable changes to this project will be documented in this file. See [commit
 * **wire and checkpoints:** Upgrade all readers before using Counters or Text formatting in a shared document. 0.9 rejects `counter/add`, `counterMap/add`, `counterMap/delete`, `text/mark`, `text/block` and Text snapshots containing `marks` or `blocks`.
 * **schema migrations:** Changing a Value to a Counter requires a data migration. Old `value/set` operations can remain in retry records after pending work is confirmed and history is empty. See [Upgrading from 0.9 to 0.10](docs/upgrading.md#upgrading-from-09-to-010).
 
-* **sync:** rename SyncHttpError to SyncRequestError ([b5340fc](https://github.com/EastSun5566/articollab/commit/b5340fcf9c4a8e24e727ca879be809e357fe8da8))
-
 ### Features
 
-* add counter and counters collections ([ebbae79](https://github.com/EastSun5566/articollab/commit/ebbae79fd74d20a722b72d3c6fe7be91e1714bbc))
+* add Counter and CounterMap collections ([ebbae79](https://github.com/EastSun5566/articollab/commit/ebbae79fd74d20a722b72d3c6fe7be91e1714bbc))
 * cap, group and exclude undo steps ([9595976](https://github.com/EastSun5566/articollab/commit/959597654220f5f988e5e62c584d3676a002579f))
 * let several tabs open writers from one store key ([512225f](https://github.com/EastSun5566/articollab/commit/512225f277210ccb1fb7f0af6aaf6c79b0821d23))
 * share presence over the sync channel ([38fa673](https://github.com/EastSun5566/articollab/commit/38fa673453a4f5205e5f0d9d715d783108d933df))
@@ -75,17 +60,7 @@ All notable changes to this project will be documented in this file. See [commit
 
 ### Bug Fixes
 
-* align the new 0.10 APIs before their first release ([f20a7e7](https://github.com/EastSun5566/articollab/commit/f20a7e7f1a82575d6f71128daa638233531ec96d))
-* ignore presence states set after the client stops ([51bf786](https://github.com/EastSun5566/articollab/commit/51bf7869737175e0aec633710d81068a9ebf1c89))
-* let startGroup() run after destroy(), as documented ([d647c61](https://github.com/EastSun5566/articollab/commit/d647c6136e8e13955aa48917f02aeffa7cf16320))
-* name limits max*, close sync clients and type option errors ([3b08d42](https://github.com/EastSun5566/articollab/commit/3b08d42bf6aa91f7e99a8313d62cb9370746541f))
-* refuse an undo manager created inside a transaction ([8ab46ff](https://github.com/EastSun5566/articollab/commit/8ab46ffb71623a83e1de1608d16482633a4819eb))
-* **sync:** close two WebSocket races found in review ([c40cf6f](https://github.com/EastSun5566/articollab/commit/c40cf6ff4a21bf36d5779bb9348ab903ef91a38a))
-* **sync:** drop presence when its session closes, without scanning sessions ([ddded6e](https://github.com/EastSun5566/articollab/commit/ddded6e82ba8067be906d2382e863a0b0256d0e8))
-* **sync:** open a WebSocket subscription as its reply arrives ([4974d44](https://github.com/EastSun5566/articollab/commit/4974d44abc8d705a4252e0426c3ccea3b78a4db0))
-* **text:** remember earlier states by identity in a paragraph run ([a90c247](https://github.com/EastSun5566/articollab/commit/a90c2474959ac076e3fa4aa077be6155bf6ddf35))
 * throw TypeError for non-number List and Text indices ([67cc855](https://github.com/EastSun5566/articollab/commit/67cc855d864e55f0854f95d889476fe28dac39dc))
-* **undo:** revert a Text mark over its own range ([482be8d](https://github.com/EastSun5566/articollab/commit/482be8dca9af957c09d0265fbd85811941e24613))
 
 ## [0.9.0](https://github.com/EastSun5566/articollab/compare/v0.8.0...v0.9.0) (2026-11-22)
 
