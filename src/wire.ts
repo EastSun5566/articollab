@@ -34,6 +34,7 @@ import type {
   DocumentSnapshotData,
   ServerCheckpoint,
   ServerCommit,
+  ServerLogEntry,
 } from "./runtime.ts";
 
 type PathSegment = JsonPathSegment;
@@ -937,6 +938,29 @@ export function decodeClientCheckpoint<S extends SchemaShape>(
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The validated allocation paths and safe counters match the schema’s List/Text keys.
     lastBunchSeqs: allocations as ClientCheckpoint<S>["lastBunchSeqs"],
   });
+}
+
+/** Decodes one parsed server log entry, as a server store saved it. */
+export function decodeServerLogEntry<S extends SchemaShape>(
+  schema: DocumentSchema<S>,
+  input: unknown
+): ServerLogEntry<S> {
+  const record = decodeRecord(input, [], "Server log entry");
+  const { type } = record;
+  if (type === "open" || type === "close") {
+    requireExactFields(record, [], ["type", "clientId"]);
+    const clientId = decodeString(record.clientId, ["clientId"], "Client ID", true);
+    if (clientNumber(clientId) === undefined) fail(["clientId"], "client ID must be an issued ID");
+    return Object.freeze({ type, clientId });
+  }
+  if (type !== "batch") fail(["type"], 'type must be "open", "close" or "batch"');
+  requireExactFields(record, [], ["type", "batch", "commit"]);
+  const batch = decodeClientBatchAt(schema, record.batch, ["batch"]);
+  const commit = decodeServerCommitAt(schema, record.commit, ["commit"]);
+  if (commit.source.clientId !== batch.clientId || commit.source.seq !== batch.seq) {
+    fail(["commit", "source"], "source must match the batch");
+  }
+  return Object.freeze({ type, batch, commit });
 }
 
 /** Decodes parsed state used to restore an authoritative server. */
