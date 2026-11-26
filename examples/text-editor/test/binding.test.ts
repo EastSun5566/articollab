@@ -14,18 +14,21 @@ function fixture() {
   const server = createServer(Note);
   const batches: Batch[] = [];
   const doc = createClient(Note, { clientId: server.openClient(), onBatch(batch) { batches.push(batch); } });
-  let updates = 0, allowed = true;
+  let updates = 0, selections = 0, allowed = true;
   const errors: unknown[] = [];
+  const unsent: string[] = [];
   const binding = createTextBinding(doc, {
     update() { updates++; }, canEdit: () => allowed, onError(error) { errors.push(error); },
+    onSelection() { selections++; }, onUnsentComposition(draft) { unsent.push(draft); },
   });
   function edit(spec: TransactionSpec) { binding.dispatch([binding.state.update(spec)]); }
   function check() {
     assert.deepEqual(binding.elements, Array.from(doc.state.body));
     assert.equal(binding.state.doc.toString(), doc.state.body.toString());
   }
-  return { server, doc, batches, binding, edit, check, errors,
-    get updates() { return updates; }, set allowed(next: boolean) { allowed = next; },
+  return { server, doc, batches, binding, edit, check, errors, unsent,
+    get updates() { return updates; }, get selections() { return selections; },
+    set allowed(next: boolean) { allowed = next; },
   };
 }
 
@@ -269,6 +272,118 @@ function withPeer(f: ReturnType<typeof fixture>) {
   }
   return { peer, deliver };
 }
+
+describe("Text editor composition", () => {
+  it("keeps candidate changes and selection local until it submits the confirmed text once", (t) => {
+    const f = fixture(); t.after(() => f.binding.destroy());
+    const before = f.doc.checkpoint();
+    f.binding.startComposition();
+    f.edit({ changes: { from: 0, insert: "ㄏ" } });
+    f.binding.startComposition(); // A duplicate start does not reset the draft.
+    f.edit({ changes: { from: 1, insert: "ㄠ" } });
+    f.edit({ changes: { from: 0, to: 2, insert: "好" }, selection: { anchor: 1 } });
+    assert.equal(f.binding.state.doc.toString(), "好");
+    assert.equal(f.binding.enter(), false);
+    assert.equal(f.binding.toggleMark("bold", true), false);
+    assert.deepEqual(f.doc.checkpoint(), before);
+    assert.equal(f.selections, 0);
+    f.binding.finishComposition();
+    f.binding.finishComposition();
+    f.check();
+    assert.equal(f.batches.length, 1);
+    assert.deepEqual(f.batches[0]?.operations.map((op) => op.type === "text/insert" && op.value), ["好"]);
+    assert.equal(f.selections, 1);
+    assert.equal(f.doc.state.body.cursorIndex(f.binding.selectionCursors().from), 1);
+  });
+
+  it("applies only the peer edit when a canceled replacement restores the original text", (t) => {
+    const f = fixture(); t.after(() => f.binding.destroy());
+    const { peer, deliver } = withPeer(f);
+    f.edit({ changes: { from: 0, insert: "ABC" } }); deliver();
+    f.binding.startComposition();
+    f.edit({ changes: { from: 0, to: 2, insert: "ㄏ" } });
+    peer.state.body.delete(1, 1);
+    peer.state.body.insert(1, "X");
+    deliver();
+    f.edit({ changes: { from: 0, to: 1, insert: "AB" } });
+    assert.equal(f.binding.state.doc.toString(), "ABC");
+    f.binding.finishComposition();
+    f.check();
+    assert.equal(f.binding.state.doc.toString(), "AXC");
+    assert.deepEqual(f.batches, []);
+  });
+
+  it("discards an Escape cancellation even when the IME leaves phonetic text in the view", (t) => {
+    const f = fixture(); t.after(() => f.binding.destroy());
+    const { peer, deliver } = withPeer(f);
+    f.edit({ changes: { from: 0, insert: "ABC" } }); deliver();
+    f.binding.startComposition();
+    f.edit({ changes: { from: 0, to: 2, insert: "ㄏㄠ" } });
+    peer.state.body.insert(1, "X"); deliver();
+    f.binding.finishComposition(true);
+    f.check();
+    assert.equal(f.binding.state.doc.toString(), "AXBC");
+    assert.deepEqual(f.batches, []);
+    assert.deepEqual(f.unsent, []);
+  });
+
+  for (const { range, expected } of [
+    { range: { from: 2, to: 4 }, expected: "😀好XC" },
+    { range: { from: 3, to: 3 }, expected: "😀AX好BC" },
+  ]) {
+    it(`preserves a peer insert during composition at UTF-16 range ${range.from}–${range.to}`, (t) => {
+      const f = fixture(); t.after(() => f.binding.destroy());
+      const { peer, deliver } = withPeer(f);
+      f.edit({ changes: { from: 0, insert: "😀ABC" } }); deliver();
+      f.binding.startComposition();
+      f.edit({ changes: { ...range, insert: "好" }, selection: { anchor: range.from + 1 } });
+      const during = f.binding.state;
+      peer.state.body.insert(2, "X"); deliver();
+      assert.equal(f.binding.state, during, "remote changes never update the composing view");
+      f.binding.finishComposition();
+      f.check();
+      assert.equal(f.binding.state.doc.toString(), expected);
+      assert.equal(f.batches.length, 1);
+      assert.equal(f.binding.state.selection.main.head, expected.indexOf("好") + 1);
+      deliver();
+      assert.equal(peer.state.body.toString(), expected);
+    });
+  }
+
+  it("leaves a copy of the unsent text when the writer becomes read-only", (t) => {
+    const f = fixture(); t.after(() => f.binding.destroy());
+    const { peer, deliver } = withPeer(f);
+    f.binding.startComposition();
+    f.edit({ changes: { from: 0, insert: "好" } });
+    f.allowed = false;
+    peer.state.body.insert(0, "peer"); deliver();
+    f.binding.finishComposition();
+    f.check();
+    assert.deepEqual(f.unsent, ["好"]);
+    assert.equal(f.binding.state.doc.toString(), "peer");
+    assert.deepEqual(f.batches, []);
+  });
+
+  it("preserves an error from the final transaction and never flushes a destroyed binding", (t) => {
+    const f = fixture(); t.after(() => f.binding.destroy());
+    f.binding.startComposition();
+    f.edit({ changes: { from: 0, insert: "好" } });
+    const failure = new Error("composition failed");
+    t.mock.method(f.doc, "transact", () => { throw failure; });
+    assert.throws(() => f.binding.finishComposition(), (error) => error === failure);
+    assert.deepEqual(f.errors, [failure]);
+    assert.equal(f.binding.state.doc.toString(), "好");
+    assert.deepEqual(f.batches, []);
+
+    const other = fixture();
+    other.binding.startComposition();
+    other.edit({ changes: { from: 0, insert: "ㄏ" } });
+    other.binding.destroy();
+    other.binding.finishComposition();
+    assert.deepEqual(other.batches, []);
+  });
+});
+
 const slice = (f: ReturnType<typeof fixture>) => f.binding.state.field(remoteRanges).map(({ label, from, to }) =>
   ({ label, text: f.binding.state.doc.sliceString(from, to), at: to }));
 
@@ -360,6 +475,30 @@ describe("Text editor formatting", () => {
     const sync = () => { for (const batch of outbox.splice(0)) server.receive(batch); a.deliver(); b.deliver(); };
     return { a, b, sync };
   }
+
+  it("projects incoming marks and paragraph formatting without updating the composing editor", (t) => {
+    const { a, b, sync } = rich();
+    a.doc.state.body.insert(0, "😀Title");
+    a.doc.state.body.format(1, 5, "italic", true);
+    sync();
+    const binding = bind(b.doc); t.after(() => binding.destroy());
+    binding.startComposition();
+    binding.dispatch([binding.state.update({ changes: { from: 7, insert: "好" }, selection: { anchor: 8 } })]);
+    const during = binding.state;
+    a.doc.transact(() => {
+      a.doc.state.body.format(1, 5, "italic", null);
+      a.doc.state.body.format(1, 5, "bold", true);
+      a.doc.state.body.formatBlocks(0, 0, "heading", 1);
+    });
+    sync();
+    assert.equal(binding.state, during);
+    binding.finishComposition();
+    assert.equal(binding.state.doc.toString(), "😀Title好");
+    assert.deepEqual(ranges(binding), [[2, 8, { bold: true }]]);
+    assert.deepEqual(lines(binding), [[0, { heading: 1 }]]);
+    sync();
+    assert.equal(a.doc.state.body.toString(), b.doc.state.body.toString());
+  });
 
   it("starts from the Text's marks and follows remote formatting in UTF-16 offsets", (t) => {
     const { a, b, sync } = rich();

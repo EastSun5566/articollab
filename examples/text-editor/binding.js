@@ -1,5 +1,5 @@
 // @ts-check
-import { Annotation, EditorState, StateEffect, StateField } from "@codemirror/state";
+import { Annotation, ChangeSet, EditorState, StateEffect, StateField } from "@codemirror/state";
 import { createMirror, editorEdits, editorOffset, elementIndexAt, mirrorElements, textEdits } from "./changes.js";
 
 const fromText = Annotation.define();
@@ -53,11 +53,16 @@ function applyFormats(ranges, runs) {
  * @type {import("@codemirror/state").StateEffectType<readonly BlockLine[]>} */
 const setBlocks = StateEffect.define();
 
+/** Installs the formatted projection when the composing view catches up.
+ * @type {import("@codemirror/state").StateEffectType<{formats: readonly FormatRange[], blocks: readonly BlockLine[]}>} */
+const restoreFormatting = StateEffect.define();
+
 /** Lines with paragraph attributes, for line decorations. A line that an edit joins to the one before it loses its entry. */
 export const blockLines = StateField.define({
   /** @returns {readonly BlockLine[]} */
   create: () => [],
   update(lines, transaction) {
+    for (const effect of transaction.effects) if (effect.is(restoreFormatting)) return effect.value.blocks;
     /** @type {Map<number, Attributes>} */
     const next = new Map();
     for (const line of lines) {
@@ -81,6 +86,7 @@ export const formatRanges = StateField.define({
   /** @returns {readonly FormatRange[]} */
   create: () => [],
   update(ranges, transaction) {
+    for (const effect of transaction.effects) if (effect.is(restoreFormatting)) return effect.value.formats;
     let next = !transaction.docChanged ? ranges : ranges.flatMap((range) => {
       const from = transaction.changes.mapPos(range.from, 1), to = transaction.changes.mapPos(range.to, -1);
       return from < to ? [{ ...range, from, to }] : [];
@@ -111,7 +117,8 @@ export const remoteRanges = StateField.define({
  *   transact: (callback: () => void) => void, readonly replayConflict: unknown}} doc
  * @param {{update: (transactions: readonly import("@codemirror/state").Transaction[]) => void,
  *   canEdit: () => boolean, onError: (error: unknown) => void,
- *   onLocalEdit?: () => void, extensions?: import("@codemirror/state").Extension,
+ *   onLocalEdit?: () => void, onCompositionBoundary?: () => void, onUnsentComposition?: (text: string) => void,
+ *   extensions?: import("@codemirror/state").Extension,
  *   onSelection?: () => void, onRemote?: (statuses: readonly RemoteStatus[]) => void}} options
  */
 export function createTextBinding(doc, options) {
@@ -136,16 +143,40 @@ export function createTextBinding(doc, options) {
   /** @type {readonly RemoteSelection[]} */
   let remote = [];
   let local = false, destroyed = false, failed = false;
+  /** @type {{base: EditorState, shared: EditorState, draft: ChangeSet, incoming: ChangeSet} | undefined} */
+  let composition;
   /** @type {unknown} */
   let failure;
   /** @param {unknown} error @returns {never} */
   function stop(error) {
     if (failed) throw failure;
     failed = true;
+    composition = undefined;
     failure = error;
     try { options.onError(error); }
     catch { /* Reporting a failure must not replace it. */ }
     throw failure;
+  }
+
+  /** @param {ReturnType<typeof editorEdits>} edits */
+  function writeEdits(edits) {
+    if (edits.length === 0) return;
+    local = true;
+    try {
+      doc.transact(() => {
+        for (const edit of edits) {
+          if (edit.deleteCount !== 0) doc.state.body.delete(edit.index, edit.deleteCount);
+          if (edit.insert !== "") doc.state.body.insert(edit.index, edit.insert);
+        }
+      });
+    } finally { local = false; }
+  }
+
+  function takeLocalFormatting() {
+    const effects = [setFormats.of(localFormats), setBlocks.of(localBlocks)];
+    localFormats = [];
+    localBlocks = [];
+    return effects;
   }
 
   /** @param {readonly import("@codemirror/state").Transaction[]} transactions */
@@ -153,10 +184,18 @@ export function createTextBinding(doc, options) {
     if (destroyed) throw new Error("Text binding is destroyed");
     let docChanged = false, moved = false;
     for (const transaction of transactions) {
-      docChanged ||= transaction.docChanged;
-      moved ||= transaction.docChanged || transaction.selection !== undefined;
       if (transaction.startState !== state) stop(new Error("Stale editor transaction"));
       if (transaction.docChanged && failed) throw failure;
+      if (composition !== undefined) {
+        try {
+          if (transaction.docChanged) composition.draft = composition.draft.compose(transaction.changes);
+          state = transaction.state;
+          options.update([transaction]);
+        } catch (error) { stop(error); }
+        continue;
+      }
+      docChanged ||= transaction.docChanged;
+      moved ||= transaction.docChanged || transaction.selection !== undefined;
       // Marks from an earlier transaction of this batch are in its offsets.
       if (transaction.docChanged && localFormats.length !== 0) {
         localFormats = localFormats.map((range) => ({ ...range,
@@ -173,15 +212,7 @@ export function createTextBinding(doc, options) {
       try {
         if (transaction.docChanged && !external) {
           const edits = editorEdits(mirror, transaction);
-          local = true;
-          try {
-            if (edits.length !== 0) doc.transact(() => {
-              for (const edit of edits) {
-                if (edit.deleteCount !== 0) doc.state.body.delete(edit.index, edit.deleteCount);
-                if (edit.insert !== "") doc.state.body.insert(edit.index, edit.insert);
-              }
-            });
-          } finally { local = false; }
+          writeEdits(edits);
           if (edits.length !== 0) options.onLocalEdit?.();
         }
         state = transaction.state;
@@ -189,10 +220,7 @@ export function createTextBinding(doc, options) {
       } catch (error) { stop(error); }
     }
     if (localFormats.length !== 0 || localBlocks.length !== 0) {
-      const effects = [setFormats.of(localFormats), setBlocks.of(localBlocks)];
-      localFormats = [];
-      localBlocks = [];
-      dispatch([state.update({ effects })]);
+      dispatch([state.update({ effects: takeLocalFormatting() })]);
     }
     // Re-resolve from the cursors: mapped offsets cannot know about deleted or newly known anchors.
     if (docChanged && remote.length !== 0) resolveRemote();
@@ -231,9 +259,16 @@ export function createTextBinding(doc, options) {
       const blocks = (event.blocks ?? []).map(({ index, attributes }) => ({ from: editorOffset(mirror, index), attributes }));
       // The original editor transaction will be applied once.
       if (local) { localFormats.push(...formats); localBlocks.push(...blocks); return; }
-      const changes = next.changes.filter(({ from, to, insert }) => state.doc.sliceString(from, to, "\n") !== insert);
+      const shared = composition?.shared ?? state;
+      const changes = next.changes.filter(({ from, to, insert }) => shared.doc.sliceString(from, to, "\n") !== insert);
       if (changes.length !== 0 || formats.length !== 0 || blocks.length !== 0) {
-        dispatch([state.update({ changes, effects: [setFormats.of(formats), setBlocks.of(blocks)], annotations: fromText.of(true) })]);
+        const transaction = shared.update({ changes, effects: [setFormats.of(formats), setBlocks.of(blocks)],
+          annotations: fromText.of(true) });
+        if (composition === undefined) dispatch([transaction]);
+        else {
+          composition.shared = transaction.state;
+          composition.incoming = composition.incoming.compose(transaction.changes);
+        }
       }
     } catch (error) { stop(error); }
   });
@@ -243,10 +278,62 @@ export function createTextBinding(doc, options) {
     /** Rebuilt from the editor text and mirror for inspection; linear in the document size. */
     get elements() { return mirrorElements(mirror, state.doc.toString()); },
     dispatch,
+    get composing() { return composition !== undefined; },
+    startComposition() {
+      if (composition !== undefined || destroyed || failed || !options.canEdit() || doc.replayConflict !== null) return;
+      const empty = ChangeSet.empty(state.doc.length);
+      composition = { base: state, shared: state, draft: empty, incoming: empty };
+    },
+    finishComposition(cancelled = false) {
+      const completed = composition;
+      if (completed === undefined || destroyed || failed) return;
+      try {
+        const { base, shared, draft, incoming } = completed;
+        /** @type {import("@codemirror/state").ChangeSpec[]} */
+        const changed = [];
+        draft.iterChanges((from, to, _from, _to, insert) => {
+          if (!base.doc.slice(from, to).eq(insert)) changed.push({ from, to, insert });
+        });
+        const net = base.changes(changed);
+        const allowed = options.canEdit() && doc.replayConflict === null;
+        const discardDraft = cancelled || !allowed;
+        const translated = discardDraft ? undefined : shared.update({ changes: net.map(incoming) });
+        const edits = translated === undefined ? [] : editorEdits(mirror, translated);
+        let final = shared;
+        if (translated !== undefined && edits.length !== 0) {
+          options.onCompositionBoundary?.();
+          writeEdits(edits);
+          options.onCompositionBoundary?.();
+          final = translated.state.update({ effects: takeLocalFormatting() }).state;
+        }
+        // Both views receive the same changes, with already received remote inserts ordered first.
+        const changes = discardDraft ? draft.invert(base.doc).compose(incoming) : incoming.map(net, true);
+        composition = undefined;
+        const transaction = state.update({
+          changes, selection: state.selection.map(changes),
+          effects: restoreFormatting.of({ formats: final.field(formatRanges), blocks: final.field(blockLines) }),
+          annotations: fromText.of(true),
+        });
+        state = transaction.state;
+        options.update([transaction]);
+        if (!cancelled && !allowed && !net.empty) {
+          /** @type {string[]} */
+          const unsent = [];
+          net.iterChanges((from, to, _from, _to, insert) => {
+            unsent.push(insert.length === 0 ? "Delete: " + base.doc.sliceString(from, to) : insert.toString());
+          });
+          options.onUnsentComposition?.(unsent.join("\n"));
+        }
+        if (edits.length !== 0) options.onLocalEdit?.();
+        if (remote.length !== 0) resolveRemote();
+        options.onSelection?.();
+      } catch (error) { stop(error); }
+    },
     /** The main selection as cursors: a caret binds left; a range keeps edge insertions outside.
      * @returns {CursorSelection} */
     selectionCursors() {
       if (failed) throw failure;
+      if (composition !== undefined) throw new Error("Cannot share a draft selection");
       const { from, to } = state.selection.main;
       const start = elementIndexAt(mirror, from), end = elementIndexAt(mirror, to);
       if (start === end) {
@@ -261,6 +348,7 @@ export function createTextBinding(doc, options) {
     toggleMark(key, value) {
       if (destroyed) throw new Error("Text binding is destroyed");
       if (failed) throw failure;
+      if (composition !== undefined) return false;
       const { from, to } = state.selection.main;
       const start = elementIndexAt(mirror, from), end = elementIndexAt(mirror, to);
       if (start === end) return false;
@@ -274,6 +362,7 @@ export function createTextBinding(doc, options) {
     toggleBlock(attribute) {
       if (destroyed) throw new Error("Text binding is destroyed");
       if (failed) throw failure;
+      if (composition !== undefined) return;
       const { from, to } = state.selection.main;
       const start = elementIndexAt(mirror, from), end = elementIndexAt(mirror, to);
       const touched = doc.state.body.blocks().filter((block) => block.index + block.length >= start &&
@@ -289,7 +378,7 @@ export function createTextBinding(doc, options) {
      * @returns {boolean} whether it handled the key
      */
     enter() {
-      if (destroyed || failed || !options.canEdit() || doc.replayConflict !== null) return false;
+      if (destroyed || failed || composition !== undefined || !options.canEdit() || doc.replayConflict !== null) return false;
       const { from, to } = state.selection.main;
       const start = elementIndexAt(mirror, from);
       const block = doc.state.body.blocks().find((entry) => entry.index <= start && start <= entry.index + entry.length);
@@ -314,8 +403,8 @@ export function createTextBinding(doc, options) {
       if (destroyed) throw new Error("Text binding is destroyed");
       if (failed) throw failure;
       remote = selections;
-      return resolveRemote();
+      return composition === undefined ? resolveRemote() : [];
     },
-    destroy() { if (!destroyed) { destroyed = true; unsubscribe(); } },
+    destroy() { if (!destroyed) { destroyed = true; composition = undefined; unsubscribe(); } },
   };
 }

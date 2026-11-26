@@ -8,6 +8,7 @@ import { blockLines, createTextBinding, formatRanges, remoteRanges } from "./bin
  * @param {Parameters<typeof createTextBinding>[0]} doc
  * @param {{label: string, canEdit: () => boolean, onError: (error: unknown) => void,
  *   onLocalEdit: () => void, onComposition: () => void, onSelection: () => void,
+ *   onCompositionBoundary: () => void, onUnsentComposition: (text: string) => void,
  *   onShortcut: (command: Command) => void,
  *   onRemote: (statuses: readonly import("./binding.js").RemoteStatus[]) => void}} options
  */
@@ -45,38 +46,117 @@ export async function createTextEditor(parent, doc, options) {
       ...(attributes.heading === 1 || attributes.heading === 2 ? ["cm-heading-" + String(attributes.heading)] : []),
       ...(attributes.list === "bullet" ? ["cm-list-bullet"] : []),
     ].join(" ") }).range(from)), true));
+  const isComposing = () => binding.composing || view?.compositionStarted === true;
   /** @param {Command} command */
-  const run = (command) => () => { options.onShortcut(command); return true; };
+  const run = (command) => () => {
+    if (isComposing()) return false;
+    options.onShortcut(command);
+    return true;
+  };
   const shortcuts = keymap.of([
-    { key: "Enter", run: () => binding.enter() },
+    { key: "Enter", run: () => !isComposing() && binding.enter() },
     { key: "Mod-Alt-1", run: run("heading1") }, { key: "Mod-Alt-2", run: run("heading2") }, { key: "Mod-Shift-8", run: run("list") },
     { key: "Mod-b", run: run("bold") }, { key: "Mod-i", run: run("italic") }, { key: "Mod-k", run: run("link") },
     { key: "Mod-z", run: run("undo"), shift: run("redo") }, { key: "Mod-y", run: run("redo") },
   ]);
   const readOnly = new Compartment();
-  let composing = false;
+  let destroyed = false, ending = false, cancelled = false, generation = 0;
+  /** @type {number | undefined} */
+  let scheduled;
+  /** @type {boolean | undefined} */
+  let pendingReadOnly;
+  /** @type {EventTarget | undefined} */
+  let editContext;
   /** @type {import("@codemirror/view").EditorView | undefined} */
   let view;
   const binding = createTextBinding(doc, {
     canEdit: options.canEdit, onError: options.onError, onLocalEdit: options.onLocalEdit,
     onSelection: options.onSelection, onRemote: options.onRemote,
+    onCompositionBoundary: options.onCompositionBoundary, onUnsentComposition: options.onUnsentComposition,
     extensions: [readOnly.of([EditorState.readOnly.of(true), EditorView.editable.of(false)]), remoteDecorations,
       formatDecorations, lineDecorations, shortcuts,
       EditorView.contentAttributes.of({ "aria-label": options.label }),
+      EditorView.updateListener.of(({ view: current }) => {
+        if (binding.composing && !current.compositionStarted) compositionEnd();
+      }),
       EditorView.lineWrapping],
     update: (transactions) => { view?.update(transactions); },
   });
   try {
-    view = new EditorView({ state: binding.state, parent, dispatchTransactions: binding.dispatch });
+    view = new EditorView({ state: binding.state, parent, dispatchTransactions(transactions, current) {
+      if (current.compositionStarted || transactions.some((transaction) => transaction.isUserEvent("input.type.compose"))) {
+        if (!binding.composing) compositionStart();
+      }
+      binding.dispatch(transactions);
+    } });
   } catch (error) { binding.destroy(); throw error; }
   const mounted = view;
-  function compositionStart() { composing = true; options.onComposition(); }
-  function compositionEnd() { composing = false; options.onComposition(); }
-  mounted.contentDOM.addEventListener("compositionstart", compositionStart);
+
+  function finishComposition() {
+    if (!binding.composing) return;
+    ending = false;
+    try { binding.finishComposition(cancelled); }
+    catch { /* The binding has already reported the error. */ }
+    if (pendingReadOnly !== undefined) {
+      const value = pendingReadOnly;
+      pendingReadOnly = undefined;
+      setReadOnly(value);
+    }
+    options.onComposition();
+  }
+  function compositionStart() {
+    if (ending && !view?.compositionStarted) finishComposition();
+    if (!binding.composing) {
+      generation++;
+      cancelled = false;
+      binding.startComposition();
+    }
+  }
+  /** @param {KeyboardEvent} event */
+  function compositionKey(event) {
+    if (!binding.composing || ending) return;
+    // macOS Zhuyin may end an Escape cancellation with the phonetic text still in the view.
+    if (event.key === "Escape") cancelled = true;
+    else if (event.isComposing || view?.compositionStarted) cancelled = false;
+  }
+  function compositionEnd() {
+    if (!binding.composing) return;
+    ending = true;
+    const current = generation;
+    if (scheduled === current) return;
+    scheduled = current;
+    // CodeMirror can apply the final DOM changes in a microtask after compositionend.
+    queueMicrotask(() => {
+      if (scheduled === current) scheduled = undefined;
+      if (!destroyed && generation === current && !mounted.compositionStarted) finishComposition();
+    });
+  }
+  /** @param {EventTarget | undefined} next */
+  function watchEditContext(next) {
+    if (editContext === next) return;
+    editContext?.removeEventListener("compositionstart", compositionStart, true);
+    editContext?.removeEventListener("compositionend", compositionEnd);
+    editContext = next;
+    editContext?.addEventListener("compositionstart", compositionStart, true);
+    editContext?.addEventListener("compositionend", compositionEnd);
+  }
+  /** @param {boolean} value */
+  function setReadOnly(value) {
+    if (destroyed) return;
+    if (binding.composing) { pendingReadOnly = value; return; }
+    binding.dispatch([binding.state.update({ effects: readOnly.reconfigure([
+      EditorState.readOnly.of(value), EditorView.editable.of(!value),
+    ]) })]);
+    // CodeMirror can attach or detach the native EditContext when editable changes.
+    const content = mounted.contentDOM;
+    const context = "editContext" in content ? content.editContext : undefined;
+    watchEditContext(context instanceof EventTarget ? context : undefined);
+  }
+  mounted.contentDOM.addEventListener("compositionstart", compositionStart, true);
   mounted.contentDOM.addEventListener("compositionend", compositionEnd);
-  let destroyed = false;
+  mounted.contentDOM.addEventListener("keydown", compositionKey, true);
   return {
-    isComposing: () => composing || mounted.compositionStarted || mounted.composing,
+    isComposing,
     selectionCursors: () => binding.selectionCursors(),
     /** @param {Parameters<typeof binding.toggleMark>[0]} key @param {string | true} value */
     toggleMark: (key, value) => binding.toggleMark(key, value),
@@ -84,18 +164,15 @@ export async function createTextEditor(parent, doc, options) {
     toggleBlock: (attribute) => binding.toggleBlock(attribute),
     /** @param {readonly import("./binding.js").RemoteSelection[]} selections */
     setRemote: (selections) => binding.setRemote(selections),
-    /** @param {boolean} value */
-    setReadOnly(value) {
-      binding.dispatch([binding.state.update({ effects: readOnly.reconfigure([
-        EditorState.readOnly.of(value), EditorView.editable.of(!value),
-      ]) })]);
-    },
+    setReadOnly,
     destroy() {
       if (destroyed) return;
       destroyed = true;
       binding.destroy();
-      mounted.contentDOM.removeEventListener("compositionstart", compositionStart);
+      mounted.contentDOM.removeEventListener("compositionstart", compositionStart, true);
       mounted.contentDOM.removeEventListener("compositionend", compositionEnd);
+      mounted.contentDOM.removeEventListener("keydown", compositionKey, true);
+      watchEditContext(undefined);
       mounted.destroy();
     },
   };

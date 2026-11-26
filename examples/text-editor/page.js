@@ -60,7 +60,7 @@ export async function mountTextEditors(root, url) {
   /** Shares the pane's main selection as cursors; the sync client re-sends it so it does not expire.
    * @param {(typeof panes)[number]} pane */
   function publish(pane) {
-    if (destroyed || failed) return;
+    if (destroyed || failed || pane.editor.isComposing()) return;
     try { pane.sync.presence.set({ selection: pane.editor.selectionCursors() }); }
     catch (error) { stop(error); }
   }
@@ -130,12 +130,15 @@ export async function mountTextEditors(root, url) {
       discard.hidden = true;
       const details = document.createElement("pre");
       details.hidden = true;
+      const unsent = document.createElement("pre");
+      unsent.hidden = true;
+      unsent.setAttribute("role", "alert");
       const presenceStatus = document.createElement("p");
       presenceStatus.className = "presence";
       presenceStatus.setAttribute("aria-live", "polite");
       presenceStatus.textContent = "Waiting for other writers' positions…";
       controls.append(offlineLabel, discard, show);
-      section.append(heading, identity, toolbar, parent, presenceStatus, controls, message, details);
+      section.append(heading, identity, toolbar, parent, presenceStatus, controls, message, unsent, details);
       columns.append(section);
       const index = panes.length;
       labels.set(clientId, "Writer " + label);
@@ -177,7 +180,7 @@ export async function mountTextEditors(root, url) {
       /** Runs a toolbar command; formatting and undo throw while this writer's edits are blocked.
        * @param {import("./editor.js").Command} name */
       function command(name) {
-        if (readOnly || editor === undefined) return;
+        if (readOnly || editor === undefined || editor.isComposing()) return;
         try {
           if (name === "undo") history.undo();
           else if (name === "redo") history.redo();
@@ -200,10 +203,15 @@ export async function mountTextEditors(root, url) {
       updateHistory();
       editor = await createTextEditor(parent, sync.doc, {
         label: "Writer " + label + " text",
-        canEdit: () => !destroyed && !failed && sync.status !== "failed" && sync.status !== "gap",
+        canEdit: () => !destroyed && !failed && !readOnly && !["failed", "gap", "closed"].includes(sync.status),
         onError: stop,
         // Peers that changed during a composition are drawn once it ends.
         onComposition() { const pane = panes[index]; if (pane !== undefined) showPeers(pane); },
+        onCompositionBoundary: () => { history.stopCapturing(); },
+        onUnsentComposition(text) {
+          unsent.hidden = false;
+          unsent.textContent = "The writer was " + sync.status + " when composition ended. Copy the unsent edit here:\n" + text;
+        },
         onLocalEdit() { details.hidden = true; refresh(); },
         onSelection() { const pane = panes[index]; if (pane !== undefined) publish(pane); },
         onShortcut: command,
