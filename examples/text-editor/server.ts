@@ -9,7 +9,7 @@ import { createSyncHandler } from "../../dist/sync/index.js";
 import { keepSafeLinks, Note } from "./schema.js";
 import { createBrowserAssetHandler } from "../shared/assets.ts";
 import { toNodeListener } from "../shared/fetch-bridge.ts";
-import { selectionSchema } from "./presence.js";
+import { selectionSchema } from "../shared/presence.js";
 
 /**
  * Localhost host: the sync handler with presence, as WebSocket /sync/socket and as HTTP routes under
@@ -32,8 +32,9 @@ export async function startTextEditorServer(
   const entries = new Map([
     ["/", { file: join(directory, "index.html"), type: "text/html; charset=utf-8" }],
     ["/shared/sync-ui.js", { file: join(directory, "../shared/sync-ui.js"), type: "text/javascript; charset=utf-8" }],
+    ["/shared/presence.js", { file: join(directory, "../shared/presence.js"), type: "text/javascript; charset=utf-8" }],
   ]);
-  for (const name of ["page", "editor", "binding", "changes", "presence", "schema"]) {
+  for (const name of ["page", "editor", "binding", "changes", "schema"]) {
     entries.set(`/text-editor/${name}.js`, { file: join(directory, `${name}.js`), type: "text/javascript; charset=utf-8" });
   }
   for (const [name, file] of modules) entries.set(`/codemirror/${name}.js`, { file, type: "text/javascript; charset=utf-8" });

@@ -11,7 +11,7 @@
     "typescript/no-unsafe-member-access": "error",
     "typescript/no-unsafe-return": "error"
   },
-  "ignorePatterns": ["node_modules/**", "dist/**", "coverage/**", ".docs-site/**", "examples/text-editor/**", "examples/kanban/**", "examples/file-tree/**"],
+  "ignorePatterns": ["node_modules/**", "dist/**", "coverage/**", ".docs-site/**", "examples/text-editor/**", "examples/rich-editor/**", "examples/kanban/**", "examples/file-tree/**"],
   "overrides": [{
     "files": ["test/**/*.ts"],
     "rules": {

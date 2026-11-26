@@ -42,7 +42,7 @@ pnpm --dir examples/text-editor knip
 pnpm --dir examples/text-editor test
 ```
 
-Run the same four checks for `examples/kanban` and `examples/file-tree` (they need no install). Tests cannot replace trying the [examples](examples/README.md) in a browser.
+Run the same install and four checks for `examples/rich-editor`, and the four checks for `examples/kanban` and `examples/file-tree` (they need no install). Tests cannot replace trying the [examples](examples/README.md) in a browser.
 
 ### Find the relevant tests
 

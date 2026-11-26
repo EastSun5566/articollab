@@ -1,7 +1,8 @@
 // @ts-check
 import { decodeCursor } from "../../dist/index.js";
 
-/** @typedef {import("./binding.js").CursorSelection} CursorSelection */
+/** @typedef {import("../../dist/index.js").Cursor} Cursor */
+/** A selection as two cursors; `from === to` is a caret. @typedef {{ readonly from: Cursor, readonly to: Cursor }} CursorSelection */
 /** A cursor as it travels: its anchor element, or null for a document edge, and the side it binds to.
  * @typedef {{ readonly anchor: { readonly bunchId: string, readonly counter: number } | null, readonly bind: "left" | "right" }} WireCursor */
 /** What each writer shares as presence: its main selection, or null when it has none.
@@ -26,7 +27,7 @@ function decodeSelection(input) {
 export const selectionSchema = {
   "~standard": {
     version: 1,
-    vendor: "articollab-text-editor",
+    vendor: "articollab-examples",
     validate(input) {
       try {
         decodeSelection(input);
