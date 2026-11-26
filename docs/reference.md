@@ -37,12 +37,13 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `cursorAt(index, bind?)`, `cursorIndex(cursor)` on Text and List | Stable gap positions: create a frozen cursor, then resolve its current index or `undefined`. |
 | `doc.receive(commit)` | Applies the next authoritative commit, acknowledges own pending work and replays the rest. |
 | `doc.replayConflict`, `doc.checkpoint()` | Read the first replay failure or save authoritative state and pending work. |
-| `createServer(schema, options?)` | Optional synchronous `resolve`, restore `checkpoint`, `maxHistory` (default 1000), `maxClients` (optional open-session bound), and `allowCustomClientNamespaces` (default false). |
+| `createServer(schema, options?)` | Optional synchronous `resolve`, restore `checkpoint` and the `log` recorded after it, `maxHistory` (default 1000), `maxClients` (optional open-session bound), and `allowCustomClientNamespaces` (default false). |
 | `server.openClient()`, `server.closeClient(clientId)` | Issue a writer ID or permanently retire it; neither creates a commit. |
 | `server.listClients()` | Open sessions with the last batch the server processed from each, for finding idle writers. |
 | `server.receive(batch)`, `server.reject(batch)` | Process a batch or replay its original result; return `{ commit, replayed }`. |
 | `server.snapshot()`, `server.checkpoint()`, `server.commitsSince(watermark)` | Late join, server restore, and complete ordered catch-up or `null`. |
-| `decodeClientBatch`, `decodeServerCommit`, `decodeSnapshot`, `decodeClientCheckpoint`, `decodeServerCheckpoint` | Each takes `(schema, unknown)`, validates parsed wire data and returns an owned frozen object. |
+| `server.on("entry", listener)` | Subscribes to each session opened or closed and each new batch processed, as [log entries](#server-log); returns an unsubscribe function. |
+| `decodeClientBatch`, `decodeServerCommit`, `decodeSnapshot`, `decodeClientCheckpoint`, `decodeServerCheckpoint`, `decodeServerLogEntry` | Each takes `(schema, unknown)`, validates parsed wire data and returns an owned frozen object. |
 | `decodeCursor(unknown)` | Validates a parsed cursor, such as one from an application presence channel, and returns an owned frozen copy. |
 | `assertClientBatchNamespace(batch, expectedClientId)` | Explicit authenticated writer binding and canonical insertion namespace check; returns `void` or throws `TypeError`. |
 | `WireDecodeError` | Decoder error with `name`, JSON Pointer `path` (root `/`) and a readable message. |
@@ -60,6 +61,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `ServerClientSession` | One open writer session from `server.listClients()`. |
 | `ValueSetOperation`, `ListInsertOperation`, `ListDeleteOperation`, `ListSetOperation`, `ListMoveOperation`, `ListOperation`, `TextInsertOperation`, `TextDeleteOperation`, `TextMarkOperation`, `TextBlockOperation`, `TextOperation`, `TextIdRange`, `MapSetOperation`, `MapDeleteOperation`, `MapOperation`, `CounterAddOperation`, `CounterMapAddOperation`, `CounterMapDeleteOperation`, `CounterMapOperation`, `Operation`, `DocumentOperation` | Collection wire operations; `DocumentOperation<S>` restricts path and payload to a schema. |
 | `ClientBatchRef`, `ClientBatch`, `ServerCommit`, `ServerReceipt`, `ServerReplayEntry` | Batch identity, authoritative result, local routing metadata and retry entries. |
+| `ServerLogEntry` | One recorded server change: a session opened or closed, or a batch processed with its commit. |
 | `LocalChangeEvent`, `ServerChangeEvent`, `ChangeEvent`, `PendingReplayConflict` | Local/server notifications and the first blocked pending operation. |
 | `DiscardEvent` | This writer's List sets and moves that had no effect because their element was already deleted. |
 | `TransformEvent` | This writer's original batch, the acknowledged commit and the operations the server dropped. |
@@ -602,6 +604,25 @@ An operation that is well formed but cannot apply to the current state is a coll
 - Retained metadata gives lower bounds on batch counts, not exact totals: closed writers may have no metadata.
 - Restore does not reapply history operations.
 
+#### Server log
+
+`server.on("entry", listener)` reports each change as a frozen entry, synchronously, once the change is made:
+
+| Entry | When |
+| --- | --- |
+| `{ type: "open", clientId }` | `openClient()` |
+| `{ type: "close", clientId }` | `closeClient()` closes an open session |
+| `{ type: "batch", batch, commit }` | `receive()` or `reject()` processes a new batch: accepted, transformed or rejected |
+
+- Retries, failed calls and closing a closed session record nothing.
+- A listener throw propagates from that call after the change is made, skips later listeners and undoes nothing.
+- `createServer(schema, { checkpoint, log })` applies `log` after the checkpoint, or after a new server without one, in order, as the server made them:
+  - `open` must name the next client ID, and stay within `maxClients`;
+  - `close` must name an open session;
+  - `batch` must name an open session, with the next batch sequence and the next server sequence. Its commit's operations are applied without the resolver, namespace or payload checks, like a checkpoint's state, and update the retry entry and history.
+- Every entry is decoded with `decodeServerLogEntry` first. An entry that does not follow from the state before it throws, as does a collection conflict; no server is created.
+- The result equals the server that recorded the entries: its checkpoint, catch-up and retries.
+
 #### History and catch-up
 
 - `maxHistory` defaults to 1000, is a non-negative safe integer and counts commits, not bytes. 0 disables history.
@@ -631,7 +652,7 @@ An operation that is well formed but cannot apply to the current state is a coll
 
 ## Sync adapter
 
-Import from `"articollab/sync"`. It depends only on the core entrypoint and on `fetch`, `Request` and `Response`; the WebSocket transport also uses `WebSocket`, and the IndexedDB store `indexedDB` and `navigator.locks`. The file store is in `"articollab/sync/node"`, which uses `node:fs`. See the [guide](sync.md).
+Import from `"articollab/sync"`. It depends only on the core entrypoint and on `fetch`, `Request` and `Response`; the WebSocket transport also uses `WebSocket`, and the IndexedDB store `indexedDB` and `navigator.locks`. The file stores are in `"articollab/sync/node"`, which uses `node:fs`, and the Postgres server store is in `"articollab/sync/postgres"`, which has no dependencies. See the [guide](sync.md).
 
 | API | Purpose |
 | --- | --- |
@@ -642,12 +663,14 @@ Import from `"articollab/sync"`. It depends only on the core entrypoint and on `
 | `client.restartFromSnapshot()`, `client.on("status" \| "push", listener)`, `client.close()` | Recover from a gap without pending work, observe status or push-channel changes, stop polling, retries and push and close the store and transport. |
 | `createHttpTransport({ url, fetch?, headers? })` | A `SyncTransport` for the handler's routes under `url`. |
 | `createWebSocketTransport({ url, WebSocket? })` | A `SyncTransport` over one socket to `url`, served by `handler.accept`. |
-| `createSyncHandler(schema, server, { authorize?, saveCheckpoint?, allowRejections?, maxBodySize?, heartbeatInterval?, maxEventStreams?, presence? })` | A `SyncHandler`: a Fetch API handler for `clients`, `batches`, `commits`, `events` and, when enabled, `rejections` and `presence`. |
+| `createSyncHandler(schema, server, { authorize?, saveCheckpoint?, persist?, allowRejections?, maxBodySize?, heartbeatInterval?, maxEventStreams?, presence? })` | A `SyncHandler`: a Fetch API handler for `clients`, `batches`, `commits`, `events` and, when enabled, `rejections` and `presence`. |
 | `handler.accept(socket, request)` | Serves one WebSocket with the same server, queue and presence as the routes; returns a `SyncConnection`. |
 | `handler.notify()` | Pushes commits applied without the handler to open event streams and subscribed sockets. |
 | `SyncRequestError` | A sync request answered with an unexpected status, with `status` and `retryable`. The sync client retries HTTP 408, 429 and 5xx, as well as network failures during a pass. |
+| `openServer(schema, store, options?)`, `persistServer(server, store, options?)` | Restore a server from a `ServerStore` and keep the store up to date, or keep it up to date for a server you created; see [Server persistence](#server-persistence). |
+| `openFileServerStore(directory, { locks? })`, `openPostgresServerStore({ client, document, table? })` | Open a `ServerStore` in a directory, or in Postgres, after taking its lock; a lock held elsewhere throws `CheckpointLockedError`. |
 
-Types: `SyncClient`, `PresenceSyncClient`, `SyncStatus`, `SyncPushState`, `SyncTransport`, `SyncSubscription`, `ConnectSyncOptions`, `SyncRetryOptions`, `SyncPresence`, `SyncPresenceOptions`, `SyncHandlerPresenceOptions`, `HttpTransportOptions`, `WebSocketTransportOptions`, `WebSocketLike`, `SyncHandler`, `SyncHandlerOptions`, `SyncAction`, `SyncSocket`, `SyncConnection`, `CheckpointStore`, `IndexedDbCheckpointStore`, `IndexedDbStoreOptions`, `IdbFactoryLike`, `LockManagerLike`; from `"articollab/sync/node"` also `FileStoreOptions` and `FileStoreFileSystem`.
+Types: `SyncClient`, `PresenceSyncClient`, `SyncStatus`, `SyncPushState`, `SyncTransport`, `SyncSubscription`, `ConnectSyncOptions`, `SyncRetryOptions`, `SyncPresence`, `SyncPresenceOptions`, `SyncHandlerPresenceOptions`, `HttpTransportOptions`, `WebSocketTransportOptions`, `WebSocketLike`, `SyncHandler`, `SyncHandlerOptions`, `SyncAction`, `SyncSocket`, `SyncConnection`, `CheckpointStore`, `IndexedDbCheckpointStore`, `IndexedDbStoreOptions`, `IdbFactoryLike`, `LockManagerLike`, `ServerStore`, `ServerPersistence`, `PersistedServer`, `PersistServerOptions`, `OpenServerOptions`; from `"articollab/sync/node"` also `FileStoreOptions`, `FileStoreFileSystem` and `FileServerStoreOptions`; from `"articollab/sync/postgres"`, `PostgresClient` and `PostgresServerStoreOptions`.
 
 ### Client persistence
 
@@ -684,6 +707,42 @@ Types: `SyncClient`, `PresenceSyncClient`, `SyncStatus`, `SyncPushState`, `SyncT
 
 - Closing rejects later operations, lets operations already started finish, then releases the lock.
 - Reopening the same store in this realm waits for that instead of failing, so a closing store's last save never lands after a newer one.
+
+### Server persistence
+
+#### Stores
+
+A `ServerStore` holds one server's latest checkpoint and the log entries after it, as JSON:
+
+- `load()` returns `{ checkpoint, entries }` with the entries in append order, or `undefined` when empty.
+- `append(entries)` resolves once the entries are stored after the earlier ones.
+- `compact(checkpoint)` replaces the checkpoint with one that includes every appended entry and drops those entries, so that no load sees the new checkpoint with entries it includes.
+- `close()` releases the lock once started operations finish; later calls reject.
+
+#### Flushes
+
+- `persistServer(server, store, { compactEvery? })` records the server's entries from then on; `store` must already hold a checkpoint they follow. `compactEvery` is a positive integer, default 1000.
+- `flush()` appends the entries recorded since the last flush, one flush at a time. Once `compactEvery` entries are in the store after its checkpoint, and none is waiting, it also compacts with `server.checkpoint()`.
+- After a failed append or compaction, every flush rejects with that error: the server has changes the store lacks, so open it again from the store.
+- `close()` flushes, stops recording and closes the store, also after a failure. Flushes after it reject.
+- `openServer(schema, store, options)` loads the store and passes its checkpoint and entries to `createServer` with `options`. An empty store gets a new server's checkpoint first. Entries already past `compactEvery` are compacted at the first flush. If it rejects, the caller still owns the store.
+- With `persist`, the sync handler calls `flush()` where it would call `saveCheckpoint`, and at the start of `notify()`. A rejected flush fails the handler as a failed save does.
+
+#### `openFileServerStore`
+
+- It keeps `checkpoint-<n>.json` and the entries after it, one JSON line each, in `log-<n>.jsonl`.
+- Appends write their lines, then flush the file before resolving.
+- A compaction writes `checkpoint-<n+1>.json` through a temporary file, flush and rename, then removes generation `n`. An interrupted compaction leaves generation `n` or `n+1` complete.
+- A load uses the newest checkpoint, removes older and temporary files, and truncates a last line without a line break, which no append reported as stored. The first append without a load truncates it too.
+- `append()` before any checkpoint rejects.
+- It takes the lock `articollab:server-file:<absolute path>` within the process only.
+
+#### `openPostgresServerStore`
+
+- `client` needs only `query(text, values?)` returning `{ rows }`. Use one dedicated connection, not a pool.
+- It creates `<table>_checkpoints (document, checkpoint)` and `<table>_entries (document, position, entry)` when missing, with `json` values kept as written. `table` matches `[a-z_][a-z0-9_]*`, at most 48 characters, default `"articollab"`.
+- An append is one insert. A compaction upserts the checkpoint and deletes the document's entries in one transaction.
+- It takes a session advisory lock keyed by 64 bits of a SHA-256 of the table prefix and document, so a second store on any connection throws `CheckpointLockedError`, and so does a second store on the same connection. `close()` unlocks but does not end the connection.
 
 ### Submission and recovery
 
@@ -835,8 +894,8 @@ Messages are JSON objects. Each request has a non-negative integer `id`. Its rep
 
 - The server uses explicit writer sessions.
 - Examples show how an application can be built. They are not exported or shipped as production adapters. In particular, browser `documentId` envelopes and headers are example-only lineage markers, not core wire fields or authentication.
-- The [sync adapter](sync.md) provides HTTP and WebSocket transports with push, polling and retries, plus IndexedDB and file checkpoint stores.
-- Not provided: a server-side storage adapter, snapshot fallback, schema migration, authentication, writer coordination, editor bindings, bulk List editing, or moving elements between Lists. The CodeMirror and ProseMirror editors in the repository are examples.
+- The [sync adapter](sync.md) provides HTTP and WebSocket transports with push, polling and retries, IndexedDB and file checkpoint stores, and file and Postgres server stores.
+- Not provided: snapshot fallback, schema migration, authentication, writer coordination, editor bindings, bulk List editing, or moving elements between Lists. The CodeMirror and ProseMirror editors in the repository are examples.
 - Tabs that open one store key with `slots` are separate writers. They exchange edits only through the server, never share undo history or unsent edits, and do not see each other's edits while offline.
 - Presence lives in one handler's memory, best-effort. It is not saved or shared between server instances, and there is no selection type or remote-caret rendering.
 - Not promised: same-ID server rollback or forks, power-loss durability, or cross-file transactions.

@@ -50,6 +50,7 @@ Run the same install and four checks for `examples/rich-editor`, and the four ch
 - Wire decoding, checkpoints, history and retries: `wire.test.ts`, `client-checkpoint.test.ts`, `history.test.ts`, `retry.test.ts` and the `*-resume` suites.
 - Undo, outcomes and events: `undo.test.ts`, `settled.test.ts`, `transform-event.test.ts`, `discard.test.ts`.
 - Sync: the `sync-*` suites, including `sync-websocket.test.ts` and `sync-presence.test.ts`.
+- Server persistence: `server-log.test.ts` and `sync-server-store.test.ts`. The Postgres store runs on PGlite; set `ARTICOLLAB_POSTGRES_URL` to also run it through node-postgres against a real server, including the lock across connections.
 - Change events: `reconciliation-change.test.ts` compares every server change event with a full comparison of the visible state.
 
 Interleaving tests are seeded. To repeat one seed:

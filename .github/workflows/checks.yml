@@ -9,6 +9,19 @@ jobs:
   checks:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # A real Postgres for the server store's lock across connections; PGlite covers the rest.
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
+        env:
+          POSTGRES_PASSWORD: articollab
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -41,6 +54,8 @@ jobs:
 
       - name: Test
         run: pnpm test
+        env:
+          ARTICOLLAB_POSTGRES_URL: postgresql://postgres:articollab@localhost:5432/postgres
 
       - name: Build
         run: pnpm build

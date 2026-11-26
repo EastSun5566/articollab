@@ -39,6 +39,11 @@ export interface SyncHandlerOptions<S extends SchemaShape> {
    * If it fails, the handler answers 503 until it is recreated from the last saved checkpoint.
    */
   readonly saveCheckpoint?: (checkpoint: ServerCheckpoint<S>) => void | Promise<void>;
+  /**
+   * Saves the server's changes instead of whole checkpoints, at the same points as `saveCheckpoint`
+   * and in `notify()`: pass the result of `openServer()` or `persistServer()`. Not with `saveCheckpoint`.
+   */
+  readonly persist?: { flush(): Promise<void> };
   /** Decides whether the request may perform `action`, for `clientId` when the request names one. */
   readonly authorize?: (
     request: Request,
@@ -71,7 +76,8 @@ export interface SyncHandler {
   accept(socket: SyncSocket, request: Request): SyncConnection;
   /**
    * Sends commits that were applied to the server without this handler, such as by a direct
-   * `server.receive()`, to open event streams and sockets. Call it after those commits are saved.
+   * `server.receive()`, to open event streams and sockets. With `persist` it saves them first;
+   * otherwise call it after they are saved.
    */
   notify(): Promise<void>;
 }
@@ -141,6 +147,9 @@ export function createSyncHandler<S extends SchemaShape>(
   server: ServerDocument<S>,
   options: SyncHandlerOptions<S> = {}
 ): SyncHandler {
+  if (options.persist !== undefined && options.saveCheckpoint !== undefined) {
+    throw new TypeError("Pass persist or saveCheckpoint, not both");
+  }
   const maxBodySize = integerOption(options.maxBodySize ?? 1024 * 1024, "maxBodySize", 0);
   const heartbeatInterval = integerOption(options.heartbeatInterval ?? 15_000, "heartbeatInterval", 0);
   const maxEventStreams = integerOption(options.maxEventStreams ?? 1000, "maxEventStreams", 0);
@@ -162,7 +171,11 @@ export function createSyncHandler<S extends SchemaShape>(
     return result;
   }
   async function saved(): Promise<boolean> {
-    try { await options.saveCheckpoint?.(server.checkpoint()); return true; }
+    try {
+      if (options.persist !== undefined) await options.persist.flush();
+      else await options.saveCheckpoint?.(server.checkpoint());
+      return true;
+    }
     catch {
       failed = true;
       for (const subscriber of [...subscribers]) subscriber.close();
@@ -414,7 +427,9 @@ export function createSyncHandler<S extends SchemaShape>(
   };
   return Object.assign(handler, {
     accept: (socket: SyncSocket, request: Request) => acceptSocket(core, socket, request),
-    notify: () => serialize(() => {
+    notify: () => serialize(async () => {
+      // Changes made outside the handler are saved before anyone sees them.
+      if (!failed && options.persist !== undefined) await saved();
       if (!failed) { broadcast(); return; }
       for (const subscriber of [...subscribers]) subscriber.close();
     }),

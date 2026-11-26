@@ -56,7 +56,7 @@ import type {
   TextSchema,
   ValueSchema,
 } from "./schema.ts";
-import { decodeClientCheckpoint, decodeServerCheckpoint } from "./wire.ts";
+import { decodeClientCheckpoint, decodeServerCheckpoint, decodeServerLogEntry } from "./wire.ts";
 import { clientNumber } from "./client-id.ts";
 import { assertClientBatchNamespace } from "./namespace.ts";
 import {
@@ -244,6 +244,19 @@ export interface ServerCheckpoint<
   readonly history: readonly ServerCommit<DocumentOperation<S>>[];
 }
 
+/**
+ * One change to a server, for a store that records them instead of saving whole checkpoints: a
+ * writer session opened or closed, or a new batch processed with its commit.
+ */
+export type ServerLogEntry<S extends SchemaShape = SchemaShape> =
+  | { readonly type: "open"; readonly clientId: string }
+  | { readonly type: "close"; readonly clientId: string }
+  | {
+    readonly type: "batch";
+    readonly batch: ClientBatch<DocumentOperation<S>>;
+    readonly commit: ServerCommit<DocumentOperation<S>>;
+  };
+
 export interface ClientCheckpoint<S extends SchemaShape = SchemaShape> {
   readonly clientId: string;
   readonly snapshot: DocumentSnapshot<S>;
@@ -275,6 +288,11 @@ export type ServerResolver<S extends SchemaShape> = (
 export interface CreateServerOptions<S extends SchemaShape> {
   readonly resolve?: ServerResolver<S>;
   readonly checkpoint?: ServerCheckpoint<S>;
+  /**
+   * Changes recorded after `checkpoint`, or after a new server without one, in the order the
+   * server made them. They are applied without the resolver, like the checkpoint itself.
+   */
+  readonly log?: readonly ServerLogEntry<S>[];
   readonly maxHistory?: number;
   /** Maximum open writer sessions, including those without a batch. */
   readonly maxClients?: number;
@@ -1321,6 +1339,7 @@ export class ServerDocument<S extends SchemaShape> {
   private authoritativeStates: Map<string, CollectionState>;
   private readonly clients: Map<string, ServerReplayEntry<DocumentOperation<S>> | null>;
   private readonly closeListeners = new Set<(clientId: string) => void>();
+  private readonly entryListeners = new Set<(entry: ServerLogEntry<S>) => void>();
   private lastClientNumber: number;
   private readonly maxHistory: number;
   private readonly maxClients: number | undefined;
@@ -1370,6 +1389,53 @@ export class ServerDocument<S extends SchemaShape> {
       maxHistory === 0 ? [] : (restored?.history ?? []).slice(-maxHistory);
     this.nextServerSeq = restored?.nextServerSeq ?? 1;
     this.resolve = options.resolve;
+    if (options.log !== undefined) this.applyLog(schema, options.log);
+  }
+
+  /** Replays recorded changes, checking that each one follows from the state before it. */
+  private applyLog(schema: DocumentSchema<S>, log: readonly ServerLogEntry<S>[]): void {
+    if (!Array.isArray(log)) throw new TypeError("log must be an array");
+    for (const [index, input] of log.entries()) {
+      const entry = decodeServerLogEntry(schema, input);
+      const at = `Server log entry ${index}`;
+      if (entry.type === "open") {
+        if (entry.clientId !== `client-${this.lastClientNumber + 1}`) throw new Error(`${at} opens ${entry.clientId} out of order`);
+        if (this.maxClients !== undefined && this.clients.size >= this.maxClients) throw new Error(`${at} exceeds maxClients`);
+        this.clients.set(entry.clientId, null);
+        this.lastClientNumber++;
+      } else if (entry.type === "close") {
+        if (!this.clients.delete(entry.clientId)) throw new Error(`${at} closes ${entry.clientId}, which is not open`);
+      } else {
+        const { batch, commit } = entry;
+        const previous = this.clients.get(batch.clientId);
+        if (previous === undefined) throw new Error(`${at} names ${batch.clientId}, which is not open`);
+        if (batch.seq !== (previous?.batch.seq ?? 0) + 1) throw new Error(`${at} skips a batch of ${batch.clientId}`);
+        if (commit.serverSeq !== this.nextServerSeq) throw new Error(`${at} has server sequence ${commit.serverSeq}, not ${this.nextServerSeq}`);
+        const next = new Map(this.authoritativeStates);
+        applyOperations(next, commit.operations);
+        this.authoritativeStates = next;
+        this.clients.set(batch.clientId, Object.freeze({ batch, commit }));
+        this.retain(commit);
+        this.nextServerSeq++;
+      }
+    }
+  }
+
+  /**
+   * Subscribes to each change this server makes: a session opened or closed, or a new batch
+   * processed. Retries, failures and closing a closed session record nothing. Listeners run
+   * synchronously once the change is made; a throw propagates and does not undo it.
+   */
+  on(event: "entry", listener: (entry: ServerLogEntry<S>) => void): () => void {
+    if (event !== "entry") throw new TypeError(`Unknown server event: ${String(event)}`);
+    if (typeof listener !== "function") throw new TypeError("listener must be a function");
+    const subscription = (entry: ServerLogEntry<S>) => { listener(entry); };
+    this.entryListeners.add(subscription);
+    return () => { this.entryListeners.delete(subscription); };
+  }
+
+  private record(entry: ServerLogEntry<S>): void {
+    for (const listener of [...this.entryListeners]) listener(entry);
   }
 
   /** Returns the current authoritative state and its server sequence. */
@@ -1389,6 +1455,7 @@ export class ServerDocument<S extends SchemaShape> {
     const clientId = `client-${this.lastClientNumber + 1}`;
     this.clients.set(clientId, null);
     this.lastClientNumber++;
+    this.record(Object.freeze({ type: "open", clientId }));
     return clientId;
   }
 
@@ -1401,6 +1468,7 @@ export class ServerDocument<S extends SchemaShape> {
     }
     if (!this.clients.delete(clientId)) return;
     for (const listener of [...this.closeListeners]) listener(clientId);
+    this.record(Object.freeze({ type: "close", clientId }));
   }
 
   /** Lists open writer sessions in opening order, without copying state or history. */
@@ -1467,6 +1535,18 @@ export class ServerDocument<S extends SchemaShape> {
   }
 
   private processBatch(
+    batch: ClientBatch<DocumentOperation<S>>,
+    reject: boolean
+  ): ServerReceipt<DocumentOperation<S>> {
+    const receipt = this.processNewBatch(batch, reject);
+    if (!receipt.replayed) {
+      const replay = this.clients.get(receipt.commit.source.clientId)!;
+      this.record(Object.freeze({ type: "batch", batch: replay.batch, commit: receipt.commit }));
+    }
+    return receipt;
+  }
+
+  private processNewBatch(
     batch: ClientBatch<DocumentOperation<S>>,
     reject: boolean
   ): ServerReceipt<DocumentOperation<S>> {

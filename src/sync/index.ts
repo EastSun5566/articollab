@@ -37,3 +37,13 @@ export {
 } from "./http-handler.ts";
 
 export { type SyncConnection, type SyncSocket } from "./socket-handler.ts";
+
+export {
+  openServer,
+  persistServer,
+  type OpenServerOptions,
+  type PersistedServer,
+  type PersistServerOptions,
+  type ServerPersistence,
+  type ServerStore,
+} from "./server-store.ts";

@@ -46,6 +46,10 @@
     "./sync/node": {
       "types": "./dist/sync/node.d.ts",
       "import": "./dist/sync/node.js"
+    },
+    "./sync/postgres": {
+      "types": "./dist/sync/postgres.d.ts",
+      "import": "./dist/sync/postgres.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -72,13 +76,16 @@
     "articulated": "^1.4.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.6.0",
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.2",
     "commit-and-tag-version": "^13.2.1",
     "fake-indexeddb": "^6.2.7",
     "knip": "^6.39.0",
     "oxlint": "^1.87.0",
     "oxlint-tsgolint": "^7.0.2003",
+    "pg": "^8.23.1",
     "typescript": "^7.0.2",
     "ws": "^8.23.0"
   }
