@@ -15,7 +15,9 @@ Keep the original checkpoints until you no longer need to roll back. Once saved 
 
 0.10 adds [Counters](collections.md#counter-additions-that-all-count), [Text marks](collections.md#format-text) and [paragraph attributes](collections.md#format-paragraphs). A 0.9 reader rejects `counter/add`, `counterMap/add`, `counterMap/delete`, `text/mark` and `text/block`, and it rejects Text snapshots that have a `marks` or `blocks` field. So finish the steps above before adding a `counter()` or `counterMap()` path or calling `format()` or `formatBlocks()`.
 
-Adding a Counter path changes the schema. If you replace a `value()` that held a count with `counter()`, its whole-number snapshot decodes as a Counter, but pending `value/set` operations for that path do not: send or cancel them first.
+Replacing `value()` with `counter()` is a schema migration. A snapshot value that meets the Counter's safe-integer rules can seed the new Counter. Any `value/set` for that path fails to decode under the new schema, whether it appears in a client's pending batches or in the server's retry records or retained history. Even with empty pending queues and no retained history, the server can still have the last `value/set` in a retry record.
+
+Resolve pending writes while the old schema is active and back up the matching checkpoints. Plan the data migration from a snapshot of that schema. If you initialize a new document from the migrated data, give its writers fresh sessions and keep old client checkpoints with the original document.
 
 Adding `marks` or `blocks` to an existing `text()` also changes the schema, but not the saved data: snapshots and pending batches restore unchanged. Removing a key that saved data uses makes that data fail to decode.
 
