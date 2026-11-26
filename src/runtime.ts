@@ -18,6 +18,7 @@ import {
   type Text,
   type TextDeleteOperation,
   type TextInsertOperation,
+  type TextBlockOperation,
   type TextMarkOperation,
   type TextOperation,
 } from "./text.ts";
@@ -90,6 +91,7 @@ export type Operation =
   | TextInsertOperation
   | TextDeleteOperation
   | TextMarkOperation
+  | TextBlockOperation
   | MapSetOperation
   | MapDeleteOperation
   | CounterAddOperation
@@ -101,8 +103,8 @@ type OperationFor<D, Path extends string> =
     ? ValueSetOperation<Path, T>
     : D extends ListSchema<infer T extends JsonValue>
       ? ListOperation<Path, T>
-      : D extends TextSchema<infer M>
-        ? TextOperation<Path, M>
+      : D extends TextSchema<infer M, infer B>
+        ? TextOperation<Path, M, B>
         : D extends MapSchema<infer T extends JsonValue>
           ? MapOperation<Path, T>
           : D extends CounterSchema
@@ -453,6 +455,9 @@ function sameOperations(
         return other.type === "text/mark" && operation.key === other.key && jsonEquals(operation.value, other.value) &&
           sameAnchor(operation.start.anchor, other.start.anchor) && operation.start.bind === other.start.bind &&
           sameAnchor(operation.end.anchor, other.end.anchor) && operation.end.bind === other.end.bind;
+      case "text/block":
+        return other.type === "text/block" && operation.key === other.key && jsonEquals(operation.value, other.value) &&
+          sameAnchor(operation.id, other.id);
       case "map/set":
         return other.type === "map/set" && operation.key === other.key &&
           (allowValueChanges || Object.is(operation.value, other.value));
@@ -552,6 +557,7 @@ function freezeOperation(operation: Operation): Operation {
     case "text/insert":
     case "text/delete":
     case "text/mark":
+    case "text/block":
       return freezeTextOperation(operation);
     case "map/set":
     case "map/delete":
@@ -580,8 +586,8 @@ type DocumentCollection<D> =
     ? Value<T>
     : D extends ListSchema<infer T extends JsonValue>
       ? List<T>
-      : D extends TextSchema<infer M>
-        ? Text<M>
+      : D extends TextSchema<infer M, infer B>
+        ? Text<M, B>
         : D extends MapSchema<infer T extends JsonValue>
           ? MapCollection<T>
           : D extends CounterSchema
@@ -799,7 +805,9 @@ export class ClientDocument<S extends SchemaShape> {
           beforeMutation,
           lastBunchSeqs?.[path] ?? 0,
           () => this.registerObserver("Text"),
-          descriptor.marks
+          descriptor.marks,
+          descriptor.blocks,
+          (callback) => { this.transact(callback); }
         );
       }
       this.collections.set(path, runtime);
@@ -1103,7 +1111,8 @@ export class ClientDocument<S extends SchemaShape> {
           mapComparisonKeys!.set(operation.path, keys);
         } else if (textComparisonOperations !== undefined &&
           // A mark makes the Text compare in full; see TextState.visibleEqualsAt.
-          (operation.type === "text/insert" || operation.type === "text/delete" || operation.type === "text/mark")) {
+          (operation.type === "text/insert" || operation.type === "text/delete" || operation.type === "text/mark" ||
+            operation.type === "text/block")) {
           const operations = textComparisonOperations.get(operation.path) ?? [];
           operations.push(operation);
           textComparisonOperations.set(operation.path, operations);
@@ -1206,7 +1215,7 @@ export class ClientDocument<S extends SchemaShape> {
         case "text/insert": case "text/delete":
           if (runtime instanceof RuntimeText) runtime.track(operation);
           break;
-        case "text/mark":
+        case "text/mark": case "text/block":
           // A mark can change the attributes of any element in its range.
           if (runtime instanceof RuntimeText) runtime.requireFullComparison();
           break;
@@ -1274,6 +1283,13 @@ function checkOperationPayloads(definition: Readonly<SchemaShape>, operations: r
       const marks = descriptor.marks ?? {};
       const config = Object.hasOwn(marks, operation.key) ? marks[operation.key] : undefined;
       if (config === undefined) throw new Error(`Unknown mark for ${operation.path}: ${operation.key}`);
+      if (operation.value !== null) checkPayload(config.payload, operation.value, [operation.path, operation.key]);
+      continue;
+    }
+    if (operation.type === "text/block" && descriptor?.kind === "text") {
+      const blocks = descriptor.blocks ?? {};
+      const config = Object.hasOwn(blocks, operation.key) ? blocks[operation.key] : undefined;
+      if (config === undefined) throw new Error(`Unknown block attribute for ${operation.path}: ${operation.key}`);
       if (operation.value !== null) checkPayload(config.payload, operation.value, [operation.path, operation.key]);
       continue;
     }

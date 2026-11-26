@@ -374,11 +374,14 @@ function randomEdit(doc: ClientDocument<Shape>, pick: (length: number) => number
 
 describe("Undo Text formatting", () => {
   const Rich = defineDocument({
-    body: text({ marks: { bold: { expand: "after" }, italic: { expand: "both" }, link: { expand: "none" } } }),
+    body: text({ marks: { bold: { expand: "after" }, italic: { expand: "both" }, link: { expand: "none" } },
+      blocks: { heading: {}, list: {} } }),
   });
   type RichShape = typeof Rich.definition;
   type RichBatch = ClientBatch<DocumentOperation<RichShape>>;
   const delta = (doc: ClientDocument<RichShape>) => JSON.stringify(doc.state.body.toDelta());
+  const paragraphs = (doc: ClientDocument<RichShape>) => JSON.stringify(doc.state.body.blocks().map(({ attributes }) => attributes));
+  const both = (doc: ClientDocument<RichShape>) => delta(doc) + paragraphs(doc);
 
   function richSetup() {
     const server = createServer(Rich);
@@ -476,6 +479,50 @@ describe("Undo Text formatting", () => {
       { insert: " big world" }]));
   });
 
+  it("undoes paragraph attributes, keeps what others set since, and restores a merged paragraph's", () => {
+    const writer = richSetup();
+    const a = writer(), b = writer();
+    a.doc.state.body.insert(0, "Title\none\ntwo");
+    a.send(); b.receive();
+    a.doc.state.body.formatBlocks(0, 0, "heading", 1);
+    a.doc.state.body.formatBlocks(6, 7, "list", "bullet");
+    a.send(); b.receive();
+    b.doc.state.body.formatBlocks(10, 0, "list", "ordered"); // B changes "two" since
+    b.send(); a.receive();
+    assert.equal(a.history.undo(), true); // The list step: only "one" goes back
+    assert.equal(paragraphs(a.doc), JSON.stringify([{ heading: 1 }, {}, { list: "ordered" }]));
+    a.doc.state.body.delete(5); // Merge "one" into "Title"
+    assert.equal(paragraphs(a.doc), JSON.stringify([{ heading: 1 }, { list: "ordered" }]));
+    a.doc.state.body.formatBlocks(9, 0, "list", "bullet");
+    a.doc.state.body.delete(8); // Merge "two", which has a list attribute, into "Titleone"
+    a.history.undo();
+    assert.equal(paragraphs(a.doc), JSON.stringify([{ heading: 1 }, { list: "bullet" }]));
+    a.history.redo();
+    a.history.undo();
+    assert.equal(paragraphs(a.doc), JSON.stringify([{ heading: 1 }, { list: "bullet" }]));
+  });
+
+  it("undoes a mark on text that undo put back, inside or outside the mark's edges", () => {
+    const a = richSetup()();
+    const body = a.doc.state.body;
+    body.insert(0, "yz");
+    body.format(0, 2, "link", "https://2");
+    body.format(1, 1, "link", "https://1");
+    body.delete(1); // "z", the second link's only element
+    a.history.undo(); // Back, with a new ID after its tombstone: outside the second link's end
+    a.history.undo(); // The second link
+    assert.equal(delta(a.doc), JSON.stringify([{ insert: "yz", attributes: { link: "https://2" } }]));
+
+    body.delete(0, 2);
+    body.insert(0, "xyz");
+    body.format(0, 1, "italic", true);
+    body.format(1, 2, "italic", true); // Starts right after "x": italic expands before
+    body.delete(0); // "x"
+    a.history.undo(); // Back, after its tombstone: now inside the second italic's start
+    a.history.undo(); // The second italic: "x" keeps the italic it had
+    assert.equal(delta(a.doc), JSON.stringify([{ insert: "x", attributes: { italic: true } }, { insert: "yz" }]));
+  });
+
   it("gives deleted text back its marks, including marks that do not expand", () => {
     const a = richSetup()();
     a.doc.state.body.insert(0, "Hello world!");
@@ -490,38 +537,42 @@ describe("Undo Text formatting", () => {
     assert.equal(delta(a.doc), before);
   });
 
-  it("returns to every earlier view under random edits and marks", () => {
+  it("returns to every earlier view under random edits, marks and paragraph attributes", () => {
     for (let seed = 1; seed <= 30; seed++) {
       let state = seed;
       const random = () => { state = (state * 1103515245 + 12345) % 2 ** 31; return state / 2 ** 31; };
       const pick = (length: number) => Math.floor(random() * length);
       const a = richSetup()();
       const body = a.doc.state.body;
-      const done = [delta(a.doc)], undone: string[] = [];
+      const done = [both(a.doc)], undone: string[] = [];
       for (let round = 0; round < 60; round++) {
         const roll = random();
         if (roll < 0.15 && done.length > 1) {
           assert.equal(a.history.undo(), true);
           undone.push(done.pop()!);
-          assert.equal(delta(a.doc), done.at(-1), `seed ${seed} round ${round}: undo`);
+          assert.equal(both(a.doc), done.at(-1), `seed ${seed} round ${round}: undo`);
         } else if (roll < 0.25 && undone.length > 0) {
           assert.equal(a.history.redo(), true);
           done.push(undone.pop()!);
-          assert.equal(delta(a.doc), done.at(-1), `seed ${seed} round ${round}: redo`);
+          assert.equal(both(a.doc), done.at(-1), `seed ${seed} round ${round}: redo`);
         } else {
           let recorded = false;
           const stop = a.history.on("change", () => { recorded = true; });
           const edit = random();
-          if (edit < 0.35 || body.length === 0) body.insert(pick(body.length + 1), "xyz".slice(0, 1 + pick(3)));
+          if (edit < 0.35 || body.length === 0) body.insert(pick(body.length + 1), ["x", "yz", "\n", "a\nb"][pick(4)]!);
           else if (edit < 0.55) { const index = pick(body.length); body.delete(index, 1 + pick(Math.min(3, body.length - index))); }
-          else {
+          else if (edit < 0.7) {
+            const index = pick(body.length + 1), count = pick(body.length - index + 1);
+            if (random() < 0.5) body.formatBlocks(index, count, "heading", random() < 0.7 ? 1 + pick(2) : null);
+            else body.formatBlocks(index, count, "list", random() < 0.7 ? "bullet" : null);
+          } else {
             const index = pick(body.length), count = 1 + pick(body.length - index);
             if (random() < 0.5) body.format(index, count, "bold", random() < 0.7 ? true : null);
             else body.format(index, count, "link", random() < 0.7 ? `https://${pick(3)}` : null);
           }
           stop();
-          if (!recorded) { assert.equal(delta(a.doc), done.at(-1), `seed ${seed} round ${round}: unrecorded change`); continue; }
-          done.push(delta(a.doc));
+          if (!recorded) { assert.equal(both(a.doc), done.at(-1), `seed ${seed} round ${round}: unrecorded change`); continue; }
+          done.push(both(a.doc));
           undone.length = 0;
         }
         if (random() < 0.3) { a.send(); a.receive(); }

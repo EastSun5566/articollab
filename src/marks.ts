@@ -58,6 +58,14 @@ function freezeAttributes(values: Map<string, JsonValue>): TextAttributes {
   return Object.freeze(Object.fromEntries([...values].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
 }
 
+/** `attributes` with `key` set to `value`, or removed for `null`. */
+export function withAttribute(attributes: TextAttributes, key: string, value: JsonValue | null): TextAttributes {
+  const values = new Map(Object.entries(attributes));
+  if (value === null) values.delete(key);
+  else values.set(key, value);
+  return freezeAttributes(values);
+}
+
 /** The attributes of the known element at `knownIndex`: per key, the last mark covering it. */
 export function attributesAtKnown(idList: IdList, marks: readonly TextMark[], knownIndex: number): TextAttributes {
   const position = 4 * knownIndex, decided = new Set<string>(), values = new Map<string, JsonValue>();

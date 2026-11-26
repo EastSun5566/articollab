@@ -12,7 +12,7 @@ import { ListState } from "../src/list.ts";
 import { TextState } from "../src/text.ts";
 
 const Board = defineDocument({ count: value(0), items: list<{ label: string } | number | null>(),
-  body: text({ marks: { bold: { expand: "after" }, link: { expand: "none" } } }),
+  body: text({ marks: { bold: { expand: "after" }, link: { expand: "none" } }, blocks: { heading: {} } }),
   meta: value<{ label: string } | null>(null) });
 type Shape = typeof Board.definition;
 type Doc = ClientDocument<Shape>;
@@ -47,8 +47,8 @@ function view(doc: Doc) {
   assert.equal(visible.length, listSnapshot.values.length);
   for (const [index, payload] of visible.entries()) assert.ok(Object.is(payload, listSnapshot.values[index]));
   assert.equal(doc.state.body.toString(), textSnapshot.value);
-  const formats = JSON.stringify(body.toDelta());
-  assert.equal(JSON.stringify(doc.state.body.toDelta()), formats);
+  const formats = JSON.stringify([body.toDelta(), body.blockList().map(({ attributes }) => attributes)]);
+  assert.equal(JSON.stringify([doc.state.body.toDelta(), doc.state.body.blocks().map(({ attributes }) => attributes)]), formats);
   assert.ok(Object.is(doc.state.count.value, count));
   const meta = states.get("meta");
   assert.ok(Object.is(doc.state.meta.value, meta));
@@ -450,7 +450,11 @@ describe("full visible change comparison", () => {
               network.coverage.add("text-cancel");
             } else {
               const count = 1 + choose(length - position);
-              if (step % 3 === 0) target.doc.state.body.format(position, count, "bold", step % 2 === 0 ? true : null);
+              if (step % 5 === 0) {
+                if (step % 2 === 0) target.doc.state.body.insert(position, "\n");
+                target.doc.state.body.formatBlocks(position, 0, "heading", step % 4 === 0 ? null : 1);
+                network.coverage.add("text-block");
+              } else if (step % 3 === 0) target.doc.state.body.format(position, count, "bold", step % 2 === 0 ? true : null);
               else target.doc.state.body.format(position, count, "link", step % 4 === 0 ? null : String(step));
               network.coverage.add("text-format");
             }
@@ -478,7 +482,7 @@ describe("full visible change comparison", () => {
       }
       for (const action of ["accept", "reject", "transform", "explicit-reject", "restore",
         "own", "remote", "decoded", "in-memory", "changed", "silent", "remote-pending",
-        "text-insert", "text-delete", "text-replace", "text-cancel", "text-format"]) {
+        "text-insert", "text-delete", "text-replace", "text-cancel", "text-format", "text-block"]) {
         assert.ok(network.coverage.has(action), `seed did not cover ${action}`);
       }
     } catch (cause) {

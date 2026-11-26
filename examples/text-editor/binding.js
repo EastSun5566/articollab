@@ -47,6 +47,34 @@ function applyFormats(ranges, runs) {
   }, []);
 }
 
+/** A line's paragraph attributes, by the offset where the line starts. @typedef {{ readonly from: number, readonly attributes: Attributes }} BlockLine */
+
+/** Replaces the attributes of each line that starts at `from`, in the offsets of the transaction's new document.
+ * @type {import("@codemirror/state").StateEffectType<readonly BlockLine[]>} */
+const setBlocks = StateEffect.define();
+
+/** Lines with paragraph attributes, for line decorations. A line that an edit joins to the one before it loses its entry. */
+export const blockLines = StateField.define({
+  /** @returns {readonly BlockLine[]} */
+  create: () => [],
+  update(lines, transaction) {
+    /** @type {Map<number, Attributes>} */
+    const next = new Map();
+    for (const line of lines) {
+      const from = transaction.docChanged ? transaction.changes.mapPos(line.from, -1) : line.from;
+      if (transaction.state.doc.lineAt(from).from === from) next.set(from, line.attributes);
+    }
+    for (const effect of transaction.effects) {
+      if (!effect.is(setBlocks)) continue;
+      for (const { from, attributes } of effect.value) {
+        if (Object.keys(attributes).length === 0) next.delete(from);
+        else next.set(from, attributes);
+      }
+    }
+    return [...next].map(([from, attributes]) => ({ from, attributes })).toSorted((left, right) => left.from - right.from);
+  },
+});
+
 /** Formatted runs, for decorations. Text inserted at a run's edge is outside it until the Text's
  * format event says otherwise, which the binding applies right after the edit. */
 export const formatRanges = StateField.define({
@@ -79,7 +107,7 @@ export const remoteRanges = StateField.define({
 });
 
 /** This example-only bridge also runs with EditorState alone in Node tests.
- * @param {{state: {body: import("../../dist/index.js").Text<import("./schema.js").NoteMarks>},
+ * @param {{state: {body: import("../../dist/index.js").Text<import("./schema.js").NoteMarks, import("./schema.js").NoteBlocks>},
  *   transact: (callback: () => void) => void, readonly replayConflict: unknown}} doc
  * @param {{update: (transactions: readonly import("@codemirror/state").Transaction[]) => void,
  *   canEdit: () => boolean, onError: (error: unknown) => void,
@@ -95,11 +123,16 @@ export function createTextBinding(doc, options) {
     if (attributes !== undefined) initial.push({ from: position, to: position + insert.length, attributes });
     position += insert.length;
   }
+  const initialLines = doc.state.body.blocks().filter(({ attributes }) => Object.keys(attributes).length !== 0)
+    .map(({ index, attributes }) => ({ from: editorOffset(mirror, index), attributes }));
   let state = EditorState.create({ doc: doc.state.body.toString(), extensions: [
-    EditorState.lineSeparator.of("\n"), remoteRanges, formatRanges.init(() => initial), options.extensions ?? [],
+    EditorState.lineSeparator.of("\n"), remoteRanges, formatRanges.init(() => initial), blockLines.init(() => initialLines),
+    options.extensions ?? [],
   ] });
-  /** Marks of this writer's own typing, applied once its editor transaction is. @type {FormatRange[]} */
+  /** Marks and paragraphs of this writer's own typing, applied once its editor transaction is. @type {FormatRange[]} */
   let localFormats = [];
+  /** @type {BlockLine[]} */
+  let localBlocks = [];
   /** @type {readonly RemoteSelection[]} */
   let remote = [];
   let local = false, destroyed = false, failed = false;
@@ -129,6 +162,9 @@ export function createTextBinding(doc, options) {
         localFormats = localFormats.map((range) => ({ ...range,
           from: transaction.changes.mapPos(range.from, 1), to: transaction.changes.mapPos(range.to, -1) }));
       }
+      if (transaction.docChanged && localBlocks.length !== 0) {
+        localBlocks = localBlocks.map((line) => ({ ...line, from: transaction.changes.mapPos(line.from, -1) }));
+      }
       const external = transaction.annotation(fromText) === true;
       // Busy is a precondition, not a permanent failure of an in-flight sync.
       if (transaction.docChanged && !external && (!options.canEdit() || doc.replayConflict !== null)) {
@@ -152,9 +188,10 @@ export function createTextBinding(doc, options) {
         options.update([transaction]);
       } catch (error) { stop(error); }
     }
-    if (localFormats.length !== 0) {
-      const effects = setFormats.of(localFormats);
+    if (localFormats.length !== 0 || localBlocks.length !== 0) {
+      const effects = [setFormats.of(localFormats), setBlocks.of(localBlocks)];
       localFormats = [];
+      localBlocks = [];
       dispatch([state.update({ effects })]);
     }
     // Re-resolve from the cursors: mapped offsets cannot know about deleted or newly known anchors.
@@ -191,10 +228,12 @@ export function createTextBinding(doc, options) {
       const formats = (event.formats ?? []).map(({ index, count, attributes }) => ({
         from: editorOffset(mirror, index), to: editorOffset(mirror, index + count), attributes,
       }));
-      if (local) { localFormats.push(...formats); return; } // The original editor transaction will be applied once.
+      const blocks = (event.blocks ?? []).map(({ index, attributes }) => ({ from: editorOffset(mirror, index), attributes }));
+      // The original editor transaction will be applied once.
+      if (local) { localFormats.push(...formats); localBlocks.push(...blocks); return; }
       const changes = next.changes.filter(({ from, to, insert }) => state.doc.sliceString(from, to, "\n") !== insert);
-      if (changes.length !== 0 || formats.length !== 0) {
-        dispatch([state.update({ changes, effects: setFormats.of(formats), annotations: fromText.of(true) })]);
+      if (changes.length !== 0 || formats.length !== 0 || blocks.length !== 0) {
+        dispatch([state.update({ changes, effects: [setFormats.of(formats), setBlocks.of(blocks)], annotations: fromText.of(true) })]);
       }
     } catch (error) { stop(error); }
   });
@@ -228,6 +267,45 @@ export function createTextBinding(doc, options) {
       let everywhere = true;
       for (let index = start; index < end && everywhere; index++) everywhere = doc.state.body.attributesAt(index)[key] === value;
       doc.state.body.format(start, end - start, key, everywhere ? null : value);
+      return true;
+    },
+    /** Sets a paragraph attribute on the paragraphs the selection touches, or removes it if they all have it.
+     * @param {{ key: "heading", value: 1 | 2 } | { key: "list", value: "bullet" }} attribute */
+    toggleBlock(attribute) {
+      if (destroyed) throw new Error("Text binding is destroyed");
+      if (failed) throw failure;
+      const { from, to } = state.selection.main;
+      const start = elementIndexAt(mirror, from), end = elementIndexAt(mirror, to);
+      const touched = doc.state.body.blocks().filter((block) => block.index + block.length >= start &&
+        (start === end ? block.index <= start : block.index < end));
+      const everywhere = touched.every(({ attributes }) => attributes[attribute.key] === attribute.value);
+      if (attribute.key === "heading") doc.state.body.formatBlocks(start, end - start, "heading", everywhere ? null : attribute.value);
+      else doc.state.body.formatBlocks(start, end - start, "list", everywhere ? null : attribute.value);
+    },
+    /**
+     * Enter: a new paragraph. In a list item it continues the list; in an empty one it ends the list instead.
+     * At the start of a paragraph, the paragraph's attributes move down with its text, since they belong
+     * to the line break that starts it, which now starts the empty paragraph above.
+     * @returns {boolean} whether it handled the key
+     */
+    enter() {
+      if (destroyed || failed || !options.canEdit() || doc.replayConflict !== null) return false;
+      const { from, to } = state.selection.main;
+      const start = elementIndexAt(mirror, from);
+      const block = doc.state.body.blocks().find((entry) => entry.index <= start && start <= entry.index + entry.length);
+      const list = block?.attributes.list;
+      if (list !== undefined && block !== undefined && block.length === 0 && from === to) {
+        doc.state.body.formatBlocks(start, 0, "list", null);
+        return true;
+      }
+      const atStart = block !== undefined && from === to && start === block.index && block.length !== 0;
+      dispatch([state.update({ changes: { from, to, insert: "\n" }, selection: { anchor: from + 1 }, userEvent: "input" })]);
+      const next = elementIndexAt(mirror, from + 1);
+      if (atStart && block.attributes.heading !== undefined) {
+        doc.state.body.formatBlocks(next, 0, "heading", block.attributes.heading);
+        doc.state.body.formatBlocks(start, 0, "heading", null);
+      }
+      if (list !== undefined) doc.state.body.formatBlocks(next, 0, "list", list);
       return true;
     },
     /** Replaces the remote selections and resolves them against the current Text.

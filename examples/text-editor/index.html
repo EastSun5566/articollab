@@ -28,6 +28,9 @@
     .tool-bold, .cm-format-bold { font-weight: 700; }
     .tool-italic, .cm-format-italic { font-style: italic; }
     .cm-format-link { color: #205faa; text-decoration: underline; }
+    .cm-heading-1 { font-size: 1.6em; font-weight: 700; }
+    .cm-heading-2 { font-size: 1.3em; font-weight: 700; }
+    .cm-list-bullet::before { content: "• "; color: #4e6477; }
     .editor:focus-within { outline: 2px solid #205faa; outline-offset: 2px; }
     .cm-editor { min-height: 16rem; font: 1rem/1.6 ui-monospace, monospace; }
     .cm-content { min-height: 16rem; }
@@ -68,7 +71,8 @@
       <h1>Two writers, one live document.</h1>
       <p>Two editors share one document, each over one WebSocket. Type in either, select text to show your cursor in
         the other, and turn a writer <strong>Offline</strong> to keep editing until it reconnects. Select text and press
-        <strong>B</strong>, <strong>I</strong> or <strong>Link</strong> to format it; the server drops links that are not
+        <strong>B</strong>, <strong>I</strong> or <strong>Link</strong> to format it, or <strong>H1</strong>,
+        <strong>H2</strong> or <strong>List</strong> for its paragraphs; the server drops links that are not
         <code>http:</code> or <code>https:</code>.</p>
     </header>
     <div id="app"></div>

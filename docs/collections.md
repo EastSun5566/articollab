@@ -231,6 +231,38 @@ When writers format the same characters with the same key at the same time, the 
 
 A mark's `payload` schema validates its values like the [payload schemas](#validate-payloads) below. A `text()` without `marks` behaves exactly as before, and adding marks to an existing Text needs no data migration; see [Upgrading](upgrading.md).
 
+### Format paragraphs
+
+Paragraph attributes require [Articollab 0.10 or later](reference.md#compatibility).
+
+Paragraphs are the parts of a Text between `"\n"` characters. List the attributes they accept, then set them:
+
+```ts
+const Note = defineDocument({
+  body: text({
+    blocks: { heading: { payload: z.number().int().min(1).max(3) }, list: { payload: z.enum(["bullet", "ordered"]) } },
+  }),
+});
+
+doc.state.body.insert(0, "Shopping\nmilk\neggs");
+doc.state.body.formatBlocks(0, 0, "heading", 1); // The paragraph the caret is in
+doc.state.body.formatBlocks(9, 9, "list", "bullet"); // Every paragraph the range touches
+console.log(doc.state.body.blocks());
+// [{ index: 0, length: 8, attributes: { heading: 1 } },
+//  { index: 9, length: 4, attributes: { list: "bullet" } },
+//  { index: 14, length: 4, attributes: { list: "bullet" } }]
+```
+
+`formatBlocks(index, count, key, value)` sets one attribute, and `null` removes it. `blockAt(index)` reads the attributes of the paragraph that holds a caret position.
+
+A paragraph's attributes belong to the `"\n"` that starts it; the first paragraph has its own. So:
+
+- Pressing Enter inside a paragraph inserts a `"\n"`: the first half keeps the attributes, and the new paragraph starts without any. An editor that continues lists sets them on the new paragraph itself. At the very start of a paragraph the first half is empty, so an editor usually moves the attributes down to the half with the text.
+- Deleting the `"\n"` between two paragraphs joins them, and the second one's attributes go with it.
+- When writers set the same attribute on one paragraph at the same time, the value the server applied last wins. Setting an attribute on a paragraph that another writer joined away meanwhile has no effect.
+
+A `text()` without `blocks` is unchanged, and `toDelta()` lists only marks. Nest lists with an attribute such as `indent`; there are no tables or other nested blocks.
+
 ## Validate payloads
 
 Payload schemas require [Articollab 0.10 or later](reference.md#compatibility).

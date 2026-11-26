@@ -102,7 +102,7 @@ Add `--smoke` for a quick run with tiny fixtures, or `--json` (with `pnpm --sile
 - Replay records fixed IDs, deletes keep tombstones, and nothing undeletes or replays an intent.
 - With no replay conflict on either side, only the commit's target IDs can change what is visible.
 - One remote move with no pending work changes only the moved element's position.
-- An element's marks depend only on the mark list and known order. With equal mark lists, only inserted elements need their marks read; with equal content, only elements inside marks that one side lacks. Any Text mark in a commit makes that Text compare in full.
+- An element's marks depend only on the mark list and known order. With equal mark lists, only inserted elements need their marks read; with equal content, only elements inside marks that one side lacks. Any Text mark or paragraph attribute in a commit makes that Text compare in full, and so do different paragraph attribute maps. A state made from another by paragraph attribute changes alone remembers which paragraphs changed, so comparing the two reads only those.
 
 Adding undelete, same-ID Text replacement or intent-based replay breaks these facts: revisit the shortcuts first. After changing one, run `reconciliation-change.test.ts`, the observe tests and the receive benchmarks.
 
