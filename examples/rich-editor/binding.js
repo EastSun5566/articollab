@@ -11,6 +11,17 @@ import { editorSchema } from "./schema.js";
 
 const INDENTS = /** @type {const} */ ([1, 2, 3, 4, 5, 6, 7, 8]);
 
+/**
+ * An open input method composition: the lines when it started, and two cursors for each gap of its
+ * paragraphs from element `from`, which find those elements again after changes from elsewhere.
+ * @typedef {{ base: readonly Line[], from: number, gaps: { left: Cursor, right: Cursor }[], selection: CursorSelection,
+ *   incoming: boolean }} Composition
+ */
+
+/** The cursors of a gap in a composition's paragraphs, by its index in the base lines.
+ * @param {Composition} started @param {number} element */
+function gapOf(started, element) { return started.gaps[element - started.from]; }
+
 /** Marks transactions the binding makes itself, from the Text: they are not written back to it. */
 const fromText = new PluginKey("articollab");
 
@@ -34,6 +45,19 @@ function pointMarks(lines) {
     for (const run of line.runs) for (const _ of run.text) marks.push(run.marks);
   }
   return marks;
+}
+
+/**
+ * The one replacement that turns `before` into `after`: `count` code points from `index` become `insert`.
+ * @param {readonly string[]} before @param {readonly string[]} after
+ */
+function splice(before, after) {
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
+  let suffix = 0;
+  while (suffix < before.length - prefix && suffix < after.length - prefix &&
+    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix++;
+  return { index: prefix, count: before.length - prefix - suffix, insert: after.slice(prefix, after.length - suffix) };
 }
 
 /** A text selection near two positions, moved into text where they fall between blocks.
@@ -74,9 +98,14 @@ function clampSelection(editorState, target) {
  * as lines, and the difference is written as one batch of insert, delete, format and formatBlocks.
  * Changes from elsewhere rebuild the document from the Text and replace the part that differs.
  * The editor always shows the standard shape `buildDoc` makes. Runs without a DOM, for tests.
+ *
+ * An input method composition stays in the editor until `finishComposition`: candidates are not
+ * written, and changes from elsewhere wait, so the input method's text is left alone. The confirmed
+ * text is then written as one batch, inside `onCompositionBoundary` calls that can end an undo step.
  * @param {{ state: { body: NoteText }, transact(callback: () => void): void, readonly replayConflict: unknown }} doc
  * @param {{ update(state: EditorState): void, canEdit(): boolean, onError(error: unknown): void,
  *   onLocalEdit?(): void, onSelection?(): void, onRemote?(): void,
+ *   onCompositionBoundary?(): void, onUnsentComposition?(text: string): void,
  *   plugins?: readonly import("prosemirror-state").Plugin[] }} options
  */
 export function createRichTextBinding(doc, options) {
@@ -85,11 +114,14 @@ export function createRichTextBinding(doc, options) {
   let local = false, destroyed = false, failed = false;
   /** @type {unknown} */
   let failure;
+  /** @type {Composition | undefined} */
+  let composition;
 
   /** @param {unknown} error @returns {never} */
   function stop(error) {
     if (failed) throw failure;
     failed = true;
+    composition = undefined;
     failure = error;
     try { options.onError(error); } catch { /* Reporting a failure must not replace it. */ }
     throw failure;
@@ -124,31 +156,34 @@ export function createRichTextBinding(doc, options) {
     }
   }
 
+  /**
+   * Formats the Text from `offset` so its marks become `want`: one format per run whose value differs
+   * from `have`, the Text's marks there now.
+   * @param {readonly (import("./flat.js").Attributes | undefined)[]} want @param {readonly (import("./flat.js").Attributes | undefined)[]} have
+   * @param {number} offset
+   */
+  function formatRuns(want, have, offset) {
+    for (const key of /** @type {const} */ (["bold", "italic", "code", "link"])) {
+      for (let index = 0; index < want.length;) {
+        const wanted = want[index]?.[key], had = have[index]?.[key];
+        if (want[index] === undefined || same(wanted ?? null, had ?? null)) { index++; continue; }
+        let end = index + 1;
+        while (end < want.length && want[end] !== undefined && same(want[end]?.[key] ?? null, wanted ?? null) &&
+          !same(have[end]?.[key] ?? null, wanted ?? null)) end++;
+        format(key, offset + index, end - index, wanted);
+        index = end;
+      }
+    }
+  }
+
   /** Writes the difference between the Text and `lines` as one batch. @param {readonly Line[]} lines */
   function write(lines) {
     doc.transact(() => {
-      const before = codePoints(textLines(body)), after = codePoints(lines);
-      let prefix = 0;
-      while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
-      let suffix = 0;
-      while (suffix < before.length - prefix && suffix < after.length - prefix &&
-        before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix++;
-      if (before.length - prefix - suffix > 0) body.delete(prefix, before.length - prefix - suffix);
-      if (after.length - prefix - suffix > 0) body.insert(prefix, after.slice(prefix, after.length - suffix).join(""));
+      const change = splice(codePoints(textLines(body)), codePoints(lines));
+      if (change.count > 0) body.delete(change.index, change.count);
+      if (change.insert.length > 0) body.insert(change.index, change.insert.join(""));
 
-      // Marks: one format per run whose value differs from what the Text now has.
-      const want = pointMarks(lines), have = pointMarks(textLines(body));
-      for (const key of /** @type {const} */ (["bold", "italic", "code", "link"])) {
-        for (let index = 0; index < want.length;) {
-          const wanted = want[index]?.[key], had = have[index]?.[key];
-          if (want[index] === undefined || same(wanted ?? null, had ?? null)) { index++; continue; }
-          let end = index + 1;
-          while (end < want.length && want[end] !== undefined && same(want[end]?.[key] ?? null, wanted ?? null) &&
-            !same(have[end]?.[key] ?? null, wanted ?? null)) end++;
-          format(key, index, end - index, wanted);
-          index = end;
-        }
-      }
+      formatRuns(pointMarks(lines), pointMarks(textLines(body)), 0);
 
       // Paragraph attributes: each line against the Text's paragraph at the same position.
       const blocks = body.blocks();
@@ -167,6 +202,12 @@ export function createRichTextBinding(doc, options) {
   function dispatch(...transactions) {
     if (destroyed) throw new Error("Rich text binding is destroyed");
     for (const tr of transactions) {
+      if (composition !== undefined) {
+        // A draft: shown, but not written.
+        state = state.apply(tr);
+        options.update(state);
+        continue;
+      }
       if (tr.getMeta(fromText) === true || !tr.docChanged) {
         state = state.apply(tr);
         if (tr.selectionSet && !tr.docChanged) selection = cursorsOf(state);
@@ -197,19 +238,61 @@ export function createRichTextBinding(doc, options) {
     }
   }
 
+  /** Shows the Text's standard shape, with `selection` on the same text. */
+  function showText() {
+    const tr = replaceWith(state, buildDoc(editorSchema, textLines(body)));
+    const range = resolve(selection, tr.doc);
+    if (range !== undefined) tr.setSelection(textSelection(tr.doc, range.from, range.to));
+    state = state.apply(tr);
+    options.update(state);
+  }
+
   /** Changes from elsewhere: other writers, undo, or a rolled back edit. */
   const unsubscribe = body.observe(() => {
     if (local || destroyed) return;
+    if (composition !== undefined) { composition.incoming = true; return; }
     try {
       if (failed) throw failure;
-      const tr = replaceWith(state, buildDoc(editorSchema, textLines(body)));
-      const range = resolve(selection, tr.doc);
-      if (range !== undefined) tr.setSelection(textSelection(tr.doc, range.from, range.to));
-      state = state.apply(tr);
-      options.update(state);
+      showText();
       options.onRemote?.();
     } catch (error) { stop(error); }
   });
+
+  /**
+   * Writes a composition's replacement of `count` elements from `index` of its base lines into a Text
+   * that changed since: elements deleted elsewhere stay deleted, and text inserted elsewhere stays.
+   * Returns where the inserted text starts, or undefined when the change is not inside the
+   * composition's paragraphs.
+   * @param {Composition} started @param {readonly Line[]} draft
+   * @param {{ index: number, count: number, insert: readonly string[] }} change
+   */
+  function rebase(started, draft, change) {
+    const { index, count, insert } = change, { from, gaps } = started;
+    if (index < from || index + count > from + gaps.length - 1 || insert.includes("\n")) return undefined;
+    // Formatting outside the replacement is not a composition's: leave such a change unsent.
+    const before = pointMarks(started.base), after = pointMarks(draft), shift = insert.length - count;
+    for (const [at, marks] of after.entries()) {
+      if (at >= index && at < index + insert.length) continue;
+      if (!same(marks ?? null, before[at < index ? at : at - shift] ?? null)) return undefined;
+    }
+    if (!same(draft.map((line) => line.attributes), started.base.map((line) => line.attributes))) return undefined;
+    /** @param {number} element */
+    const gap = (element) => gapOf(started, element) ?? (() => { throw new Error("Composition gap out of range"); })();
+    /** @type {number[]} */
+    const removed = [];
+    for (let element = index; element < index + count; element++) {
+      // Both cursors bind to the element: the gaps before and after it are one apart while it exists.
+      const start = body.cursorIndex(gap(element).right), end = body.cursorIndex(gap(element + 1).left);
+      if (start !== undefined && end === start + 1) removed.push(start);
+    }
+    for (const element of removed.toSorted((a, b) => b - a)) body.delete(element, 1);
+    const at = body.cursorIndex(gap(index).left);
+    if (at === undefined) throw new Error("Composition position is not known");
+    if (insert.length === 0) return at;
+    body.insert(at, insert.join(""));
+    formatRuns(after.slice(index, index + insert.length), pointMarks(textLines(body)).slice(at, at + insert.length), at);
+    return at;
+  }
 
   /** A selection's current positions in `editorDoc`, or undefined while an anchor is unknown here.
    * @param {CursorSelection} cursors @param {import("prosemirror-model").Node} editorDoc */
@@ -224,10 +307,79 @@ export function createRichTextBinding(doc, options) {
   return {
     get state() { return state; },
     dispatch,
+    get composing() { return composition !== undefined; },
+    /** Starts keeping edits in the editor, until `finishComposition`. */
+    startComposition() {
+      if (composition !== undefined || destroyed || failed) return;
+      const flat = flattenDoc(state.doc), points = codePoints(flat.lines), map = positions(flat);
+      let from = map.toElement(state.selection.from), to = map.toElement(state.selection.to);
+      while (from > 0 && points[from - 1] !== "\n") from--;
+      while (to < points.length && points[to] !== "\n") to++;
+      /** @type {{ left: Cursor, right: Cursor }[]} */
+      const gaps = [];
+      for (let element = from; element <= to; element++) gaps.push({ left: body.cursorAt(element), right: body.cursorAt(element, "right") });
+      composition = { base: flat.lines, from, gaps, selection, incoming: false };
+    },
+    /**
+     * Writes the composition's text as one batch, unless it was `cancelled`, and shows the changes
+     * from elsewhere that waited. A composition that cannot be written goes to `onUnsentComposition`.
+     * @param {boolean} [cancelled]
+     */
+    finishComposition(cancelled = false) {
+      const started = composition;
+      if (started === undefined || destroyed || failed) return;
+      composition = undefined;
+      let wrote = false;
+      try {
+        const flat = flattenDoc(state.doc), draft = flat.lines;
+        const change = splice(codePoints(started.base), codePoints(draft));
+        const changed = change.count > 0 || change.insert.length > 0 || !same(
+          draft.map((line) => [line.attributes, line.runs]), started.base.map((line) => [line.attributes, line.runs]));
+        let unsent = changed && !cancelled;
+        /** Where the Text has the inserted text now, after a rebase. @type {number | undefined} */
+        let at;
+        if (unsent && options.canEdit() && doc.replayConflict === null) {
+          options.onCompositionBoundary?.();
+          local = true;
+          try {
+            if (!started.incoming) {
+              // Nothing changed elsewhere: the usual comparison is exact.
+              write(draft);
+              unsent = false;
+            } else {
+              doc.transact(() => { at = rebase(started, draft, change); });
+              unsent = at === undefined;
+            }
+          } finally { local = false; }
+          options.onCompositionBoundary?.();
+          wrote = !unsent;
+        }
+        if (cancelled || unsent) selection = started.selection;
+        // Nothing changed elsewhere: the draft's lines are the Text's, and so is its caret.
+        else if (!started.incoming) selection = cursorsOf(state);
+        else {
+          // The caret in the draft, in the base lines or in the inserted text.
+          const head = positions(flat).toElement(state.selection.head), { index, insert } = change;
+          const shift = insert.length - change.count;
+          if (at !== undefined && head >= index && head <= index + insert.length) {
+            const caret = body.cursorAt(at + head - index);
+            selection = { from: caret, to: caret };
+          } else {
+            const gap = gapOf(started, head < index ? head : head - shift);
+            selection = gap === undefined ? started.selection : { from: gap.left, to: gap.left };
+          }
+        }
+        showText();
+        if (unsent) options.onUnsentComposition?.(change.insert.join("") || "(a deletion)");
+      } catch (error) { stop(error); }
+      if (wrote) options.onLocalEdit?.();
+      if (started.incoming) options.onRemote?.();
+      options.onSelection?.();
+    },
     /** The main selection as cursors. @returns {CursorSelection} */
     selectionCursors() { return selection; },
     /** Another writer's selection in the editor's positions. @param {CursorSelection} cursors */
-    resolve(cursors) { return resolve(cursors, state.doc); },
-    destroy() { if (!destroyed) { destroyed = true; unsubscribe(); } },
+    resolve(cursors) { return composition === undefined ? resolve(cursors, state.doc) : undefined; },
+    destroy() { if (!destroyed) { destroyed = true; composition = undefined; unsubscribe(); } },
   };
 }

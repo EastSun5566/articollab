@@ -66,8 +66,9 @@ Two ProseMirror editors share one Text. Bold, italic, code and links are [marks]
 - Make a list, press <kbd>Tab</kbd> to nest an item and <kbd>Enter</kbd> to add one, while the other writer types in it.
 - Turn one writer **Offline**, quote a paragraph there and edit it in the other writer, then go back online.
 - Add a link to `javascript:alert(1)`: the server drops it, and the writer sees it go.
+- Type with an input method such as Zhuyin while the other writer types: candidates stay in your editor, and only the confirmed text is sent, as its own undo step. <kbd>Esc</kbd> cancels without sending anything.
 
-[`flat.js`](rich-editor/flat.js) turns the Text's lines into a ProseMirror document of one standard shape and back. [`binding.js`](rich-editor/binding.js) compares each local transaction with the Text and writes the difference; edits from elsewhere rebuild the document and replace the part that differs. Both read the whole document, so a keystroke costs about 20 ms at 5,000 characters and grows with its size.
+[`flat.js`](rich-editor/flat.js) turns the Text's lines into a ProseMirror document of one standard shape and back. [`binding.js`](rich-editor/binding.js) compares each local transaction with the Text and writes the difference; edits from elsewhere rebuild the document and replace the part that differs. Both read the whole document, so a keystroke costs about 20 ms at 5,000 characters and grows with its size. During a composition, edits from elsewhere wait, so the input method's text is left alone; the confirmed text is then written into the Text as it is by then.
 
 ## Folder tree
 

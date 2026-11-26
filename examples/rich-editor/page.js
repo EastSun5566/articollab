@@ -63,7 +63,7 @@ export async function mountRichEditors(root, url) {
   }
   /** Shares the pane's main selection as cursors. @param {(typeof panes)[number]} pane */
   function publish(pane) {
-    if (destroyed || failed) return;
+    if (destroyed || failed || pane.editor.isComposing()) return;
     try { pane.sync.presence.set({ selection: pane.editor.selectionCursors() }); }
     catch (error) { stop(error); }
   }
@@ -134,12 +134,15 @@ export async function mountRichEditors(root, url) {
       discard.hidden = true;
       const details = document.createElement("pre");
       details.hidden = true;
+      const unsent = document.createElement("pre");
+      unsent.hidden = true;
+      unsent.setAttribute("role", "alert");
       const presenceStatus = document.createElement("p");
       presenceStatus.className = "presence";
       presenceStatus.setAttribute("aria-live", "polite");
       presenceStatus.textContent = "Waiting for other writers' positions…";
       controls.append(offlineLabel, discard, show);
-      section.append(heading, identity, toolbar, parent, presenceStatus, controls, message, details);
+      section.append(heading, identity, toolbar, parent, presenceStatus, controls, message, unsent, details);
       columns.append(section);
       const index = panes.length;
       labels.set(clientId, "Writer " + label);
@@ -179,7 +182,7 @@ export async function mountRichEditors(root, url) {
       /** Runs a toolbar command or shortcut; undo throws while this writer's edits are blocked.
        * @param {import("./editor.js").Command} name */
       function command(name) {
-        if (readOnly || editor === undefined) return;
+        if (readOnly || editor === undefined || editor.isComposing()) return;
         try {
           if (name === "undo") history.undo();
           else if (name === "redo") history.redo();
@@ -198,6 +201,12 @@ export async function mountRichEditors(root, url) {
         onSelection() { const pane = panes[index]; if (pane !== undefined) publish(pane); },
         onRemote() { const pane = panes[index]; if (pane !== undefined) queueMicrotask(() => { showPeers(pane, presenceStatus, others); }); },
         onCommand: command,
+        // The confirmed text is its own undo step.
+        onCompositionBoundary: () => { history.stopCapturing(); },
+        onUnsentComposition(text) {
+          unsent.hidden = false;
+          unsent.textContent = "The composition could not be saved (" + sync.status + "). Copy the unsent text here:\n" + text;
+        },
       });
       const toolClicks = [...tools].map(([name, button]) => {
         const listener = () => { command(name); };
