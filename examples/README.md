@@ -1,6 +1,6 @@
 # Articollab examples
 
-Four runnable examples, from smallest to largest. They need a checkout of this repository: run these once from its root with Node 26 (`.nvmrc`), then start any example below.
+Five runnable examples, from smallest to largest. They need a checkout of this repository: run these once from its root with Node 26 (`.nvmrc`), then start any example below.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -14,6 +14,7 @@ New to Articollab? Read the [quick start](../docs/quick-start.md) first. The exa
 | [Sync adapter](#sync-adapter) | `articollab/sync` in about 80 lines of Node: two writers, a lost response, push |
 | [Kanban board](#kanban-board) | List moves, Maps, Counters, undo, IndexedDB checkpoints and several tabs |
 | [Text editor](#text-editor) | Text in CodeMirror, cursors and presence over WebSocket |
+| [Rich text editor](#rich-text-editor) | Text marks and paragraph attributes in ProseMirror: headings, lists, quotes, code |
 | [Folder tree](#folder-tree) | A server policy that keeps concurrent moves from making cycles |
 
 ## Sync adapter
@@ -51,7 +52,22 @@ Two CodeMirror editors share one Text, each writer over one [WebSocket](../docs/
 - Select text in one editor: the other shows its caret or range, shared through [presence](../docs/sync.md#share-presence). Turn that writer **Offline** and its caret goes at once.
 - Turn one writer **Offline**, keep typing, then go back online.
 
-[`binding.js`](text-editor/binding.js) maps CodeMirror's UTF-16 offsets to Text elements and back; [`presence.js`](text-editor/presence.js) validates shared cursors.
+[`binding.js`](text-editor/binding.js) maps CodeMirror's UTF-16 offsets to Text elements and back; [`presence.js`](shared/presence.js) validates shared cursors.
+
+## Rich text editor
+
+```sh
+pnpm --dir examples/rich-editor install --frozen-lockfile
+pnpm --dir examples/rich-editor start
+```
+
+Two ProseMirror editors share one Text. Bold, italic, code and links are [marks](../docs/collections.md#format-text); headings, lists, quotes and code blocks are [paragraph attributes](../docs/collections.md#format-paragraphs). Try:
+
+- Make a list, press <kbd>Tab</kbd> to nest an item and <kbd>Enter</kbd> to add one, while the other writer types in it.
+- Turn one writer **Offline**, quote a paragraph there and edit it in the other writer, then go back online.
+- Add a link to `javascript:alert(1)`: the server drops it, and the writer sees it go.
+
+[`flat.js`](rich-editor/flat.js) turns the Text's lines into a ProseMirror document of one standard shape and back. [`binding.js`](rich-editor/binding.js) compares each local transaction with the Text and writes the difference; edits from elsewhere rebuild the document and replace the part that differs. Both read the whole document, so a keystroke costs about 20 ms at 5,000 characters and grows with its size.
 
 ## Folder tree
 

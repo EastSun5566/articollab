@@ -68,6 +68,21 @@ jobs:
       - name: Test text editor example
         run: pnpm --dir examples/text-editor test
 
+      - name: Install rich text example dependencies
+        run: pnpm --dir examples/rich-editor install --frozen-lockfile --ignore-scripts
+
+      - name: Typecheck rich text example
+        run: pnpm --dir examples/rich-editor check
+
+      - name: Lint rich text example
+        run: pnpm --dir examples/rich-editor lint
+
+      - name: Check unused rich text code and dependencies
+        run: pnpm --dir examples/rich-editor knip
+
+      - name: Test rich text example
+        run: pnpm --dir examples/rich-editor test
+
       - name: Typecheck kanban example
         run: pnpm --dir examples/kanban check
 
