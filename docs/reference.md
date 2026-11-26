@@ -733,7 +733,7 @@ A `ServerStore` holds one server's latest checkpoint and the log entries after i
 - It keeps `checkpoint-<n>.json` and the entries after it, one JSON line each, in `log-<n>.jsonl`.
 - Appends write their lines, then flush the file before resolving.
 - A compaction writes `checkpoint-<n+1>.json` through a temporary file, flush and rename, then removes generation `n`. An interrupted compaction leaves generation `n` or `n+1` complete.
-- A load uses the newest checkpoint, removes older and temporary files, and truncates a last line without a line break, which no append reported as stored.
+- A load uses the newest checkpoint, removes older and temporary files, and truncates a last line without a line break, which no append reported as stored. The first append without a load truncates it too.
 - `append()` before any checkpoint rejects.
 - It takes the lock `articollab:server-file:<absolute path>` within the process only.
 
@@ -742,7 +742,7 @@ A `ServerStore` holds one server's latest checkpoint and the log entries after i
 - `client` needs only `query(text, values?)` returning `{ rows }`. Use one dedicated connection, not a pool.
 - It creates `<table>_checkpoints (document, checkpoint)` and `<table>_entries (document, position, entry)` when missing, with `json` values kept as written. `table` matches `[a-z_][a-z0-9_]*`, at most 48 characters, default `"articollab"`.
 - An append is one insert. A compaction upserts the checkpoint and deletes the document's entries in one transaction.
-- It takes a session advisory lock on the table prefix and document, so a second store on any connection throws `CheckpointLockedError`, and so does a second store on the same connection. `close()` unlocks but does not end the connection.
+- It takes a session advisory lock keyed by 64 bits of a SHA-256 of the table prefix and document, so a second store on any connection throws `CheckpointLockedError`, and so does a second store on the same connection. `close()` unlocks but does not end the connection.
 
 ### Submission and recovery
 

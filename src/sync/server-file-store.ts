@@ -61,6 +61,15 @@ export async function openFileServerStore(directory: string, options: FileServer
     });
     return { newest, stale };
   }
+  /** The log's complete lines; a last line cut short is truncated away, so appends start on a line of their own. */
+  async function completeLog(path: string): Promise<string> {
+    let text = "";
+    try { text = await nodeFs.readFile(path, "utf8"); }
+    catch (error) { if (!isMissing(error)) throw error; }
+    const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+    if (complete.length < text.length) await nodeFs.truncate(path, Buffer.byteLength(complete));
+    return complete;
+  }
   async function current(): Promise<number> {
     generation ??= (await scan()).newest;
     if (generation === undefined) throw new Error(`Server store has no checkpoint yet; compact first: ${target}`);
@@ -76,12 +85,7 @@ export async function openFileServerStore(directory: string, options: FileServer
       let checkpoint: unknown;
       try { checkpoint = JSON.parse(await nodeFs.readFile(checkpointPath(generation), "utf8")); }
       catch (cause) { throw new Error(`Checkpoint file is not valid JSON: ${checkpointPath(generation)}`, { cause }); }
-      let text = "";
-      try { text = await nodeFs.readFile(logPath(generation), "utf8"); }
-      catch (error) { if (!isMissing(error)) throw error; }
-      const complete = text.slice(0, text.lastIndexOf("\n") + 1);
-      // Drop a line cut short, so the next append starts on a line of its own.
-      if (complete.length < text.length) await nodeFs.truncate(logPath(generation), Buffer.byteLength(complete));
+      const complete = await completeLog(logPath(generation));
       const entries = complete.split("\n").slice(0, -1).map((line, index): unknown => {
         try { return JSON.parse(line); }
         catch (cause) { throw new Error(`Log line ${index + 1} is not valid JSON: ${logPath(generation!)}`, { cause }); }
@@ -92,7 +96,12 @@ export async function openFileServerStore(directory: string, options: FileServer
       if (!Array.isArray(entries)) throw new TypeError("entries must be an array");
       if (entries.length === 0) return;
       const text = entries.map((entry) => JSON.stringify(entry) + "\n").join("");
-      log ??= await nodeFs.open(logPath(await current()), "a");
+      if (log === undefined) {
+        const path = logPath(await current());
+        // Without a load first, a crash may still have left a line cut short.
+        await completeLog(path);
+        log = await nodeFs.open(path, "a");
+      }
       await log.appendFile(text, "utf8");
       await log.sync();
     }),

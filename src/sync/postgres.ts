@@ -26,11 +26,13 @@ const TABLE = /^[a-z_][a-z0-9_]{0,47}$/;
  */
 const opened = new WeakMap<object, Map<string, true | Promise<void>>>();
 
-/** A 32-bit FNV-1a hash as a signed integer, one half of an advisory lock key. */
-function hash(text: string): number {
-  let value = 0x811c9dc5;
-  for (const byte of new TextEncoder().encode(text)) value = Math.imul(value ^ byte, 0x01000193);
-  return value | 0;
+/**
+ * The advisory lock key of a document: the first 64 bits of a SHA-256 of the table prefix and the
+ * document, as Postgres's two signed 32-bit halves, so distinct documents practically never share one.
+ */
+async function lockKey(table: string, document: string): Promise<[number, number]> {
+  const digest = new DataView(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`articollab\0${table}\0${document}`)));
+  return [digest.getInt32(0), digest.getInt32(4)];
 }
 
 function column(rows: readonly unknown[], index: number, name: string): unknown {
@@ -66,7 +68,7 @@ export async function openPostgresServerStore(options: PostgresServerStoreOption
     throw new TypeError("table must be lowercase letters, digits and underscores, starting with a letter or underscore");
   }
   const checkpoints = `${table}_checkpoints`, entries = `${table}_entries`;
-  const key = [hash(`articollab:${table}`), hash(document)];
+  const key = await lockKey(table, document);
   const documents = opened.get(client) ?? new Map<string, true | Promise<void>>();
   opened.set(client, documents);
   const name = `${table}\0${document}`;

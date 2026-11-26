@@ -307,6 +307,19 @@ describe("File server store recovery", () => {
     assert.equal(await readFile(join(path, "log-1.jsonl"), "utf8"), '{"entry":1}\n{"entry":2}\n');
   });
 
+  it("drops a line cut short even when appending without a load first", async (t) => {
+    const path = await directory(t);
+    let store = await openFileServerStore(path);
+    await store.compact({ checkpoint: 1 });
+    await store.append([{ entry: 1 }]);
+    store.close();
+    await appendFile(join(path, "log-1.jsonl"), '{"entry":');
+    store = await openFileServerStore(path);
+    await store.append([{ entry: 2 }]);
+    assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 1 }, entries: [{ entry: 1 }, { entry: 2 }] });
+    store.close();
+  });
+
   it("recovers from a compaction interrupted at any step", async (t) => {
     const path = await directory(t);
     let store = await openFileServerStore(path);
