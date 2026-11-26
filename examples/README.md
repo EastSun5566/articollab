@@ -1,17 +1,18 @@
 # Articollab examples
 
-Five runnable examples, from smallest to largest. They need a checkout of this repository: run these once from its root with Node 26 (`.nvmrc`), then start any example below.
+Six runnable examples, from smallest to largest. They need a checkout of this repository: run these once from its root with Node 26 (`.nvmrc`), then start any example below.
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
 ```
 
-New to Articollab? Read the [quick start](../docs/quick-start.md) first. The examples are demos, not production code: none has authentication, and the servers keep documents in memory.
+New to Articollab? Read the [quick start](../docs/quick-start.md) first. The examples are demos, not production code: none has authentication, and apart from the server store example, the servers keep documents in memory.
 
 | Example | Shows |
 | --- | --- |
 | [Sync adapter](#sync-adapter) | `articollab/sync` in about 80 lines of Node: two writers, a lost response, push |
+| [Server store](#server-store) | A server that saves each change to files and restarts without losing a writer's edits |
 | [Kanban board](#kanban-board) | List moves, Maps, Counters, undo, IndexedDB checkpoints and several tabs |
 | [Text editor](#text-editor) | Text in CodeMirror: marks, headings and lists as decorations, cursors and presence over WebSocket, input methods |
 | [Rich text editor](#rich-text-editor) | Text marks and paragraph attributes in ProseMirror: headings, lists, quotes, code |
@@ -24,6 +25,14 @@ node examples/sync-adapter.ts
 ```
 
 Two writers connect to `createSyncHandler` over HTTP. Writer A's first response is lost; its next pass finds the acknowledgement and sends nothing twice. Then A receives B's edit over the push channel. It prints the three items and the server sequence. See the [sync adapter guide](../docs/sync.md).
+
+## Server store
+
+```sh
+node examples/server-store.ts [directory]
+```
+
+A server saves each change in a directory through a [server store](../docs/sync.md#persist-the-server), and compacts every three changes. A writer adds two items; the server closes its store and opens again from the directory; the writer adds a third without registering again. It prints the items, the server sequence and the files left: the latest checkpoint and the changes after it.
 
 ## Kanban board
 

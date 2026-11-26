@@ -15,6 +15,7 @@ import { openFileServerStore } from "../src/sync/node.ts";
 import { openPostgresServerStore, type PostgresClient } from "../src/sync/postgres.ts";
 import { PGlite } from "@electric-sql/pglite";
 import pg from "pg";
+import { runServerStoreDemo } from "../examples/server-store.ts";
 
 const Board = defineDocument({ items: list<string>(), count: value(0) });
 type Shape = typeof Board.definition;
@@ -420,5 +421,15 @@ describe("Postgres server store details", () => {
     assert.equal(await reopened.load(), undefined);
     reopened.close();
     await first.query("DROP TABLE IF EXISTS articollab_checkpoints, articollab_entries");
+  });
+});
+
+describe("Server store example", () => {
+  it("restarts a server from its directory without losing a writer's edits", async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "articollab-server-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    assert.deepEqual(await runServerStoreDemo(join(root, "board")), {
+      items: ["Plan", "Build", "Ship"], serverSeq: 3, files: ["checkpoint-2.json", "log-2.jsonl"],
+    });
   });
 });

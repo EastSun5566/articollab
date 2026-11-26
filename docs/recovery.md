@@ -129,7 +129,7 @@ Do not use closure as disconnect, undo or pending recovery.
 
 ## Persistence and lineage
 
-Save client pending before sending and server results before delivering. After each successful client receive, save its checkpoint even when the acknowledgement emits no change event.
+Save client pending before sending and server results before delivering. After each successful client receive, save its checkpoint even when the acknowledgement emits no change event. A [server store](sync.md#persist-the-server) saves each server change as it happens and restores the server from the last checkpoint and the changes after it.
 
 A callback failure does not imply runtime rollback. If server saving fails after processing, stop using the advanced in-memory server and reload the last successful checkpoint before continuing.
 

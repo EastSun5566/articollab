@@ -30,6 +30,45 @@ export const handleSync = createSyncHandler(Board, server, {
 
 Authenticate callers and authorize each request, including the requested `clientId` on submissions and rejections. The handler waits for `saveCheckpoint` before serving a commit. If saving fails, restore the last saved checkpoint and recreate the handler.
 
+`saveCheckpoint` receives the whole server checkpoint after every change, so each save grows with the document and its history. To save only what changed, [persist the server](#persist-the-server) instead.
+
+## Persist the server
+
+A server store appends each change, a few hundred bytes, and writes a full checkpoint only every `compactEvery` changes (1,000 by default). With a file store:
+
+```ts
+import { defineDocument, list } from "articollab";
+import { createSyncHandler, openServer } from "articollab/sync";
+import { openFileServerStore } from "articollab/sync/node";
+
+const Board = defineDocument({ items: list<string>() });
+const persisted = await openServer(Board, await openFileServerStore("data/board"));
+
+export const handleSync = createSyncHandler(Board, persisted.server, {
+  persist: persisted,
+  authorize: (request, action) => authorizeWriter(request, action),
+});
+```
+
+`openServer` restores the server from the store: its latest checkpoint, then every change saved after it. An empty store starts a new server. It takes the same options as `createServer`, such as `resolve` and `maxHistory`, except `checkpoint`. With `persist`, the handler saves at the same points as with `saveCheckpoint`: before it answers a write and before it pushes a commit. A failed save also answers 503 until you open the server again from the store.
+
+For Postgres, pass a dedicated connection:
+
+```ts
+import pg from "pg";
+import { openPostgresServerStore } from "articollab/sync/postgres";
+
+const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+await client.connect();
+const persisted = await openServer(Board, await openPostgresServerStore({ client, document: "board-1" }));
+```
+
+The store creates the tables `articollab_checkpoints` and `articollab_entries` when they are missing; `table` changes that prefix. Use one connection per open document, not a pool: its lock and transactions belong to the connection's session. Any client with a `query(text, values)` method that returns `{ rows }`, such as [PGlite](https://pglite.dev), works.
+
+Only one server may write a document. Opening a second store for it throws `CheckpointLockedError`: on any connection to the database for Postgres, and within the process for files, so give each process its own directory.
+
+When you change the server outside the handler, for example with `server.closeClient()`, call `await handleSync.notify()`: it saves the change, then pushes any new commits. Without the handler, call `await persisted.flush()` after each change and before you tell anyone about it. Call `await persisted.close()` when the server stops. To keep the log somewhere else, implement a [`ServerStore`](reference.md#server-persistence).
+
 ## Connect a client
 
 ```ts
