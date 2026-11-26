@@ -22,7 +22,7 @@ Transactions are synchronous. Do not pass an async callback. An exception escapi
 
 ## Nested calls have no savepoint
 
-This example uses a Counter client from the [quick start](quick-start.md):
+This example uses the Board client from [Collections](collections.md):
 
 ```ts
 doc.transact(() => {
@@ -84,6 +84,8 @@ stop();
 ```
 
 Subscribe outside a transaction, without an asynchronous gap after reading the initial elements. Subscription does not emit the current value. Each event contains `beforeLength`, `afterLength` and frozen `changes`, ordered by descending index. All indices refer to the same pre-event view, so apply changes in the supplied order. Arrays in this example illustrate correctness; rebuilding or joining a whole array is still linear work. An editor integration should apply range updates to its own representation.
+
+Once a Text has [marks](collections.md#format-text) or [paragraph attributes](collections.md#format-paragraphs), its events also carry `formats`, the runs whose marks changed, and `blocks`, the paragraphs whose attributes changed. Apply `changes` first. See the [exact rules](reference.md#text-observe).
 
 Offsets count Text elements, not UTF-16 code units or grapheme clusters. Each inserted array item preserves one element; inserting the two surrogate halves separately must remain two elements even if joining them displays one emoji. Keep the array boundaries rather than reparsing `toString()`. Editor offsets may need a separate conversion; this API is not an editor binding. For positions that survive edits, see [cursors](collections.md#stable-positions-with-cursors).
 
@@ -218,7 +220,7 @@ console.log(doc.state.items.toArray()); // [ 'Write docs', 'Ship', 'Added by the
 
 `undo()`, `redo()` and `stopCapturing()` end open groups. Ignored changes are still ordinary edits that are sent, and later undos skip what they changed, like a peer's change.
 
-Only this writer's changes are recorded, and undo never overwrites a later change by someone else. It reverts a value, Map key or List element only while it still holds what this writer wrote. A step that another writer has entirely replaced is skipped, and `undo()` moves on to the next one.
+Only this writer's changes are recorded, and undo never overwrites a later change by someone else. It reverts a value, Map key, List element, Text mark or paragraph attribute only while it still holds what this writer wrote. A step that another writer has entirely replaced is skipped, and `undo()` moves on to the next one.
 
 Undoing a deletion inserts the element again at its place with a new ID, which later steps follow. A Counter is never superseded: undo adds the opposite of this writer's additions, so other writers' additions stay. See the [exact rules](reference.md#undo-and-redo).
 

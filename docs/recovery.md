@@ -52,7 +52,7 @@ Use the same schema/document lineage and the original still-open session. Only o
 
 Text snapshots preserve each visible element, including surrogate halves inserted separately. One `insert(0, "😀")` creates one element. Separate insertions of `"\ud83d"` and `"\ude00"` create two; although both cases join to the same string, their lengths, IDs and editing indices differ.
 
-Ordinary Text snapshots remain `{ idList, value }`. Only when joining would merge separate surrogate elements does saving add `surrogateBoundaries`, an array of UTF-16 offsets in `value`. For the two-half example it is `[1]`. This field is an encoding detail: Text operations and observer notifications still use element indices. Snapshot and checkpoint restore preserve the original IDs, element boundaries and tombstones.
+Ordinary Text snapshots are `{ idList, value }`, plus `marks` and `blocks` when the Text is formatted. Only when joining would merge separate surrogate elements does saving add `surrogateBoundaries`, an array of UTF-16 offsets in `value`. For the two-half example it is `[1]`. This field is an encoding detail: Text operations and observer notifications still use element indices. Snapshot and checkpoint restore preserve the original IDs, element boundaries and tombstones.
 
 New runtimes accept existing valid snapshots without conversion. Older runtimes reject the new field, so upgrade every reader that may receive an affected snapshot or checkpoint. Batch/commit operations and checkpoint envelopes have not changed; this is not a promise of bidirectional format compatibility.
 
@@ -135,6 +135,6 @@ A callback failure does not imply runtime rollback. If server saving fails after
 
 Your storage and subscription handoff are application responsibilities. Same URL or origin does not prove document identity: bind checkpoints to the same lineage and coordinate one writer per identity. The core provides neither a lineage marker nor a writer lock.
 
-The repository's browser recovery demo uses document-ID envelopes/headers and session storage. Those are application examples, not core wire fields or authentication. Neither ordinary checkpoint containers nor these examples promise power-loss durability or cross-file transactions.
+The repository's browser recovery demo uses document-ID envelopes/headers and IndexedDB stores. Those are application examples, not core wire fields or authentication. Neither ordinary checkpoint containers nor these examples promise power-loss durability or cross-file transactions.
 
 [Previous: Server policy and wire](server-wire.md) · [Next: Sync adapter](sync.md)

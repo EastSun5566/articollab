@@ -26,6 +26,7 @@ export const handleSync = createSyncHandler(Board, server, {
 | `commits?since=n` | GET | Every commit after watermark `n`, or `null` when history no longer covers it |
 | `events?since=n` | GET | A `text/event-stream` of the commits after `n`, then each new commit; see [Live updates](#live-updates) |
 | `rejections` | POST batch | Confirm cancellation when `allowRejections: true`. |
+| `presence` | POST `{ clientId, state }` | Share this writer's [presence](#share-presence) when `presence` is enabled. |
 
 Authenticate callers and authorize each request, including the requested `clientId` on submissions and rejections. The handler waits for `saveCheckpoint` before serving a commit. If saving fails, restore the last saved checkpoint and recreate the handler.
 
