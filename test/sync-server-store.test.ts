@@ -12,6 +12,9 @@ import {
   type ServerStore, type SyncClient,
 } from "../src/sync/index.ts";
 import { openFileServerStore } from "../src/sync/node.ts";
+import { openPostgresServerStore, type PostgresClient } from "../src/sync/postgres.ts";
+import { PGlite } from "@electric-sql/pglite";
+import pg from "pg";
 
 const Board = defineDocument({ items: list<string>(), count: value(0) });
 type Shape = typeof Board.definition;
@@ -334,5 +337,88 @@ describe("File server store recovery", () => {
     await assert.rejects(store.load(), /Log line 2 is not valid JSON/);
     store.close();
     await assert.rejects(openFileServerStore(""), TypeError);
+  });
+});
+
+storeContract("Postgres", async (t) => {
+  const database = new PGlite();
+  t.after(() => database.close());
+  return () => openPostgresServerStore({ client: database, document: "board" });
+});
+
+// The same contract through node-postgres, against a real server when one is configured.
+if (process.env.ARTICOLLAB_POSTGRES_URL !== undefined) {
+  storeContract("node-postgres", async (t) => {
+    const client = new pg.Client({ connectionString: process.env.ARTICOLLAB_POSTGRES_URL });
+    await client.connect();
+    const table = `contract_${process.pid}_${Math.floor(Math.random() * 1e9)}`;
+    t.after(async () => {
+      await client.query(`DROP TABLE IF EXISTS ${table}_checkpoints, ${table}_entries`);
+      await client.end();
+    });
+    return () => openPostgresServerStore({ client, document: "board", table });
+  });
+}
+
+describe("Postgres server store details", () => {
+  it("keeps documents and table prefixes apart, and checks its options", async (t) => {
+    const database = new PGlite();
+    t.after(() => database.close());
+    const a = await openPostgresServerStore({ client: database, document: "a" });
+    const b = await openPostgresServerStore({ client: database, document: "b" });
+    const other = await openPostgresServerStore({ client: database, document: "a", table: "other_app" });
+    await a.compact({ checkpoint: "a" });
+    await a.append([{ entry: "a" }]);
+    await b.compact({ checkpoint: "b" });
+    assert.deepEqual(await a.load(), { checkpoint: { checkpoint: "a" }, entries: [{ entry: "a" }] });
+    assert.deepEqual(await b.load(), { checkpoint: { checkpoint: "b" }, entries: [] });
+    assert.equal(await other.load(), undefined);
+    await assert.rejects(other.append([{ entry: 1 }]), /no checkpoint yet/);
+    // json keeps values exactly as written, including key order.
+    await b.append([{ z: 1, a: [1.5, -2, "\u0000"] }]);
+    assert.equal(JSON.stringify((await b.load())?.entries), '[{"z":1,"a":[1.5,-2,"\\u0000"]}]');
+    for (const store of [a, b, other]) store.close();
+    await assert.rejects(openPostgresServerStore({ client: database, document: "" }), TypeError);
+    await assert.rejects(openPostgresServerStore({ client: database, document: "a", table: "Bad-Name" }), TypeError);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A wrong type on purpose.
+    await assert.rejects(openPostgresServerStore({ client: {} as PostgresClient, document: "a" }), TypeError);
+  });
+
+  it("rolls a failed compaction back", async (t) => {
+    const database = new PGlite();
+    t.after(() => database.close());
+    let failDelete = false;
+    const client: PostgresClient = {
+      query: (text, values) => failDelete && text.startsWith("DELETE") ? Promise.reject(new Error("connection lost")) : database.query(text, values),
+    };
+    const store = await openPostgresServerStore({ client, document: "board" });
+    await store.compact({ checkpoint: 1 });
+    await store.append([{ entry: 1 }]);
+    // The checkpoint is written, then deleting the entries fails: the transaction rolls both back.
+    failDelete = true;
+    await assert.rejects(store.compact({ checkpoint: 2 }), /connection lost/);
+    failDelete = false;
+    assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 1 }, entries: [{ entry: 1 }] });
+    store.close();
+  });
+
+  // The advisory lock needs two connections, which PGlite does not have: set ARTICOLLAB_POSTGRES_URL.
+  const url = process.env.ARTICOLLAB_POSTGRES_URL;
+  it("locks a document across connections", { skip: url === undefined && "ARTICOLLAB_POSTGRES_URL is not set" }, async (t) => {
+    const connect = async () => {
+      const client = new pg.Client({ connectionString: url });
+      await client.connect();
+      t.after(() => client.end());
+      return client;
+    };
+    const document = `lock-${process.pid}-${Date.now()}`;
+    const [first, second] = [await connect(), await connect()];
+    const store = await openPostgresServerStore({ client: first, document });
+    await assert.rejects(openPostgresServerStore({ client: second, document }), CheckpointLockedError);
+    store.close();
+    const reopened = await openPostgresServerStore({ client: second, document });
+    assert.equal(await reopened.load(), undefined);
+    reopened.close();
+    await first.query("DROP TABLE IF EXISTS articollab_checkpoints, articollab_entries");
   });
 });

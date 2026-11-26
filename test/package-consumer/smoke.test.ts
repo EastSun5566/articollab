@@ -52,9 +52,10 @@ import {
   CollectionConflictError,
 } from "articollab";
 import {
-  CheckpointLockedError, connectSync, createHttpTransport, createSyncHandler, createWebSocketTransport, openIndexedDbStore, SyncRequestError,
+  CheckpointLockedError, connectSync, createHttpTransport, createSyncHandler, createWebSocketTransport, openIndexedDbStore, openServer, SyncRequestError,
 } from "articollab/sync";
-import { openFileStore, CheckpointLockedError as NodeLockedError } from "articollab/sync/node";
+import { openFileServerStore, openFileStore, CheckpointLockedError as NodeLockedError } from "articollab/sync/node";
+import { openPostgresServerStore, CheckpointLockedError as PostgresLockedError } from "articollab/sync/postgres";
 
 const Board = defineDocument({ count: value(0), items: list(), body: text() });
 const roundTrip = (input) => JSON.parse(JSON.stringify(input));
@@ -354,6 +355,18 @@ overSocket.close();
 assert.equal(new SyncRequestError(503).retryable, true);
 
 assert.equal(NodeLockedError, CheckpointLockedError, "both entrypoints share one error class");
+assert.equal(PostgresLockedError, CheckpointLockedError, "the Postgres entrypoint shares it too");
+await assert.rejects(openPostgresServerStore({ client: {}, document: "d" }), TypeError);
+const serverStore = await openFileServerStore("server");
+await assert.rejects(openFileServerStore("server"), CheckpointLockedError);
+const persisted = await openServer(Board, serverStore, { compactEvery: 2 });
+const persistedWriter = createClient(Board, { clientId: persisted.server.openClient(), onBatch: (batch) => persisted.server.receive(batch) });
+persistedWriter.state.items.push("saved");
+persistedWriter.state.count.value = 4;
+await persisted.close();
+const restoredServer = await openServer(Board, await openFileServerStore("server"));
+assert.deepEqual(restoredServer.server.checkpoint(), persisted.server.checkpoint(), "the server restores from its files");
+await restoredServer.close();
 assert.equal(typeof openIndexedDbStore, "function");
 const fileStore = await openFileStore("checkpoint.json");
 await assert.rejects(openFileStore("checkpoint.json"), CheckpointLockedError);
@@ -457,7 +470,7 @@ import {
   type ListSnapshotData, type ListSetOperation, type ListMoveOperation, type ListMoveEntry, type TextSnapshotData, type ClientCheckpoint, type ServerCheckpoint,
   type CreateServerOptions, type ClientBatch, type ServerCommit, type ServerClientSession, type DiscardEvent, type TransformEvent,
   createUndoManager, type UndoManager, type UndoManagerOptions, type BatchOutcome, type TrackedChange,
-  PayloadValidationError, type StandardSchemaV1, type PayloadOf,
+  PayloadValidationError, type StandardSchemaV1, type PayloadOf, type ServerLogEntry,
 } from "articollab";
 import {
   connectSync, createSyncHandler, type SyncClient, type SyncHandler, type SyncPushState, type SyncStatus,
@@ -465,7 +478,16 @@ import {
   type SyncSubscription, type SyncTransport, type CheckpointStore, type ConnectSyncOptions, openIndexedDbStore,
   type IndexedDbCheckpointStore,
 } from "articollab/sync";
-import { openFileStore, type FileStoreOptions } from "articollab/sync/node";
+import { openFileStore, openFileServerStore, type FileStoreOptions, type ServerStore } from "articollab/sync/node";
+import { openPostgresServerStore, type PostgresClient } from "articollab/sync/postgres";
+import { openServer, persistServer, type PersistedServer, type ServerPersistence } from "articollab/sync";
+type FileServerStore = Expect<Equal<Awaited<ReturnType<typeof openFileServerStore>>, ServerStore>>;
+type PostgresStore = Expect<Equal<Awaited<ReturnType<typeof openPostgresServerStore>>, ServerStore>>;
+type Opened = Expect<Equal<Awaited<ReturnType<typeof openServer<Shape>>>, PersistedServer<Shape>>>;
+type Persisted = Expect<Equal<ReturnType<typeof persistServer<Shape>>, ServerPersistence>>;
+type LogEntry = Expect<Equal<Parameters<Parameters<ReturnType<typeof createServer<Shape>>["on"]>[1]>[0], ServerLogEntry<Shape>>>;
+// @ts-expect-error A Postgres store needs a document.
+void openPostgresServerStore({ client: {} as PostgresClient });
 type StoreOption = Expect<Equal<ConnectSyncOptions<Shape>["store"], CheckpointStore | undefined>>;
 type OpenedIdb = Expect<Equal<Awaited<ReturnType<typeof openIndexedDbStore>>, IndexedDbCheckpointStore>>;
 type IdbSlot = Expect<Equal<Pick<IndexedDbCheckpointStore, "slot" | "key">, { readonly slot: number; readonly key: string }>>;
@@ -853,7 +875,7 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     });
     assert.deepEqual(installed.dependencies, { articulated: "^1.4.0" });
     assert.deepEqual(installed.exports, original.exports);
-    for (const subpath of [".", "./sync"]) {
+    for (const subpath of [".", "./sync", "./sync/node", "./sync/postgres"]) {
       const entry = record(record(installed.exports)[subpath]);
       for (const path of [entry.import, entry.types]) {
         assert.ok(typeof path === "string");

@@ -4,6 +4,7 @@
     "src/index.ts",
     "src/sync/index.ts",
     "src/sync/node.ts",
+    "src/sync/postgres.ts",
     "test/**/*.test.ts"
   ],
   "project": ["**/*.{ts,js}"],
