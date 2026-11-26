@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { describe, it, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { EditorSelection, type EditorState, type TransactionSpec } from "@codemirror/state";
-import { createServer } from "../../../dist/index.js";
+import { createServer, createUndoManager } from "../../../dist/index.js";
 import { connectSync, createHttpTransport, createWebSocketTransport } from "../../../dist/sync/index.js";
 import { Note } from "../schema.js";
 import { createTextBinding, remoteRanges } from "../binding.js";
@@ -26,7 +26,7 @@ async function fixture(t: TestContext, server = createServer(Note), presenceTtl?
   const cleanups: (() => void)[] = [];
   t.after(async () => { for (const cleanup of cleanups) cleanup(); await host.close(); });
   /** A writer over WebSocket, as on the page, or over HTTP with `http` or a custom `fetch`. */
-  async function connect(options: { http?: boolean; fetch?: typeof fetch } = {}) {
+  async function connect(options: { http?: boolean; fetch?: typeof fetch; undo?: boolean } = {}) {
     const network = createOfflineSwitch(options.fetch);
     const transport = options.http === true || options.fetch !== undefined
       ? createHttpTransport({ url: host.url + "/sync/", fetch: network.fetch })
@@ -34,6 +34,7 @@ async function fixture(t: TestContext, server = createServer(Note), presenceTtl?
     const sync = await connectSync(Note, { pollInterval: 0, retry: { initialDelay: 20, maxDelay: 100 },
       presence: { schema: selectionSchema }, transport });
     let rendered: EditorState | undefined;
+    const history = options.undo === true ? createUndoManager(sync.doc, { paths: ["body"] }) : undefined;
     const errors: unknown[] = [];
     const binding = createTextBinding(sync.doc, {
       update(transactions) {
@@ -41,11 +42,12 @@ async function fixture(t: TestContext, server = createServer(Note), presenceTtl?
       },
       canEdit: () => sync.status !== "failed" && sync.status !== "gap",
       onError(error) { errors.push(error); },
+      onCompositionBoundary: () => { history?.stopCapturing(); },
     });
     rendered = binding.state;
-    cleanups.push(() => { binding.destroy(); sync.close(); });
+    cleanups.push(() => { binding.destroy(); history?.destroy(); sync.close(); });
     await sync.sync().catch(() => {}); // The first pass opens the push channel.
-    return { sync, network, binding, errors,
+    return { sync, network, binding, errors, history,
       text: () => binding.state.doc.toString(),
       pending: () => sync.doc.checkpoint().pendingBatches.length,
       edit(spec: TransactionSpec) { binding.dispatch([binding.state.update(spec)]); },
@@ -60,6 +62,56 @@ async function fixture(t: TestContext, server = createServer(Note), presenceTtl?
 }
 
 describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
+  it("sends one confirmed composition over WebSocket and undoes it without removing the peer edit", async (t) => {
+    const f = await fixture(t), a = await f.connect({ undo: true }), b = await f.connect();
+    assert.ok(a.history);
+    await until(() => a.sync.push === "open" && b.sync.push === "open", "both push channels");
+    a.edit({ changes: { from: 0, insert: "ABC" } });
+    await until(() => b.text() === "ABC" && a.pending() === 0, "initial text");
+    a.binding.startComposition();
+    a.edit({ changes: { from: 0, to: 2, insert: "ㄏ" } });
+    a.edit({ changes: { from: 1, insert: "ㄠ" } });
+    b.edit({ changes: { from: 1, insert: "X" } });
+    await until(() => a.sync.doc.state.body.toString() === "AXBC", "queued peer edit");
+    assert.equal(a.text(), "ㄏㄠC");
+    assert.equal(f.server.snapshot().serverSeq, 2);
+    assert.equal(a.pending(), 0);
+    a.edit({ changes: { from: 0, to: 2, insert: "好" } });
+    a.binding.finishComposition();
+    await until(() => b.text() === "好XC" && a.pending() === 0, "confirmed composition");
+    a.check(); b.check();
+    const commits = f.server.commitsSince(1);
+    assert.ok(commits);
+    assert.equal(commits.length, 2);
+    assert.deepEqual(commits.map(({ operations }) => operations.flatMap((op) =>
+      op.type === "text/insert" ? [op.value] : [])), [["X"], ["好"]]);
+    assert.equal(a.history.undo(), true);
+    await until(() => a.pending() === 0 && b.text() === a.text(), "composition undo");
+    assert.equal(a.text(), "AXBC", "only the composition was undone");
+    a.check(); b.check();
+  });
+
+  it("keeps an offline composition local until confirmation, then sends it after reconnecting", async (t) => {
+    const f = await fixture(t), a = await f.connect(), b = await f.connect();
+    await until(() => a.sync.push === "open" && b.sync.push === "open", "both push channels");
+    a.network.set(true);
+    await until(() => a.sync.push !== "open", "A going offline");
+    a.binding.startComposition();
+    a.edit({ changes: { from: 0, insert: "ㄏㄠ" } });
+    assert.equal(a.pending(), 0);
+    a.edit({ changes: { from: 0, to: 2, insert: "好😀" } });
+    a.binding.finishComposition();
+    assert.equal(a.pending(), 1);
+    assert.equal(f.server.snapshot().serverSeq, 0);
+    await until(() => a.sync.status === "retrying", "A's offline submission failing");
+    a.network.set(false);
+    assert.equal(await a.sync.sync(), true);
+    await until(() => b.text() === "好😀", "peer receiving the offline edit");
+    assert.equal(f.server.snapshot().serverSeq, 1);
+    assert.equal(a.pending(), 0);
+    a.check(); b.check();
+  });
+
   it("converges concurrent edits automatically, without observer echo", async (t) => {
     const f = await fixture(t), a = await f.connect(), b = await f.connect();
     await until(() => a.sync.push === "open" && b.sync.push === "open", "both push channels");
