@@ -257,7 +257,7 @@ console.log(doc.state.body.blocks());
 
 A paragraph's attributes belong to the `"\n"` that starts it; the first paragraph has its own. So:
 
-- Pressing Enter inside a paragraph inserts a `"\n"`: the first half keeps the attributes, and the new paragraph starts without any. An editor that continues lists sets them on the new paragraph itself.
+- Pressing Enter inside a paragraph inserts a `"\n"`: the first half keeps the attributes, and the new paragraph starts without any. An editor that continues lists sets them on the new paragraph itself. At the very start of a paragraph the first half is empty, so an editor usually moves the attributes down to the half with the text.
 - Deleting the `"\n"` between two paragraphs joins them, and the second one's attributes go with it.
 - When writers set the same attribute on one paragraph at the same time, the value the server applied last wins. Setting an attribute on a paragraph that another writer joined away meanwhile has no effect.
 

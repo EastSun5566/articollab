@@ -284,6 +284,8 @@ export function createTextBinding(doc, options) {
     },
     /**
      * Enter: a new paragraph. In a list item it continues the list; in an empty one it ends the list instead.
+     * At the start of a paragraph, the paragraph's attributes move down with its text, since they belong
+     * to the line break that starts it, which now starts the empty paragraph above.
      * @returns {boolean} whether it handled the key
      */
     enter() {
@@ -296,8 +298,14 @@ export function createTextBinding(doc, options) {
         doc.state.body.formatBlocks(start, 0, "list", null);
         return true;
       }
+      const atStart = block !== undefined && from === to && start === block.index && block.length !== 0;
       dispatch([state.update({ changes: { from, to, insert: "\n" }, selection: { anchor: from + 1 }, userEvent: "input" })]);
-      if (list !== undefined) doc.state.body.formatBlocks(elementIndexAt(mirror, from + 1), 0, "list", list);
+      const next = elementIndexAt(mirror, from + 1);
+      if (atStart && block.attributes.heading !== undefined) {
+        doc.state.body.formatBlocks(next, 0, "heading", block.attributes.heading);
+        doc.state.body.formatBlocks(start, 0, "heading", null);
+      }
+      if (list !== undefined) doc.state.body.formatBlocks(next, 0, "list", list);
       return true;
     },
     /** Replaces the remote selections and resolves them against the current Text.

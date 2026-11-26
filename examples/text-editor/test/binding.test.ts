@@ -458,4 +458,16 @@ describe("Text editor paragraphs", () => {
     binding.toggleBlock({ key: "heading", value: 2 });
     assert.deepEqual(lines(binding), [[0, { heading: 2 }], [4, { heading: 2 }]]);
   });
+
+  it("moves a heading down with its text on Enter at the paragraph's start", (t) => {
+    const { a } = paragraphNetwork();
+    const binding = bind(a.doc); t.after(() => binding.destroy());
+    binding.dispatch([binding.state.update({ changes: { from: 0, insert: "Title" } })]);
+    binding.toggleBlock({ key: "heading", value: 1 });
+    binding.dispatch([binding.state.update({ selection: EditorSelection.cursor(0) })]);
+    binding.enter();
+    assert.equal(binding.state.doc.toString(), "\nTitle");
+    assert.deepEqual(a.doc.state.body.blocks().map(({ attributes }) => attributes), [{}, { heading: 1 }]);
+    assert.deepEqual(lines(binding), [[1, { heading: 1 }]]);
+  });
 });
