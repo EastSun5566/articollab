@@ -27,7 +27,7 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.on("discard", listener)` | Subscribes to this writer's List `set()` and `move()` operations that the server applied after their element was deleted. |
 | `doc.on("transform", listener)` | Subscribes to this writer's batches that the server transformed or rejected. |
 | `doc.track(callback)`, `doc.settled(batch)` | Like `transact`, and also return the batch and a promise of its outcome; or that promise for any pending batch. |
-| `createUndoManager(doc, options?)` | Undo and redo for this writer's own changes; optional `captureTimeout` (default 500 ms) and `paths`. |
+| `createUndoManager(doc, options?)` | Undo and redo for this writer's own changes; optional `captureTimeout` (default 500 ms), `maxSteps` (default 1000) and `paths`. |
 | `doc.state.body.observe(listener)` | Opt-in visible Text edits and format changes; returns an unsubscribe function. |
 | `format(index, count, key, value)`, `attributesAt(index)`, `toDelta()` on Text | Set or remove a mark on a range; read one element's marks; read the text as runs of equal marks. |
 | `formatBlocks(index, count, key, value)`, `blockAt(index)`, `blocks()` on Text | Set or remove a paragraph attribute on the paragraphs a range touches; read one paragraph's attributes; list every paragraph. |
@@ -82,6 +82,8 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | `List<T>` | `.length`, `.get(index)`, `.values()`, `.toArray()`, iteration | `.insert(index, value)`, `.push(value)`, `.delete(index)`; `.set(index, value)` updates one element and `.move(from, to)` repositions it, both without changing its ID. |
 | `Text` | `.length`, `.values()`, `.toString()`, iteration, `.attributesAt(index)`, `.toDelta()`, `.blockAt(index)`, `.blocks()` | `.insert(index, string)`, `.delete(index, count = 1)`, `.format(index, count, key, value)`, `.formatBlocks(index, count, key, value)`; Unicode code points. |
 | `MapCollection<T>` | `.size`, `.get(key)`, `.has(key)`, `.keys()`, `.values()`, `.entries()`, `.toObject()`, iteration of `[key, value]` | `.set(key, value)`, `.delete(key)`, `.clear()`; each key holds one whole JSON value. |
+| `Counter` | `.value` | `.add(delta)`; a safe integer. |
+| `CounterMap` | `.size`, `.get(key)`, `.has(key)`, `.keys()`, `.values()`, `.entries()`, `.toObject()`, iteration of `[key, count]` | `.add(key, delta)`, `.delete(key)`, `.clear()`; one safe integer per key, 0 when absent. |
 
 #### Immutable payloads
 
@@ -113,8 +115,8 @@ The entrypoint also exports these types, grouped by role rather than implementat
 
 - Anything else throws `TypeError` when the schema is defined.
 - The payload type is the schema's input type and must be JSON-compatible. `value()` validates its initial value.
-- **Checked locally**, after JSON validation, by Value set, List insert, push and set, Map set and the undo manager's writes. These throw before changing state, pending work, sequences or ID allocation.
-- **Checked by `server.receive()`** for each `value/set`, `list/insert`, `list/set` and `map/set` of the incoming batch: after the namespace check, before the resolver runs, and again on the resolver's output before it is applied.
+- **Checked locally**, after JSON validation, by Value set, List insert, push and set, Map set, Text `format()` and `formatBlocks()`, and the undo manager's writes. These throw before changing state, pending work, sequences or ID allocation.
+- **Checked by `server.receive()`** for each `value/set`, `list/insert`, `list/set`, `map/set`, `text/mark` and `text/block` of the incoming batch: after the namespace check, before the resolver runs, and again on the resolver's output before it is applied.
 - A server rejection throws with state, sequences, sessions and history unchanged. Trusted code can then cancel the batch with `server.reject(originalBatch)`, which checks no payloads.
 - Not checked by decoders, client `receive()`, snapshots or checkpoints: their data comes from the server or from state that already passed.
 - Failures throw `PayloadValidationError`, a `TypeError` with a frozen `path` (the collection path, plus the key for a Map) and the schema's frozen `issues`. Its message names the path and the first issue.
@@ -265,7 +267,7 @@ Edge cases:
 #### Server `change` events
 
 - Server events are `{ origin: "server", commit }`. They fire only when visible state or the replay-conflict descriptor changes, not just because an acknowledgement or watermark advanced.
-- Value, List and Map payloads compare with `Object.is`. List also compares visible permanent element IDs and their order, Text visible stable IDs and their marks, and Map visible keys.
+- Value, List and Map payloads compare with `Object.is`. List also compares visible permanent element IDs and their order, Text visible stable IDs, their marks and paragraph attributes, and Map visible keys.
 - List moves can require comparing the whole List. For a single remote move with no pending work or replay conflict, the moved element's index decides whether the order changed.
 - An accepted own commit is silent when that comparison and the conflict are unchanged.
 - Deep-equal JSON objects decoded into new references can still fire a change.
@@ -566,7 +568,7 @@ An operation that is well formed but cannot apply to the current state is a coll
 | --- | --- |
 | Value | the JSON payload |
 | List | `{ idList, values }`, plus `moves` (`{ id, position }` entries) when visible elements have moved |
-| Text | `{ idList, value }`, plus the optional `surrogateBoundaries` below |
+| Text | `{ idList, value }`, plus `marks` and `blocks` when present (see [Text marks](#text-marks) and [Text paragraphs](#text-paragraphs)) and the optional `surrogateBoundaries` below |
 | Map | a JSON object from key to value |
 | Counter, `counterMap()` | see [Counter](#counter-and-countermap) |
 
@@ -633,14 +635,14 @@ Import from `"articollab/sync"`. It depends only on the core entrypoint and on `
 
 | API | Purpose |
 | --- | --- |
-| `connectSync(schema, { transport, checkpoint?, save?, store?, pollInterval?, retry?, push?, pushTimeout? })` | Creates or restores a `ClientDocument` that owns its `onBatch` and returns a `SyncClient`. Without `checkpoint`, or a checkpoint in `store`, it registers a session. |
+| `connectSync(schema, { transport, checkpoint?, save?, store?, pollInterval?, retry?, push?, pushTimeout?, presence? })` | Creates or restores a `ClientDocument` that owns its `onBatch` and returns a `SyncClient`. Without `checkpoint`, or a checkpoint in `store`, it registers a session. |
 | `openIndexedDbStore({ database, key, slots?, indexedDB?, locks? })`, `openFileStore(path, { locks?, fs? })` | Open a `CheckpointStore` after taking an exclusive lock; a lock held elsewhere throws `CheckpointLockedError`. The IndexedDB store is an `IndexedDbCheckpointStore` with the `slot` and `key` it took. |
 | `client.doc`, `client.status`, `client.error`, `client.push` | The document, the current `SyncStatus`, the failure while `status` is `"failed"`, and the push channel's `SyncPushState`. |
 | `client.sync()`, `client.rejectPending()` | Run a pass now, or confirm cancellation of the pending batches that exist when called. Both resolve `true` on success. |
 | `client.restartFromSnapshot()`, `client.on("status" \| "push", listener)`, `client.close()` | Recover from a gap without pending work, observe status or push-channel changes, stop polling, retries and push and close the store and transport. |
 | `createHttpTransport({ url, fetch?, headers? })` | A `SyncTransport` for the handler's routes under `url`. |
 | `createWebSocketTransport({ url, WebSocket? })` | A `SyncTransport` over one socket to `url`, served by `handler.accept`. |
-| `createSyncHandler(schema, server, { authorize?, saveCheckpoint?, allowRejections?, maxBodySize?, heartbeatInterval?, maxEventStreams? })` | A `SyncHandler`: a Fetch API handler for `clients`, `batches`, `commits`, `events` and, when allowed, `rejections`. |
+| `createSyncHandler(schema, server, { authorize?, saveCheckpoint?, allowRejections?, maxBodySize?, heartbeatInterval?, maxEventStreams?, presence? })` | A `SyncHandler`: a Fetch API handler for `clients`, `batches`, `commits`, `events` and, when enabled, `rejections` and `presence`. |
 | `handler.accept(socket, request)` | Serves one WebSocket with the same server, queue and presence as the routes; returns a `SyncConnection`. |
 | `handler.notify()` | Pushes commits applied without the handler to open event streams and subscribed sockets. |
 | `SyncRequestError` | A sync request answered with an unexpected status, with `status` and `retryable`. The sync client retries HTTP 408, 429 and 5xx, as well as network failures during a pass. |
@@ -834,7 +836,7 @@ Messages are JSON objects. Each request has a non-negative integer `id`. Its rep
 - The server uses explicit writer sessions.
 - Examples show how an application can be built. They are not exported or shipped as production adapters. In particular, browser `documentId` envelopes and headers are example-only lineage markers, not core wire fields or authentication.
 - The [sync adapter](sync.md) provides HTTP and WebSocket transports with push, polling and retries, plus IndexedDB and file checkpoint stores.
-- Not provided: a server-side storage adapter, snapshot fallback, schema migration, authentication, writer coordination, rich text, bulk List editing, or moving elements between Lists.
+- Not provided: a server-side storage adapter, snapshot fallback, schema migration, authentication, writer coordination, editor bindings, bulk List editing, or moving elements between Lists. The CodeMirror and ProseMirror editors in the repository are examples.
 - Tabs that open one store key with `slots` are separate writers. They exchange edits only through the server, never share undo history or unsent edits, and do not see each other's edits while offline.
 - Presence lives in one handler's memory, best-effort. It is not saved or shared between server instances, and there is no selection type or remote-caret rendering.
 - Not promised: same-ID server rollback or forks, power-loss durability, or cross-file transactions.

@@ -6,7 +6,7 @@ Build collaborative state in TypeScript. Each client shows its own edits at once
 
 Use Articollab when the server must be able to accept, change or reject edits. For example, a task board can show a card move immediately while the server checks whether the move is allowed.
 
-Pick [collections](collections.md) for what you store: a whole JSON value, an ordered list, plain text, keyed values or counts. Every client uses the same document schema.
+Pick [collections](collections.md) for what you store: a whole JSON value, an ordered list, text with optional formatting, keyed values or counts. Every client uses the same document schema.
 
 ## Connect your application
 

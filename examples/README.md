@@ -13,7 +13,7 @@ New to Articollab? Read the [quick start](../docs/quick-start.md) first. The exa
 | --- | --- |
 | [Sync adapter](#sync-adapter) | `articollab/sync` in about 80 lines of Node: two writers, a lost response, push |
 | [Kanban board](#kanban-board) | List moves, Maps, Counters, undo, IndexedDB checkpoints and several tabs |
-| [Text editor](#text-editor) | Text in CodeMirror, cursors and presence over WebSocket |
+| [Text editor](#text-editor) | Text in CodeMirror: marks, headings and lists as decorations, cursors and presence over WebSocket, input methods |
 | [Rich text editor](#rich-text-editor) | Text marks and paragraph attributes in ProseMirror: headings, lists, quotes, code |
 | [Folder tree](#folder-tree) | A server policy that keeps concurrent moves from making cycles |
 
@@ -51,6 +51,8 @@ Two CodeMirror editors share one Text, each writer over one [WebSocket](../docs/
 - Type in both at once, including emoji and Chinese: edits converge without a Sync button.
 - Select text in one editor: the other shows its caret or range, shared through [presence](../docs/sync.md#share-presence). Turn that writer **Offline** and its caret goes at once.
 - Turn one writer **Offline**, keep typing, then go back online.
+- Make a word bold or a line a heading in one editor while the other types in it. Formatting is drawn with CodeMirror decorations.
+- Type with an input method such as Zhuyin while the other writer types: only the confirmed text is sent, as its own undo step.
 
 [`binding.js`](text-editor/binding.js) maps CodeMirror's UTF-16 offsets to Text elements and back; [`presence.js`](shared/presence.js) validates shared cursors.
 

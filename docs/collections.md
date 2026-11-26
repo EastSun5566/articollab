@@ -1,6 +1,6 @@
 # Value, List, Text, Map and Counter
 
-Choose a Value for whole immutable JSON replacements, a List for stable elements, Text for plain-text range edits, a Map for values under string keys, and a Counter for integers that several writers add to. Schema property keys are fixed wire paths.
+Choose a Value for whole immutable JSON replacements, a List for stable elements, Text for strings edited by range, with optional marks and paragraph attributes, a Map for values under string keys, and a Counter for integers that several writers add to. Schema property keys are fixed wire paths.
 
 ```ts
 const Board = defineDocument({

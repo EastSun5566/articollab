@@ -46,10 +46,10 @@ Run the same install and four checks for `examples/rich-editor`, and the four ch
 
 ### Find the relevant tests
 
-- Collections, transactions and callbacks: `runtime.test.ts`, `list.test.ts`, `text.test.ts`, `text-marks.test.ts`, `map.test.ts`, `counter.test.ts`.
+- Collections, transactions and callbacks: `runtime.test.ts`, `list.test.ts`, `text.test.ts`, `text-marks.test.ts`, `text-blocks.test.ts`, `text-observe.test.ts`, `map.test.ts`, `counter.test.ts`, `payload.test.ts`.
 - Wire decoding, checkpoints, history and retries: `wire.test.ts`, `client-checkpoint.test.ts`, `history.test.ts`, `retry.test.ts` and the `*-resume` suites.
 - Undo, outcomes and events: `undo.test.ts`, `settled.test.ts`, `transform-event.test.ts`, `discard.test.ts`.
-- Sync: the `sync-*` suites, including `sync-websocket.test.ts`.
+- Sync: the `sync-*` suites, including `sync-websocket.test.ts` and `sync-presence.test.ts`.
 - Change events: `reconciliation-change.test.ts` compares every server change event with a full comparison of the visible state.
 
 Interleaving tests are seeded. To repeat one seed:
@@ -127,7 +127,7 @@ Approve workflow runs from forks only after reviewing them. For the docs site, s
    pnpm release --release-as <version> --skip.commit --skip.tag
    ```
 
-   The generated CHANGELOG lists only commits marked as breaking (`!` or `BREAKING CHANGE:`) under BREAKING CHANGES. Add any other breaking change by hand, and fix entries whose wording is out of date.
+   The generated CHANGELOG lists only commits marked as breaking (`!` or `BREAKING CHANGE:`) under BREAKING CHANGES. Add any other breaking change by hand, and fix entries whose wording is out of date. Drop fixes to features that are new in this release: users of the previous release never had those bugs.
 4. **Commit and tag, signed.**
 
    ```sh

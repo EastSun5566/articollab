@@ -6,7 +6,7 @@ Assign a new JSON value, for example `task.value = { done: true }`. To let write
 
 ## Does a change event mean my edit was saved?
 
-Save the checkpoint after a successful receive. A local change can fire before submission, and an acknowledgement can leave visible state unchanged. The [sync adapter](sync.md#persist-checkpoints) can save client checkpoints for you.
+No. A local change fires before submission, and an acknowledgement can leave visible state unchanged. To learn what the server did with an edit, make it with [`doc.track()`](server-wire.md#accept-transform-or-reject) and await its `settled` promise. To keep unsent edits, save the checkpoint after a successful receive; the [sync adapter](sync.md#persist-checkpoints) can do this for you.
 
 ## Can I resend a batch after a lost response?
 
