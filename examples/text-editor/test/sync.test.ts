@@ -9,7 +9,7 @@ import { connectSync, createHttpTransport, createWebSocketTransport } from "../.
 import { Note } from "../schema.js";
 import { createTextBinding, remoteRanges } from "../binding.js";
 import { createOfflineSwitch, describeSync } from "../../shared/sync-ui.js";
-import { selectionOf, selectionSchema } from "../presence.js";
+import { selectionOf, selectionSchema } from "../../shared/presence.js";
 import { startTextEditorServer } from "../server.ts";
 
 /** Waits for `condition` with real timers: writers synchronize on their own. */
@@ -264,8 +264,8 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Parses this example's fixed import map, which is independently checked by fetching every target.
     const map = JSON.parse(match[1]!) as { imports: Record<string, string> };
     for (const route of [...Object.values(map.imports), "/dist/sync/index.js", "/text-editor/page.js", "/text-editor/editor.js",
-      "/text-editor/binding.js", "/text-editor/changes.js", "/text-editor/presence.js", "/text-editor/schema.js",
-      "/shared/sync-ui.js"]) {
+      "/text-editor/binding.js", "/text-editor/changes.js", "/text-editor/schema.js",
+      "/shared/sync-ui.js", "/shared/presence.js"]) {
       const asset = await fetch(f.host.url + route);
       assert.equal(asset.status, 200, route);
       assert.equal(asset.headers.get("Content-Type"), "text/javascript; charset=utf-8");
@@ -273,7 +273,7 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
       assert.equal(asset.headers.get("Cache-Control"), "no-store");
       assert.ok((await asset.text()).length > 0);
     }
-    for (const route of ["/src/index.ts", "/server.ts", "/presence-relay.ts", "/presence", "/sync-ui.js", "/browser-http-smoke/smoke.js", "/text-editor/actions.js", "/package.json",
+    for (const route of ["/src/index.ts", "/server.ts", "/presence-relay.ts", "/presence", "/sync-ui.js", "/browser-http-smoke/smoke.js", "/text-editor/actions.js", "/text-editor/presence.js", "/package.json",
       "/pnpm-lock.yaml", "/node_modules/@codemirror/view/dist/index.js", "/dist/index.js.map", "/dist/index.d.ts", "/sync/unknown"]) {
       const asset = await fetch(f.host.url + route); assert.equal(asset.status, 404, route); await asset.text();
     }
@@ -285,7 +285,7 @@ describe("Text editor on the sync adapter", { timeout: 30_000 }, () => {
   });
 
   it("imports without DOM, fetch, registration or listening side effects", async () => {
-    const modules = ["server.ts", "page.js", "editor.js", "binding.js", "changes.js", "presence.js"];
+    const modules = ["server.ts", "page.js", "editor.js", "binding.js", "changes.js", "../shared/presence.js"];
     const script = `
       const { Server } = await import("node:http");
       Server.prototype.listen = () => { throw new Error("Unexpected listen"); };

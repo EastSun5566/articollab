@@ -3,7 +3,7 @@ import { createUndoManager } from "../../dist/index.js";
 import { connectSync, createWebSocketTransport } from "../../dist/sync/index.js";
 import { Note } from "./schema.js";
 import { createTextEditor } from "./editor.js";
-import { selectionOf, selectionSchema } from "./presence.js";
+import { selectionOf, selectionSchema } from "../shared/presence.js";
 import { createOfflineSwitch, describeSync } from "../shared/sync-ui.js";
 
 /** @param {readonly import("./binding.js").RemoteStatus[]} statuses @param {readonly string[]} labels */
@@ -35,7 +35,7 @@ export async function mountTextEditors(root, url) {
   columns.className = "editors";
   root.append(status, columns);
   /** @type {{sync: import("../../dist/sync/index.js").PresenceSyncClient<typeof Note.definition,
-   *   import("./presence.js").SelectionPresence>,
+   *   import("../shared/presence.js").SelectionPresence>,
    * editor: Awaited<ReturnType<typeof createTextEditor>>, details: HTMLPreElement, cleanup: () => void,
    * history: import("../../dist/index.js").UndoManager}[]} */
   const panes = [];
