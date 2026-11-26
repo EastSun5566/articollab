@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { appendFile, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it, type TestContext } from "node:test";
 
 import {
   createClient, createServer, decodeServerLogEntry, decodeSnapshot, defineDocument, list, value, type ClientBatch, type DocumentOperation,
 } from "../src/index.ts";
 import {
-  connectSync, createHttpTransport, createSyncHandler, openServer, persistServer,
+  CheckpointLockedError, connectSync, createHttpTransport, createSyncHandler, openServer, persistServer,
   type ServerStore, type SyncClient,
 } from "../src/sync/index.ts";
+import { openFileServerStore } from "../src/sync/node.ts";
 
 const Board = defineDocument({ items: list<string>(), count: value(0) });
 type Shape = typeof Board.definition;
@@ -209,5 +213,126 @@ describe("createSyncHandler with persist", () => {
     assert.equal(response.status, 500);
     memory.state.fail = undefined;
     assert.equal((await handle(new Request("http://sync.test/commits?since=0"))).status, 503);
+  });
+});
+
+/** Opens the same storage again and again, as separate processes would one after another. */
+type StoreFactory = (t: TestContext) => Promise<() => Promise<ServerStore>>;
+
+/** What every ServerStore must do, run against each implementation. */
+function storeContract(name: string, factory: StoreFactory) {
+  describe(`${name} server store`, () => {
+    it("keeps the checkpoint and the entries after it, in order, until the next compaction", async (t) => {
+      const open = await factory(t);
+      let store = await open();
+      assert.equal(await store.load(), undefined);
+      await store.compact({ checkpoint: 1 });
+      await store.append([{ entry: 1 }, { entry: 2, text: "😀\n\u2028" }]);
+      await store.append([]);
+      await store.append([{ entry: 3 }]);
+      store.close();
+      store = await open();
+      assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 1 }, entries: [{ entry: 1 }, { entry: 2, text: "😀\n\u2028" }, { entry: 3 }] });
+      await store.compact({ checkpoint: 2 });
+      assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 2 }, entries: [] });
+      await store.append([{ entry: 4 }]);
+      store.close();
+      store = await open();
+      assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 2 }, entries: [{ entry: 4 }] });
+      store.close();
+      await assert.rejects(store.load(), /closed/);
+      await assert.rejects(store.append([{ entry: 5 }]), /closed/);
+    });
+
+    it("lets one store at a time open the same storage", async (t) => {
+      const open = await factory(t);
+      const first = await open();
+      await assert.rejects(open(), CheckpointLockedError);
+      first.close();
+      const second = await open();
+      assert.equal(await second.load(), undefined);
+      second.close();
+    });
+
+    it("restores a server that writers used through the handler", async (t) => {
+      const open = await factory(t);
+      const opened = await openServer(Board, await open(), { compactEvery: 3 });
+      const handle = createSyncHandler(Board, opened.server, { persist: opened });
+      const fetch = (input: RequestInfo | URL, init?: RequestInit) => handle(new Request(input, init));
+      const writer = await connectSync(Board, { transport: createHttpTransport({ url: "http://sync.test/", fetch }), push: false, pollInterval: 0 });
+      for (let index = 0; index < 8; index++) {
+        writer.doc.state.items.push(`item ${index}`);
+        assert.equal(await writer.sync(), true);
+      }
+      writer.doc.state.count.value = 3;
+      assert.equal(await writer.sync(), true);
+      writer.close();
+      const expected = opened.server.checkpoint();
+      await opened.close();
+      const reopened = await openServer(Board, await open());
+      assert.deepEqual(reopened.server.checkpoint(), expected);
+      await reopened.close();
+    });
+  });
+}
+
+storeContract("File", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "articollab-server-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  return () => openFileServerStore(join(directory, "board"));
+});
+
+describe("File server store recovery", () => {
+  async function directory(t: TestContext) {
+    const root = await mkdtemp(join(tmpdir(), "articollab-server-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    return join(root, "board");
+  }
+
+  it("drops a line cut short by a crash, and appends after the complete ones", async (t) => {
+    const path = await directory(t);
+    let store = await openFileServerStore(path);
+    await store.compact({ checkpoint: 1 });
+    await store.append([{ entry: 1 }]);
+    store.close();
+    await appendFile(join(path, "log-1.jsonl"), '{"entry":');
+    store = await openFileServerStore(path);
+    assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 1 }, entries: [{ entry: 1 }] });
+    await store.append([{ entry: 2 }]);
+    store.close();
+    assert.equal(await readFile(join(path, "log-1.jsonl"), "utf8"), '{"entry":1}\n{"entry":2}\n');
+  });
+
+  it("recovers from a compaction interrupted at any step", async (t) => {
+    const path = await directory(t);
+    let store = await openFileServerStore(path);
+    await store.compact({ checkpoint: 1 });
+    await store.append([{ entry: 1 }]);
+    store.close();
+    // Interrupted while writing the next checkpoint: only a temporary file exists.
+    await writeFile(join(path, ".checkpoint-2.json.crash.tmp"), '{"checkp');
+    store = await openFileServerStore(path);
+    assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 1 }, entries: [{ entry: 1 }] });
+    store.close();
+    // Interrupted after the rename: the new checkpoint has no log yet, and the old files remain.
+    await writeFile(join(path, "checkpoint-2.json"), '{"checkpoint":2}');
+    store = await openFileServerStore(path);
+    assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 2 }, entries: [] });
+    await store.append([{ entry: 2 }]);
+    store.close();
+    assert.deepEqual((await readdir(path)).toSorted(), ["checkpoint-2.json", "log-2.jsonl"]);
+  });
+
+  it("refuses a store without a checkpoint and a log line that is not JSON", async (t) => {
+    const path = await directory(t);
+    let store = await openFileServerStore(path);
+    await assert.rejects(store.append([{ entry: 1 }]), /no checkpoint yet/);
+    await store.compact({ checkpoint: 1 });
+    store.close();
+    await writeFile(join(path, "log-1.jsonl"), "{}\nnot json\n");
+    store = await openFileServerStore(path);
+    await assert.rejects(store.load(), /Log line 2 is not valid JSON/);
+    store.close();
+    await assert.rejects(openFileServerStore(""), TypeError);
   });
 });

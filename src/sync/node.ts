@@ -5,6 +5,8 @@ import { dirname, basename, join, resolve } from "node:path";
 import { acquireLock, closable, type CheckpointStore, type LockManagerLike } from "./store.ts";
 
 export { CheckpointLockedError, type CheckpointStore } from "./store.ts";
+export { openFileServerStore, type FileServerStoreOptions } from "./server-file-store.ts";
+export type { ServerStore } from "./server-store.ts";
 
 /** The `node:fs/promises` functions the file store uses. */
 export interface FileStoreFileSystem {

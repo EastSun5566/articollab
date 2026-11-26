@@ -73,10 +73,10 @@ export async function acquireLock(
 
 /**
  * Shared state for stores that hold a lock until `close()`. Operations started before `close()`
- * finish first; then `onClose` runs and the lock is released.
+ * finish first; then `onClose` runs, and the lock is released once it settles.
  * @internal
  */
-export function closable(release: (after: Promise<unknown>) => void, onClose: () => void = () => {}) {
+export function closable(release: (after: Promise<unknown>) => void, onClose: () => void | Promise<void> = () => {}) {
   let closed = false;
   const running = new Set<Promise<unknown>>();
   return {
@@ -91,7 +91,7 @@ export function closable(release: (after: Promise<unknown>) => void, onClose: ()
     close(): void {
       if (closed) return;
       closed = true;
-      release(Promise.allSettled([...running]).then(() => { onClose(); }));
+      release(Promise.allSettled([...running]).then(() => onClose()));
     },
   };
 }
