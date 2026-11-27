@@ -18,7 +18,8 @@
         "src/react.ts",
         "src/sync/index.ts",
         "src/sync/node.ts",
-        "src/sync/postgres.ts"
+        "src/sync/postgres.ts",
+        "src/prosemirror/index.ts"
       ],
       "project": [
         "src/**/*.ts"
