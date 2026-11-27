@@ -42,7 +42,16 @@ pnpm --dir examples/text-editor knip
 pnpm --dir examples/text-editor test
 ```
 
-Run the same install and four checks for `examples/rich-editor`, and the four checks for `examples/kanban`, `examples/react-todo` and `examples/file-tree` (they need no install). Tests cannot replace trying the [examples](examples/README.md) in a browser.
+Run the same install and four checks for `examples/rich-editor`, and the four checks for `examples/kanban`, `examples/react-todo` and `examples/file-tree` (they need no install).
+
+The Rich Text browser test also runs in CI. To run it locally after building and installing the example dependencies:
+
+```sh
+pnpm --dir examples/rich-editor install:browser
+pnpm --dir examples/rich-editor test:browser
+```
+
+The test uses Chromium's DevTools Protocol to check that candidates stay local, confirmation submits one batch, and cancellation submits none. Use the [Rich Text example](examples/README.md#rich-text-editor) to verify the native input method and candidate window on your platform.
 
 ### Find the relevant tests
 

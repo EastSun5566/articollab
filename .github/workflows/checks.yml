@@ -98,6 +98,12 @@ jobs:
       - name: Test rich text example
         run: pnpm --dir examples/rich-editor test
 
+      - name: Install Chromium for the rich text browser test
+        run: pnpm --dir examples/rich-editor install:browser --with-deps
+
+      - name: Test composition in the rich text browser example
+        run: pnpm --dir examples/rich-editor test:browser
+
       - name: Typecheck kanban example
         run: pnpm --dir examples/kanban check
 

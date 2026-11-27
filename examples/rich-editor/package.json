@@ -11,7 +11,9 @@
     "check": "../../node_modules/.bin/tsc -p tsconfig.json",
     "lint": "../../node_modules/.bin/oxlint --deny-warnings --report-unused-disable-directives",
     "knip": "../../node_modules/.bin/knip --no-progress --treat-config-hints-as-errors",
-    "test": "node --unhandled-rejections=strict --test --test-concurrency=2 test/*.test.ts"
+    "test": "node --unhandled-rejections=strict --test --test-concurrency=2 test/*.test.ts",
+    "install:browser": "playwright install --only-shell chromium",
+    "test:browser": "node --unhandled-rejections=strict --test test/browser/ime.test.ts"
   },
   "dependencies": {
     "prosemirror-commands": "^1.7.2",
@@ -24,6 +26,7 @@
     "ws": "^8.23.0"
   },
   "devDependencies": {
-    "@types/ws": "^8.18.2"
+    "@types/ws": "^8.18.2",
+    "playwright": "^1.65.1"
   }
 }
