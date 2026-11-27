@@ -4,10 +4,10 @@ Read a document, its sync client, presence and undo manager from React component
 
 ## Install
 
-The hooks require Articollab 0.11 and React 18 or later. To use the 0.11 beta:
+Use Articollab 0.11 or later and React 18 or later.
 
 ```sh
-pnpm add articollab@beta react
+pnpm add articollab react
 ```
 
 Import them from `"articollab/react"`.
