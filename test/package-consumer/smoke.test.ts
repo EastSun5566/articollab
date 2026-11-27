@@ -868,6 +868,8 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     assert.ok(typeof original.version === "string");
     const installedRoot = join(consumer, "node_modules/articollab");
     const installed = await json(join(installedRoot, "package.json"));
+    assert.deepEqual(await readFile(join(installedRoot, "README.md")), await readFile(join(library, "README.md")));
+    assert.deepEqual(await readFile(join(installedRoot, "LICENSE")), await readFile(join(root, "LICENSE")));
     for (const path of ["dist/vendor/hamt.js", "dist/vendor/hamt.d.ts"]) {
       assert.ok(paths.includes(path), path);
     }
