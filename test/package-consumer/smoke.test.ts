@@ -56,6 +56,9 @@ import {
 } from "articollab/sync";
 import { openFileServerStore, openFileStore, CheckpointLockedError as NodeLockedError } from "articollab/sync/node";
 import { openPostgresServerStore, CheckpointLockedError as PostgresLockedError } from "articollab/sync/postgres";
+import { useCollection, useDocument } from "articollab/react";
+import { createElement } from "react";
+import { renderToString } from "react-dom/server";
 
 const Board = defineDocument({ count: value(0), items: list(), body: text() });
 const roundTrip = (input) => JSON.parse(JSON.stringify(input));
@@ -356,6 +359,14 @@ assert.equal(new SyncRequestError(503).retryable, true);
 
 assert.equal(NodeLockedError, CheckpointLockedError, "both entrypoints share one error class");
 assert.equal(PostgresLockedError, CheckpointLockedError, "the Postgres entrypoint shares it too");
+const reactDoc = createClient(Board, { clientId: "react", onBatch() {} });
+reactDoc.state.items.push("rendered");
+function Items() {
+  const items = useCollection(reactDoc, "items");
+  const count = useDocument(reactDoc, (state) => state.count.value);
+  return createElement("p", null, items.join(","), " ", String(count));
+}
+assert.equal(renderToString(createElement(Items)), "<p>rendered<!-- --> <!-- -->0</p>", "hooks render on the server too");
 await assert.rejects(openPostgresServerStore({ client: {}, document: "d" }), TypeError);
 const serverStore = await openFileServerStore("server");
 await assert.rejects(openFileServerStore("server"), CheckpointLockedError);
@@ -481,6 +492,12 @@ import {
 import { openFileStore, openFileServerStore, type FileStoreOptions, type ServerStore } from "articollab/sync/node";
 import { openPostgresServerStore, type PostgresClient } from "articollab/sync/postgres";
 import { openServer, persistServer, type PersistedServer, type ServerPersistence } from "articollab/sync";
+import { useCollection, useTextDelta, useUndoState, type UndoState } from "articollab/react";
+type CollectionItems = Expect<Equal<ReturnType<typeof useCollection<Shape, "items">>, readonly string[]>>;
+type CollectionCount = Expect<Equal<ReturnType<typeof useCollection<Shape, "count">>, number>>;
+type Undo = Expect<Equal<ReturnType<typeof useUndoState>, UndoState>>;
+// @ts-expect-error Only Text paths have a delta.
+void useTextDelta(createClient(Board, { clientId: "t", onBatch() {} }), "items");
 type FileServerStore = Expect<Equal<Awaited<ReturnType<typeof openFileServerStore>>, ServerStore>>;
 type PostgresStore = Expect<Equal<Awaited<ReturnType<typeof openPostgresServerStore>>, ServerStore>>;
 type Opened = Expect<Equal<Awaited<ReturnType<typeof openServer<Shape>>>, PersistedServer<Shape>>>;
@@ -821,13 +838,19 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     }) };
     const typescript = await json(require.resolve("typescript/package.json"));
     const nodeTypes = await json(require.resolve("@types/node/package.json"));
+    const react = await json(require.resolve("react/package.json"));
+    const reactDom = await json(require.resolve("react-dom/package.json"));
+    const reactTypes = await json(require.resolve("@types/react/package.json"));
     const { packageManager } = await json(join(root, "package.json"));
     assert.ok(typeof typescript.version === "string" && typeof nodeTypes.version === "string");
     assert.ok(typeof packageManager === "string");
     await writeFile(join(consumer, "package.json"), JSON.stringify({
       name: "articollab-package-consumer", private: true, type: "module", packageManager,
       dependencies: { articollab: `file:./${basename(packed.filename)}` },
-      devDependencies: { typescript: typescript.version, "@types/node": nodeTypes.version },
+      devDependencies: {
+        typescript: typescript.version, "@types/node": nodeTypes.version,
+        react: react.version, "react-dom": reactDom.version, "@types/react": reactTypes.version,
+      },
     }));
     await pnpm(["install", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile"], consumer, 90_000);
   });
@@ -875,7 +898,7 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     });
     assert.deepEqual(installed.dependencies, { articulated: "^1.4.0" });
     assert.deepEqual(installed.exports, original.exports);
-    for (const subpath of [".", "./sync", "./sync/node", "./sync/postgres"]) {
+    for (const subpath of [".", "./sync", "./sync/node", "./sync/postgres", "./react"]) {
       const entry = record(record(installed.exports)[subpath]);
       for (const path of [entry.import, entry.types]) {
         assert.ok(typeof path === "string");
