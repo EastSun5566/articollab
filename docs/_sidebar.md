@@ -6,6 +6,7 @@
 - [Server policy and wire data](server-wire.md)
 - [Recovery](recovery.md)
 - [Sync adapter](sync.md)
+- [React](react.md)
 - [Core reference](reference.md)
 - [Upgrading](upgrading.md)
 - [FAQ](faq.md)

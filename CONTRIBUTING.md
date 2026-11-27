@@ -42,7 +42,7 @@ pnpm --dir examples/text-editor knip
 pnpm --dir examples/text-editor test
 ```
 
-Run the same install and four checks for `examples/rich-editor`, and the four checks for `examples/kanban` and `examples/file-tree` (they need no install).
+Run the same install and four checks for `examples/rich-editor`, and the four checks for `examples/kanban`, `examples/react-todo` and `examples/file-tree` (they need no install).
 
 The Rich Text browser test also runs in CI. To run it locally after building and installing the example dependencies:
 
