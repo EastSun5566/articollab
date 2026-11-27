@@ -890,6 +890,36 @@ Messages are JSON objects. Each request has a non-negative integer `id`. Its rep
 - `on("change", listener)` reports each new `peers` map.
 - `close()`, or a failed client, sends `null` once, best-effort, and stops the re-sends. Later valid `set()` calls are ignored.
 
+## React
+
+Import from `"articollab/react"`; it needs React 18 or later as a peer dependency. Every hook reads through `useSyncExternalStore`, so it also renders on the server.
+
+| Hook | Returns | Re-renders when |
+| --- | --- | --- |
+| `useCollection(doc, path)` | The collection's visible state, typed from the schema: a Value's value, a List's values as a frozen array, a Text's string, a Map's or `counterMap()`'s frozen object, a Counter's total | That collection's visible state changes |
+| `useDocument(doc, selector, isEqual?)` | `selector(doc.state)` | The document changes and the result is not `isEqual` to the previous one |
+| `useTextDelta(doc, path)`, `useTextBlocks(doc, path)` | A Text's `toDelta()` runs or `blocks()` paragraphs | Its text, or its marks or paragraphs respectively, change |
+| `useSyncStatus(sync)` | A frozen `{ status, push, error }` | Any of the three changes |
+| `usePeers(sync)` | `sync.presence.peers` | A presence push changes it |
+| `useUndoState(history)` | A frozen `{ canUndo, canRedo }` | Either changes |
+
+**Subscriptions and snapshots**
+- `useCollection`, `useTextDelta` and `useTextBlocks` share one `observe()` subscription and one snapshot per collection among all mounted components. The subscription starts with the first component and stops when the last one unmounts.
+- A snapshot is rebuilt only after a change and keeps its identity until then. A Value's snapshot is its value itself, and a Counter's its number.
+- While nothing is subscribed, as during a render before effects run, a read compares a fresh snapshot with the previous one and keeps the previous one when equal: values by `Object.is`, arrays and objects entry by entry, delta runs and paragraphs by JSON value.
+
+**Paths**
+- `path` must be a key of the document's schema, or the hook throws `TypeError`. `useTextDelta` and `useTextBlocks` also throw `TypeError` for a path that is not a Text.
+- A new `doc`, `sync` or `history`, such as the client `restartFromSnapshot()` returns, makes the hook subscribe to it instead.
+
+**`useDocument`**
+- `isEqual` defaults to `shallowEqual`, which is also exported: `Object.is` for values, and for two arrays or two plain objects, the same keys with `Object.is`-equal entries.
+- An equal result keeps the previous one's identity.
+- `selector` runs again after each document change, and whenever it is a new function, such as an inline one on each render.
+
+**Undo steps**
+- The hooks do not change how the undo manager groups steps. Buttons should call `history.stopCapturing()` around their change, so that quick presses stay separate steps.
+
 ## Boundaries
 
 - The server uses explicit writer sessions.
@@ -901,4 +931,4 @@ Messages are JSON objects. Each request has a non-negative integer `id`. Its rep
 - Not promised: same-ID server rollback or forks, power-loss durability, or cross-file transactions.
 - These gaps are not a roadmap.
 
-[Previous: Sync adapter](sync.md) · [Next: Upgrading](upgrading.md)
+[Previous: React](react.md) · [Next: Upgrading](upgrading.md)

@@ -1,6 +1,6 @@
 # Articollab examples
 
-Six runnable examples, from smallest to largest. They need a checkout of this repository: run these once from its root with Node 26 (`.nvmrc`), then start any example below.
+Seven runnable examples, from smallest to largest. They need a checkout of this repository: run these once from its root with Node 26 (`.nvmrc`), then start any example below.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -13,6 +13,7 @@ New to Articollab? Read the [quick start](../docs/quick-start.md) first. The exa
 | --- | --- |
 | [Sync adapter](#sync-adapter) | `articollab/sync` in about 80 lines of Node: two writers, a lost response, push |
 | [Server store](#server-store) | A server that saves each change to files and restarts without losing a writer's edits |
+| [React todo list](#react-todo-list) | The [React hooks](../docs/react.md): collections, a derived count, sync status, presence and undo |
 | [Kanban board](#kanban-board) | List moves, Maps, Counters, undo, IndexedDB checkpoints and several tabs |
 | [Text editor](#text-editor) | Text in CodeMirror: marks, headings and lists as decorations, cursors and presence over WebSocket, input methods |
 | [Rich text editor](#rich-text-editor) | Text marks and paragraph attributes in ProseMirror: headings, lists, quotes, code |
@@ -33,6 +34,21 @@ node examples/server-store.ts [directory]
 ```
 
 A server saves each change in a directory through a [server store](../docs/sync.md#persist-the-server), and compacts every three changes. A writer adds two items; the server closes its store and opens again from the directory; the writer adds a third without registering again. It prints the items, the server sequence and the files left: the latest checkpoint and the changes after it.
+
+## React todo list
+
+```sh
+pnpm --dir examples/react-todo start
+```
+
+Two writers share a todo list, each a React tree over its own sync client. The page loads React from esm.sh, so it needs internet access; there is no bundler. Try:
+
+- Add, tick and rename items in one writer: the other follows, and its count of items left updates.
+- Focus an item in one writer: the other shows who is editing it, through [presence](../docs/sync.md#share-presence).
+- Turn one writer **Offline**, press 👍 in both and rename an item there, then go back online. Every like counts.
+- Press **Undo**: each button press is its own step, and only your own edits come back.
+
+[`app.js`](react-todo/app.js) holds the components and [`page.js`](react-todo/page.js) creates the sync clients outside React, so StrictMode or a re-render never opens a second writer session.
 
 ## Kanban board
 

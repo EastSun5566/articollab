@@ -50,6 +50,10 @@
     "./sync/postgres": {
       "types": "./dist/sync/postgres.d.ts",
       "import": "./dist/sync/postgres.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -75,17 +79,30 @@
   "dependencies": {
     "articulated": "^1.4.0"
   },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@electric-sql/pglite": "^0.6.0",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.23.1",
+    "@types/react": "^19.3.3",
+    "@types/react-dom": "^19.3.0",
     "@types/ws": "^8.18.2",
     "commit-and-tag-version": "^13.2.1",
     "fake-indexeddb": "^6.2.7",
+    "happy-dom": "^21.0.4",
     "knip": "^6.39.0",
     "oxlint": "^1.87.0",
     "oxlint-tsgolint": "^7.0.2003",
     "pg": "^8.23.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "typescript": "^7.0.2",
     "ws": "^8.23.0"
   }
