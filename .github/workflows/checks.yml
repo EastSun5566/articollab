@@ -110,6 +110,18 @@ jobs:
       - name: Test kanban example
         run: pnpm --dir examples/kanban test
 
+      - name: Typecheck React example
+        run: pnpm --dir examples/react-todo check
+
+      - name: Lint React example
+        run: pnpm --dir examples/react-todo lint
+
+      - name: Check unused React example code
+        run: pnpm --dir examples/react-todo knip
+
+      - name: Test React example
+        run: pnpm --dir examples/react-todo test
+
       - name: Typecheck folder tree example
         run: pnpm --dir examples/file-tree check
 
