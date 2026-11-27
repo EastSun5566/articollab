@@ -498,6 +498,7 @@ type CollectionCount = Expect<Equal<ReturnType<typeof useCollection<Shape, "coun
 type Undo = Expect<Equal<ReturnType<typeof useUndoState>, UndoState>>;
 // @ts-expect-error Only Text paths have a delta.
 void useTextDelta(createClient(Board, { clientId: "t", onBatch() {} }), "items");
+type ServerStoreClose = Expect<Equal<ReturnType<ServerStore["close"]>, void | Promise<void>>>;
 type FileServerStore = Expect<Equal<Awaited<ReturnType<typeof openFileServerStore>>, ServerStore>>;
 type PostgresStore = Expect<Equal<Awaited<ReturnType<typeof openPostgresServerStore>>, ServerStore>>;
 type Opened = Expect<Equal<Awaited<ReturnType<typeof openServer<Shape>>>, PersistedServer<Shape>>>;

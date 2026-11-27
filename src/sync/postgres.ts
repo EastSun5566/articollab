@@ -55,8 +55,9 @@ function textColumn(rows: readonly unknown[], index: number, name: string): stri
  * in one transaction.
  *
  * An advisory lock, held until `close()`, keeps a second store of the same document, on any
- * connection to the database, from opening: it throws `CheckpointLockedError`. The caller owns the
- * connection; `close()` releases the lock but does not end it.
+ * connection to the database, from opening: it throws `CheckpointLockedError`. Await `close()`
+ * before opening the store again on another connection. The caller owns the connection and should
+ * discard it if unlocking fails.
  */
 export async function openPostgresServerStore(options: PostgresServerStoreOptions): Promise<ServerStore> {
   const { client, document, table = "articollab" } = options;
@@ -91,10 +92,10 @@ export async function openPostgresServerStore(options: PostgresServerStoreOption
 
   /** The position of the next entry, once known. */
   let next: number | undefined;
-  let closed = false;
+  let closing: Promise<void> | undefined;
   let queue: Promise<unknown> = Promise.resolve();
   function serialized<T>(work: () => Promise<T>): Promise<T> {
-    if (closed) return Promise.reject(new Error("Checkpoint store is closed"));
+    if (closing !== undefined) return Promise.reject(new Error("Checkpoint store is closed"));
     const result = queue.then(work);
     queue = result.catch(() => {});
     return result;
@@ -141,12 +142,20 @@ export async function openPostgresServerStore(options: PostgresServerStoreOption
       next = 0;
     }),
     close() {
-      if (closed) return;
-      closed = true;
-      const released: Promise<void> = queue.then(() => client.query("SELECT pg_advisory_unlock($1, $2)", key))
-        .then(() => {}, () => {})
-        .finally(() => { if (documents.get(name) === released) documents.delete(name); });
-      documents.set(name, released);
+      if (closing !== undefined) return closing;
+      closing = queue.then(async () => {
+        try {
+          const { rows } = await client.query("SELECT pg_advisory_unlock($1, $2) AS unlocked", key);
+          if (column(rows, 0, "unlocked") !== true) throw new Error(`Postgres did not release the server store lock: ${table} ${document}`);
+        } catch (error) {
+          // A failed query may leave this session holding the lock.
+          documents.set(name, true);
+          throw error;
+        }
+        documents.delete(name);
+      });
+      documents.set(name, closing);
+      return closing;
     },
   };
 }
