@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it, type TestContext } from "node:test";
 import { Window } from "happy-dom";
-import { act, createElement, StrictMode, type ReactNode } from "react";
+import { act, createElement, StrictMode, useLayoutEffect, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
 import {
@@ -218,6 +218,31 @@ describe("useDocument", () => {
     assert.equal(titles.last, before, "equal titles keep their identity");
     act(() => { doc.state.likes.add(1); });
     assert.equal(done.seen.length, 2);
+  });
+
+  it("keeps a nested result stable between reads, so React never sees an uncached snapshot", (t) => {
+    const doc = network().writer().doc;
+    const errors: unknown[] = [];
+    t.mock.method(console, "error", (...args: unknown[]) => { errors.push(args); });
+    const nested = probe(() => useDocument(doc, (state) => [state.items.toArray().map((todo) => [todo.title])]));
+    render(t, createElement(StrictMode, null, createElement(nested.Probe)));
+    act(() => { doc.state.items.push({ title: "milk", done: false }); });
+    assert.deepEqual(nested.last, [[["milk"]]]);
+    assert.deepEqual(errors, []);
+  });
+
+  it("sees a change made after the first render but before the hooks subscribe", (t) => {
+    const doc = network().writer().doc;
+    const count = probe(() => useDocument(doc, (state) => state.items.length));
+    const items = probe(() => useCollection(doc, "items"));
+    // Layout effects run before useSyncExternalStore subscribes in a passive effect.
+    function Writer() {
+      useLayoutEffect(() => { doc.state.items.push({ title: "early", done: false }); }, []);
+      return null;
+    }
+    render(t, [createElement(count.Probe, { key: 1 }), createElement(items.Probe, { key: 2 }), createElement(Writer, { key: 3 })]);
+    assert.equal(count.last, 1);
+    assert.deepEqual(items.last, [{ title: "early", done: false }]);
   });
 
   it("uses isEqual to decide", (t) => {

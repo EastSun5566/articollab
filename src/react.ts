@@ -207,9 +207,12 @@ export function useTextBlocks<S extends SchemaShape, K extends TextAt<S>>(
   return useSource(source) as readonly TextBlock<BlocksOf<S[K]>>[];
 }
 
-/** A counter of the document's visible changes; while unsubscribed, every read counts as a change. */
-function versionSource(doc: ClientDocument<SchemaShape>): Source<number> & { current(): number } {
-  return shared(doc, "version", (): Source<number> & { current(): number } => {
+/**
+ * A counter of the document's visible changes. It cannot hear changes while nobody is subscribed,
+ * so starting a subscription counts as a change too: React reads again right after subscribing.
+ */
+function versionSource(doc: ClientDocument<SchemaShape>): Source<number> {
+  return shared(doc, "version", (): Source<number> => {
     const listeners = new Set<() => void>();
     let stop: (() => void) | undefined;
     let version = 0;
@@ -226,7 +229,6 @@ function versionSource(doc: ClientDocument<SchemaShape>): Source<number> & { cur
         };
       },
       getSnapshot: () => version,
-      current: () => (stop === undefined ? ++version : version),
     };
   });
 }
@@ -244,7 +246,7 @@ export function useDocument<S extends SchemaShape, R>(
   const source = versionSource(wide(doc));
   const memo = useRef<{ doc: object; version: number; selector: unknown; value: R } | undefined>(undefined);
   const getSnapshot = (): R => {
-    const version = source.current();
+    const version = source.getSnapshot();
     const previous = memo.current;
     if (previous !== undefined && previous.doc === doc && previous.version === version && previous.selector === selector) return previous.value;
     const next = selector(doc.state);
