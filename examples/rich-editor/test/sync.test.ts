@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { toggleMark } from "prosemirror-commands";
 import { wrapInList } from "prosemirror-schema-list";
 import { TextSelection } from "prosemirror-state";
-import { connectSync, createWebSocketTransport } from "../../../dist/sync/index.js";
+import { connectSync, createWebSocketTransport } from "articollab/sync";
 import { selectionSchema } from "../../shared/presence.js";
 import { createRichTextBinding } from "../binding.js";
 import { editorSchema, Note } from "../schema.js";

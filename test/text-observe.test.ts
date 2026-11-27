@@ -6,8 +6,8 @@ import {
   defineDocument, list, text, value,
   type ClientBatch, type ClientDocument, type DocumentOperation, type ServerCommit,
   type Text, type TextChangeEvent,
-} from "../src/index.ts";
-import { RuntimeText, TextState } from "../src/text.ts";
+} from "../packages/articollab/src/index.ts";
+import { RuntimeText, TextState } from "../packages/articollab/src/text.ts";
 
 const Board = defineDocument({ body: text(), other: text(), count: value(0), items: list<string>() });
 type Shape = typeof Board.definition;

@@ -10,7 +10,7 @@ import {
   decodeServerCheckpoint,
   type ClientCheckpoint,
   type ServerCheckpoint,
-} from "../../src/index.ts";
+} from "../../packages/articollab/src/index.ts";
 import { createAsyncExampleNetwork } from "./async-resume.ts";
 import { Board } from "./resume.ts";
 

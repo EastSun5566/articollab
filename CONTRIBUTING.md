@@ -11,7 +11,7 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-Build before anything that loads `dist`: the examples, browser tests and the docs check.
+Run the install once at the root. The library and all five example projects share the root lockfile. Build before running examples, browser tests or the docs check. The build writes to `packages/articollab/dist` and copies the root README and LICENSE into the package for packing.
 
 ## Check your changes
 
@@ -32,17 +32,15 @@ git diff --check
 - Lint warnings, unused lint exceptions and Knip findings all fail. Keep any lint exception next to the line it covers, with a reason.
 - Knip also checks exports. Public entrypoint exports are API even if nothing in the repository calls them.
 
-Each example is its own project and has its own checks. CI runs them after building the library:
+Each example has its own typecheck, lint and tests. CI runs these after building the library:
 
 ```sh
-pnpm --dir examples/text-editor install --frozen-lockfile --ignore-scripts
 pnpm --dir examples/text-editor check
 pnpm --dir examples/text-editor lint
-pnpm --dir examples/text-editor knip
 pnpm --dir examples/text-editor test
 ```
 
-Run the same install and four checks for `examples/rich-editor`, and the four checks for `examples/kanban`, `examples/react-todo` and `examples/file-tree` (they need no install).
+Run the same three checks for `examples/rich-editor`, `examples/kanban`, `examples/react-todo` and `examples/file-tree`. Root `pnpm knip` checks all workspaces.
 
 The Rich Text browser test also runs in CI. To run it locally after building and installing the example dependencies:
 
@@ -105,9 +103,9 @@ Add `--smoke` for a quick run with tiny fixtures, or `--json` (with `pnpm --sile
 
 ## Maintain the vendored map and reconciliation shortcuts
 
-`src/vendor/hamt.ts` is a typed subset of [hamt_plus](https://github.com/mattbierner/hamt_plus) at `b8845c7343fdde3966f875d732248fec597cf538`. Keep its source revision, adaptations and MIT notice. When you update it, run `hamt.test.ts` and compare benchmarks, including heap.
+[`hamt.ts`](packages/articollab/src/vendor/hamt.ts) is a typed subset of [hamt_plus](https://github.com/mattbierner/hamt_plus) at `b8845c7343fdde3966f875d732248fec597cf538`. Keep its source revision, adaptations and MIT notice. When you update it, run `hamt.test.ts` and compare benchmarks, including heap.
 
-`receive()` skips full comparisons in a few safe cases; each is commented in `src/runtime.ts`. They rely on these facts:
+`receive()` skips full comparisons in a few safe cases; each is commented in [`runtime.ts`](packages/articollab/src/runtime.ts). They rely on these facts:
 
 - Replay records fixed IDs, deletes keep tombstones, and nothing undeletes or replays an intent.
 - With no replay conflict on either side, only the commit's target IDs can change what is visible.
@@ -137,7 +135,7 @@ Approve workflow runs from forks only after reviewing them. For the docs site, s
    pnpm release --release-as <version> --skip.commit --skip.tag
    ```
 
-   The generated CHANGELOG lists only commits marked as breaking (`!` or `BREAKING CHANGE:`) under BREAKING CHANGES. Add any other breaking change by hand, and fix entries whose wording is out of date. Drop fixes to features that are new in this release: users of the previous release never had those bugs.
+   The version lives in `packages/articollab/package.json`. The tool writes that manifest and the root CHANGELOG. The generated CHANGELOG lists only commits marked as breaking (`!` or `BREAKING CHANGE:`) under BREAKING CHANGES. Add any other breaking change by hand, and fix entries whose wording is out of date. Drop fixes to features that are new in this release: users of the previous release never had those bugs.
 4. **Commit and tag, signed.**
 
    ```sh

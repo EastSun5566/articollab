@@ -3,11 +3,11 @@ import { describe, it, type TestContext } from "node:test";
 
 import {
   createServer, decodeClientBatch, defineDocument, list, value, type ClientBatch, type CreateServerOptions,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 import {
   connectSync, createHttpTransport, SyncRequestError,
   type SyncClient, type SyncPushState, type SyncSubscription, type SyncTransport,
-} from "../src/sync/index.ts";
+} from "../packages/articollab/src/sync/index.ts";
 
 const Board = defineDocument({ items: list<string>(), count: value(0) });
 type Shape = typeof Board.definition;

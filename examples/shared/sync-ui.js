@@ -2,8 +2,8 @@
 // Browser helpers shared by the live examples. Types only: importing this module loads no runtime code.
 
 /** What a writer's status badge says, from its sync status and push channel.
- * @param {import("../../dist/sync/index.js").SyncStatus} status
- * @param {import("../../dist/sync/index.js").SyncPushState} push
+ * @param {import("articollab/sync").SyncStatus} status
+ * @param {import("articollab/sync").SyncPushState} push
  * @param {boolean} offline
  */
 export function describeSync(status, push, offline) {

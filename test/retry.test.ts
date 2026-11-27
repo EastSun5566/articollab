@@ -14,7 +14,7 @@ import {
   type DocumentOperation,
   type JsonValue,
   type ServerReceipt,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Board = defineDocument({
   count: valueSchema(0),

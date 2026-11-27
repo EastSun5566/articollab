@@ -120,7 +120,7 @@ export function editorEdits(mirror, transaction) {
 
 /** Each event uses one pre-event coordinate space, in descending element order.
  * @param {TextMirror} mirror
- * @param {import("../../dist/index.js").TextChangeEvent} event
+ * @param {import("articollab").TextChangeEvent} event
  */
 export function textEdits(mirror, event) {
   if (mirror.length !== event.beforeLength) throw new Error("Text observer baseline differs");

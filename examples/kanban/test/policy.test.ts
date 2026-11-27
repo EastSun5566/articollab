@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { counterMap, createClient, createUndoManager, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, map, PayloadValidationError, type DocumentOperation, type ServerCommit, type ServerDocument } from "../../../dist/index.js";
+import { counterMap, createClient, createUndoManager, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, map, PayloadValidationError, type DocumentOperation, type ServerCommit, type ServerDocument } from "articollab";
 import {
   addCard, Board, cardsIn, COLUMNS, deleteCard, describeDropped, findCard, moveCard, onDroppedEdits, renameCard, voteCard, type Shape,
 } from "../board.js";

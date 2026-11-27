@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createClient, type ClientBatch, type DocumentOperation } from "../../../dist/index.js";
+import { createClient, type ClientBatch, type DocumentOperation } from "articollab";
 import {
   addCard, Board, cardsIn, COLUMNS, createSelection, deleteCard, findCard, MAX_TITLE_LENGTH, moveCard, normalizeTitle,
   renameCard, type Shape,

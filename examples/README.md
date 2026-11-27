@@ -67,7 +67,6 @@ The server policy is in [`policy.ts`](kanban/policy.ts) and the board helpers in
 ## Text editor
 
 ```sh
-pnpm --dir examples/text-editor install --frozen-lockfile
 pnpm --dir examples/text-editor start
 ```
 
@@ -84,7 +83,6 @@ Two CodeMirror editors share one Text, each writer over one [WebSocket](../docs/
 ## Rich text editor
 
 ```sh
-pnpm --dir examples/rich-editor install --frozen-lockfile
 pnpm --dir examples/rich-editor start
 ```
 

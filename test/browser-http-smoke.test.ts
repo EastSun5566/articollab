@@ -1,4 +1,4 @@
-import { decodeSnapshot } from "../src/index.ts";
+import { decodeSnapshot } from "../packages/articollab/src/index.ts";
 import { Board } from "./fixtures/resume.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -105,7 +105,7 @@ describe("browser HTTP smoke example", { timeout: 30_000 }, () => {
       ["/", join(root, "test/fixtures/browser-http-smoke/index.html"), "text/html"],
       ["/browser-http-smoke/smoke.js", join(root, "test/fixtures/browser-http-smoke/smoke.js"), "text/javascript"],
       ["/http-sync-controller.js", join(root, "test/fixtures/http-sync-controller.js"), "text/javascript"],
-      ["/dist/index.js", join(root, "dist/index.js"), "text/javascript"],
+      ["/dist/index.js", join(root, "packages/articollab/dist/index.js"), "text/javascript"],
       ["/vendor/articulated/id_list", join(dirname(articulated), "build/esm/id_list.js"), "text/javascript"],
     ] as const;
     for (const [route, file, mime] of cases) {

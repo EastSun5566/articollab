@@ -6,10 +6,10 @@ import {
   defineDocument, list, text, value,
   type ClientDocument, type DocumentOperation, type SavedIdRange,
   type ServerCommit,
-} from "../src/index.ts";
-import { initialStates, replayPending } from "../src/state.ts";
-import { ListState } from "../src/list.ts";
-import { TextState } from "../src/text.ts";
+} from "../packages/articollab/src/index.ts";
+import { initialStates, replayPending } from "../packages/articollab/src/state.ts";
+import { ListState } from "../packages/articollab/src/list.ts";
+import { TextState } from "../packages/articollab/src/text.ts";
 
 const Board = defineDocument({ count: value(0), items: list<{ label: string } | number | null>(),
   body: text({ marks: { bold: { expand: "after" }, link: { expand: "none" } }, blocks: { heading: {} } }),

@@ -4,14 +4,14 @@ import { describe, it, type TestContext } from "node:test";
 
 import {
   createServer, decodeServerCommit, decodeSnapshot, defineDocument, list, value, type ServerCheckpoint,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 import {
   connectSync, createHttpTransport, createSyncHandler, SyncRequestError,
   type SyncAction, type SyncHandlerOptions,
-} from "../src/sync/index.ts";
+} from "../packages/articollab/src/sync/index.ts";
 import { runSyncAdapterDemo, serveFetch } from "../examples/sync-adapter.ts";
 import { toNodeListener } from "../examples/shared/fetch-bridge.ts";
-import { readServerSentEvents, type ServerSentEvent } from "../src/sync/sse.ts";
+import { readServerSentEvents, type ServerSentEvent } from "../packages/articollab/src/sync/sse.ts";
 
 const Board = defineDocument({ items: list<string>(), count: value(0) });
 type Shape = typeof Board.definition;

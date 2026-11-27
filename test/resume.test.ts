@@ -11,7 +11,7 @@ import {
   type ClientCheckpoint,
   type ClientDocument,
   type DocumentOperation,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 type Shape = typeof Board.definition;
 type Batch = ClientBatch<DocumentOperation<Shape>>;

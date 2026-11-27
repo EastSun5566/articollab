@@ -1,7 +1,7 @@
 // @ts-check
 import { createElement } from "react";
-import { createUndoManager } from "../../dist/index.js";
-import { connectSync, createHttpTransport } from "../../dist/sync/index.js";
+import { createUndoManager } from "articollab";
+import { connectSync, createHttpTransport } from "articollab/sync";
 import { createOfflineSwitch } from "../shared/sync-ui.js";
 import { App } from "./app.js";
 import { editingSchema, Todos } from "./schema.js";

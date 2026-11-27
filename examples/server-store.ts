@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { defineDocument, list } from "../src/index.ts";
-import { connectSync, createHttpTransport, createSyncHandler, openServer, type SyncHandler } from "../src/sync/index.ts";
-import { openFileServerStore } from "../src/sync/node.ts";
+import { defineDocument, list } from "articollab";
+import { connectSync, createHttpTransport, createSyncHandler, openServer, type SyncHandler } from "articollab/sync";
+import { openFileServerStore } from "articollab/sync/node";
 import { serveFetch } from "./sync-adapter.ts";
 
 const Board = defineDocument({ items: list<string>() });

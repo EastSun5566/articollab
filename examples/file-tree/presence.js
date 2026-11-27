@@ -4,7 +4,7 @@
 
 /**
  * Checked by the host and by every writer, so a malformed selection is refused and skipped.
- * @type {import("../../dist/index.js").StandardSchemaV1<Selection>}
+ * @type {import("articollab").StandardSchemaV1<Selection>}
  */
 export const selectionSchema = {
   "~standard": {

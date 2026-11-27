@@ -1,6 +1,6 @@
 // @ts-check
 // IndexedDB checkpoints for the browser examples: one store key per document and writer label.
-import { CheckpointLockedError, openIndexedDbStore } from "../../dist/sync/index.js";
+import { CheckpointLockedError, openIndexedDbStore } from "articollab/sync";
 
 /** The server's document identity. Stored checkpoints are keyed by it, so a restarted server starts fresh.
  * @param {string} url */

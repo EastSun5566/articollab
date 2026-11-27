@@ -1,9 +1,9 @@
 // @ts-check
-import { defineDocument, text } from "../../dist/index.js";
+import { defineDocument, text } from "articollab";
 
 /** A tiny Standard Schema, so the example needs no validation library.
- * @template {import("../../dist/index.js").JsonValue} T @param {readonly T[]} allowed
- * @returns {import("../../dist/index.js").PayloadSchema<T>} */
+ * @template {import("articollab").JsonValue} T @param {readonly T[]} allowed
+ * @returns {import("articollab").PayloadSchema<T>} */
 function oneOf(allowed) {
   return { "~standard": { version: 1, vendor: "example", validate: (value) =>
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Checked against the allowed values first.
@@ -21,7 +21,7 @@ export const Note = defineDocument({
   }),
 });
 
-/** @typedef {import("../../dist/index.js").DocumentOperation<typeof Note.definition>} NoteOperation */
+/** @typedef {import("articollab").DocumentOperation<typeof Note.definition>} NoteOperation */
 
 /**
  * The server's formatting policy: links must use http: or https:. Any writer can send any mark,

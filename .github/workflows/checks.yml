@@ -49,27 +49,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: pnpm check
-
       - name: Test
         run: pnpm test
         env:
           ARTICOLLAB_POSTGRES_URL: postgresql://postgres:articollab@localhost:5432/postgres
 
-      - name: Build
-        run: pnpm build
+      - name: Typecheck
+        run: pnpm check
 
-      # Browser JS imports the built entrypoint; type-aware lint needs its declarations.
-      # Run root checks before installing example dependencies, matching a fresh checkout.
+      # The test command builds the package before checks that resolve its declarations.
       - name: Lint
         run: pnpm lint
 
       - name: Check unused code and dependencies
         run: pnpm knip
-
-      - name: Install text editor example dependencies
-        run: pnpm --dir examples/text-editor install --frozen-lockfile --ignore-scripts
 
       - name: Typecheck text editor example
         run: pnpm --dir examples/text-editor check
@@ -77,23 +70,14 @@ jobs:
       - name: Lint text editor example
         run: pnpm --dir examples/text-editor lint
 
-      - name: Check unused text editor code and dependencies
-        run: pnpm --dir examples/text-editor knip
-
       - name: Test text editor example
         run: pnpm --dir examples/text-editor test
-
-      - name: Install rich text example dependencies
-        run: pnpm --dir examples/rich-editor install --frozen-lockfile --ignore-scripts
 
       - name: Typecheck rich text example
         run: pnpm --dir examples/rich-editor check
 
       - name: Lint rich text example
         run: pnpm --dir examples/rich-editor lint
-
-      - name: Check unused rich text code and dependencies
-        run: pnpm --dir examples/rich-editor knip
 
       - name: Test rich text example
         run: pnpm --dir examples/rich-editor test
@@ -110,9 +94,6 @@ jobs:
       - name: Lint kanban example
         run: pnpm --dir examples/kanban lint
 
-      - name: Check unused kanban code
-        run: pnpm --dir examples/kanban knip
-
       - name: Test kanban example
         run: pnpm --dir examples/kanban test
 
@@ -122,9 +103,6 @@ jobs:
       - name: Lint React example
         run: pnpm --dir examples/react-todo lint
 
-      - name: Check unused React example code
-        run: pnpm --dir examples/react-todo knip
-
       - name: Test React example
         run: pnpm --dir examples/react-todo test
 
@@ -133,9 +111,6 @@ jobs:
 
       - name: Lint folder tree example
         run: pnpm --dir examples/file-tree lint
-
-      - name: Check unused folder tree code
-        run: pnpm --dir examples/file-tree knip
 
       - name: Test folder tree example
         run: pnpm --dir examples/file-tree test
@@ -187,11 +162,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: pnpm check
-
       - name: Test
         run: pnpm test
+
+      - name: Typecheck
+        run: pnpm check
 
       - name: Test installed package consumer
         run: pnpm test:package

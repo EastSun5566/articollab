@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { HamtMap } from "../src/vendor/hamt.ts";
+import { HamtMap } from "../packages/articollab/src/vendor/hamt.ts";
 
 describe("vendored HAMT", () => {
   it("handles equal-hash keys and collision collapse without changing older versions", () => {

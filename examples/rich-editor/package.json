@@ -2,20 +2,19 @@
   "name": "articollab-rich-editor-example",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@12.15.0",
   "engines": {
     "node": ">=24.0.0"
   },
   "scripts": {
     "start": "node server.ts",
-    "check": "../../node_modules/.bin/tsc -p tsconfig.json",
-    "lint": "../../node_modules/.bin/oxlint --deny-warnings --report-unused-disable-directives",
-    "knip": "../../node_modules/.bin/knip --no-progress --treat-config-hints-as-errors",
+    "check": "tsc -p tsconfig.json",
+    "lint": "oxlint --deny-warnings --report-unused-disable-directives",
     "test": "node --unhandled-rejections=strict --test --test-concurrency=2 test/*.test.ts",
     "install:browser": "playwright install --only-shell chromium",
     "test:browser": "node --unhandled-rejections=strict --test test/browser/ime.test.ts"
   },
   "dependencies": {
+    "articollab": "workspace:*",
     "prosemirror-commands": "^1.7.2",
     "prosemirror-keymap": "^1.2.3",
     "prosemirror-model": "^1.25.13",

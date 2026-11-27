@@ -5,7 +5,7 @@ import {
   assertClientBatchNamespace, createClient, createServer, decodeClientBatch,
   decodeClientCheckpoint, decodeServerCheckpoint, defineDocument, list, text, value,
   type ClientBatch, type DocumentOperation,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Board = defineDocument({ count: value(0), items: list<string>(), body: text() });
 type Batch = ClientBatch<DocumentOperation<typeof Board.definition>>;

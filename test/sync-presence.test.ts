@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it, type TestContext } from "node:test";
 
-import { createServer, defineDocument, list, PayloadValidationError, type StandardSchemaV1 } from "../src/index.ts";
+import { createServer, defineDocument, list, PayloadValidationError, type StandardSchemaV1 } from "../packages/articollab/src/index.ts";
 import {
   connectSync, createHttpTransport, createSyncHandler,
   type PresenceSyncClient, type SyncHandlerOptions,
-} from "../src/sync/index.ts";
-import { onClientClosed } from "../src/runtime.ts";
+} from "../packages/articollab/src/sync/index.ts";
+import { onClientClosed } from "../packages/articollab/src/runtime.ts";
 
 const Board = defineDocument({ items: list<string>() });
 type Shape = typeof Board.definition;

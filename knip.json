@@ -1,13 +1,78 @@
 {
   "$schema": "./node_modules/knip/schema.json",
-  "entry": [
-    "src/index.ts",
-    "src/sync/index.ts",
-    "src/sync/node.ts",
-    "src/sync/postgres.ts",
-    "src/react.ts",
-    "test/**/*.test.ts"
-  ],
-  "project": ["**/*.{ts,js}"],
-  "ignore": ["examples/text-editor/**", "examples/rich-editor/**", "examples/kanban/**", "examples/file-tree/**", "examples/shared/*.js"]
+  "workspaces": {
+    ".": {
+      "entry": [
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "test/**/*.{ts,js}",
+        "scripts/**/*.ts",
+        "examples/*.{ts,js}",
+        "examples/shared/*.{ts,js}"
+      ]
+    },
+    "packages/articollab": {
+      "entry": [
+        "src/index.ts",
+        "src/react.ts",
+        "src/sync/index.ts",
+        "src/sync/node.ts",
+        "src/sync/postgres.ts"
+      ],
+      "project": [
+        "src/**/*.ts"
+      ]
+    },
+    "examples/file-tree": {
+      "entry": [
+        "page.js",
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "*.{ts,js}",
+        "test/**/*.ts"
+      ]
+    },
+    "examples/kanban": {
+      "entry": [
+        "page.js",
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "*.{ts,js}",
+        "test/**/*.ts"
+      ]
+    },
+    "examples/react-todo": {
+      "entry": [
+        "page.js",
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "*.{ts,js}",
+        "test/**/*.ts"
+      ]
+    },
+    "examples/rich-editor": {
+      "entry": [
+        "page.js",
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "*.{ts,js}",
+        "test/**/*.ts"
+      ]
+    },
+    "examples/text-editor": {
+      "entry": [
+        "page.js",
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "*.{ts,js}",
+        "test/**/*.ts"
+      ]
+    }
+  }
 }

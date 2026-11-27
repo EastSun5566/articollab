@@ -1,4 +1,4 @@
-import type { DocumentOperation, ServerResolveContext } from "../../dist/index.js";
+import type { DocumentOperation, ServerResolveContext } from "articollab";
 import type { Shape } from "./board.js";
 
 type Operation = DocumentOperation<Shape>;

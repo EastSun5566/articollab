@@ -1,5 +1,5 @@
-import { decodeSnapshot } from "../src/index.ts";
-import { decodeClientBatch } from "../src/index.ts";
+import { decodeSnapshot } from "../packages/articollab/src/index.ts";
+import { decodeClientBatch } from "../packages/articollab/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -8,7 +8,7 @@ import { before as setup, describe, it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { createServer, type ClientCheckpoint, type ClientDocument, type CreateServerOptions } from "../src/index.ts";
+import { createServer, type ClientCheckpoint, type ClientDocument, type CreateServerOptions } from "../packages/articollab/src/index.ts";
 import { startBrowserReloadRecoveryServer } from "./fixtures/browser-reload-recovery/server.ts";
 import { startHttpExampleServer } from "./fixtures/http-sync.ts";
 import { Board } from "./fixtures/resume.ts";
@@ -313,7 +313,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
       ["/browser-reload-recovery/recovery.js", "test/fixtures/browser-reload-recovery/recovery.js", "text/javascript"],
       ["/browser-http-smoke/smoke.js", "test/fixtures/browser-http-smoke/smoke.js", "text/javascript"],
       ["/http-sync-controller.js", "test/fixtures/http-sync-controller.js", "text/javascript"],
-      ["/dist/index.js", "dist/index.js", "text/javascript"],
+      ["/dist/index.js", "packages/articollab/dist/index.js", "text/javascript"],
     ] as const) {
       const response = await fetch(http.url + path);
       assert.equal(response.status, 200);

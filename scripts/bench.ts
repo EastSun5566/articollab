@@ -13,7 +13,7 @@ import { brotliCompressSync, brotliDecompressSync, constants, gunzipSync, gzipSy
 import type {
   ClientBatch, ClientDocument, DocumentOperation, DocumentSnapshot, ServerCommit,
   ListChangeEvent, ListSchema, TextSchema, ValueSchema,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const filename = fileURLToPath(import.meta.url);
@@ -38,7 +38,7 @@ type Scenario = typeof scenarios[number] | typeof objectScenarios[number] | Reco
 type Shape = { count: ValueSchema<number>; items: ListSchema<string>; body: TextSchema };
 type Doc = ClientDocument<Shape>;
 type Batch = ClientBatch<DocumentOperation<Shape>>;
-type Api = typeof import("../src/index.ts");
+type Api = typeof import("../packages/articollab/src/index.ts");
 
 interface Result {
   kind: Kind;
@@ -1008,7 +1008,7 @@ async function worker(kind: Kind, size: number, scenario: Scenario, smoke: boole
 }
 
 async function metadata() {
-  const manifest: unknown = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  const manifest: unknown = JSON.parse(await readFile(join(root, "packages/articollab/package.json"), "utf8"));
   const dependency: unknown = JSON.parse(await readFile(join(root, "node_modules/articulated/package.json"), "utf8"));
   assert.ok(typeof manifest === "object" && manifest !== null && "version" in manifest && typeof manifest.version === "string");
   assert.ok(typeof dependency === "object" && dependency !== null && "version" in dependency && typeof dependency.version === "string");

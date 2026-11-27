@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildDoc, flattenDoc, positions, textLines, type Line } from "../flat.js";
 import { editorSchema } from "../schema.js";
-import { createClient, createServer } from "../../../dist/index.js";
+import { createClient, createServer } from "articollab";
 import { Note } from "../schema.js";
 
 const line = (text: string, attributes: Line["attributes"] = {}, marks: Line["runs"][number]["marks"] = {}): Line =>

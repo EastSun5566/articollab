@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it, mock } from "node:test";
 import { EditorSelection, type TransactionSpec } from "@codemirror/state";
 import { createClient, createServer, defineDocument, text, value, type ClientBatch,
-  type DocumentOperation } from "../../../dist/index.js";
+  type DocumentOperation } from "articollab";
 import { blockLines, createTextBinding, formatRanges, remoteRanges } from "../binding.js";
 import { Note as RichNote } from "../schema.js";
 import { createMirror, editorOffset, elementIndexAt, textEdits } from "../changes.js";

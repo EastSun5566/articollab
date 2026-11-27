@@ -17,7 +17,7 @@ import {
   type DocumentOperation,
   type PayloadSchema,
   type TextChangeEvent,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Href: PayloadSchema<string> = {
   "~standard": {

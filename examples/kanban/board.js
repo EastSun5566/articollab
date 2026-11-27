@@ -1,6 +1,6 @@
 // @ts-check
 // Shared by the page, the server and the tests: no DOM and no network.
-import { counterMap, defineDocument, list, map } from "../../dist/index.js";
+import { counterMap, defineDocument, list, map } from "articollab";
 
 /** A card as the page shows it: its ID, which never changes, and its title. @typedef {{ id: string, title: string }} Card */
 
@@ -11,9 +11,9 @@ export const MAX_TITLE_LENGTH = 200;
 
 /**
  * A hand-written Standard Schema; Zod, Valibot or ArkType schemas work the same way.
- * @template {import("../../dist/index.js").JsonValue} T
+ * @template {import("articollab").JsonValue} T
  * @param {(input: unknown) => input is T} accepts @param {string} message
- * @returns {import("../../dist/index.js").StandardSchemaV1<T>}
+ * @returns {import("articollab").StandardSchemaV1<T>}
  */
 function standardSchema(accepts, message) {
   return { "~standard": { version: 1, vendor: "articollab-kanban",
@@ -46,7 +46,7 @@ export const Board = defineDocument({
   votes: counterMap(),
 });
 /** @typedef {typeof Board.definition} Shape */
-/** @typedef {import("../../dist/index.js").ClientDocument<Shape>} BoardDocument */
+/** @typedef {import("articollab").ClientDocument<Shape>} BoardDocument */
 
 /** @param {string} title */
 export function normalizeTitle(title) {
@@ -158,7 +158,7 @@ export function moveCard(doc, cardId, toColumn, toIndex) {
  * What to tell this writer about its edits the server did not apply because another writer deleted
  * the card first: a `transform` event's `dropped` or a `discard` event's `operations`. One message
  * per card and kind, in batch order.
- * @param {readonly import("../../dist/index.js").DocumentOperation<Shape>[]} operations
+ * @param {readonly import("articollab").DocumentOperation<Shape>[]} operations
  * @returns {string[]}
  */
 export function describeDropped(operations) {
@@ -187,7 +187,7 @@ export function onDroppedEdits(doc, listener) {
   let commit = -1;
   /** @type {Set<string>} */
   let told = new Set();
-  /** @param {number} serverSeq @param {readonly import("../../dist/index.js").DocumentOperation<Shape>[]} operations */
+  /** @param {number} serverSeq @param {readonly import("articollab").DocumentOperation<Shape>[]} operations */
   const tell = (serverSeq, operations) => {
     if (serverSeq !== commit) { commit = serverSeq; told = new Set(); }
     for (const message of describeDropped(operations)) {
@@ -208,7 +208,7 @@ export function onDroppedEdits(doc, listener) {
  * @param {BoardDocument} doc
  */
 export function createSelection(doc) {
-  /** @type {{cardId: string, column: Column, cursor: import("../../dist/index.js").Cursor} | undefined} */
+  /** @type {{cardId: string, column: Column, cursor: import("articollab").Cursor} | undefined} */
   let selected;
   /** @param {string} cardId */
   function remember(cardId) {

@@ -5,8 +5,8 @@ import {
   createClient, createServer, decodeClientBatch, decodeClientCheckpoint, decodeServerCheckpoint, decodeServerCommit,
   decodeSnapshot, defineDocument, list, map, value, WireDecodeError,
   type ClientBatch, type ClientDocument, type DocumentOperation, type ServerCommit,
-} from "../src/index.ts";
-import { connectSync, createHttpTransport, createSyncHandler } from "../src/sync/index.ts";
+} from "../packages/articollab/src/index.ts";
+import { connectSync, createHttpTransport, createSyncHandler } from "../packages/articollab/src/sync/index.ts";
 
 const Settings = defineDocument({ fields: map<string | number>(), items: list<string>(), title: value("") });
 type Shape = typeof Settings.definition;

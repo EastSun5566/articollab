@@ -25,7 +25,7 @@ it("bounds registry reads without retrying publication or hiding errors", async 
         process: { env: { NPM_DIST_TAG: "beta", TARBALL_INTEGRITY: integrity } },
         console: { log() {} },
         readFileSync(path: string, encoding: string) {
-          assert.equal(path, "package.json");
+          assert.equal(path, "packages/articollab/package.json");
           assert.equal(encoding, "utf8");
           return JSON.stringify({ name: "articollab", version });
         },

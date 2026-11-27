@@ -1,16 +1,16 @@
 // @ts-check
 import { createElement as h, useState } from "react";
-import { useCollection, useDocument, usePeers, useSyncStatus, useUndoState } from "../../dist/react.js";
+import { useCollection, useDocument, usePeers, useSyncStatus, useUndoState } from "articollab/react";
 import { describeSync } from "../shared/sync-ui.js";
 
 /** @typedef {import("./schema.js").Shape} Shape */
 /** @typedef {import("./schema.js").Todo} Todo */
 /** @typedef {import("./schema.js").Editing} Editing */
-/** @typedef {import("../../dist/sync/index.js").PresenceSyncClient<Shape, Editing>} Sync */
+/** @typedef {import("articollab/sync").PresenceSyncClient<Shape, Editing>} Sync */
 
 /**
  * One writer: a sync client with presence, its undo manager, and a network switch to go offline.
- * @typedef {{ readonly label: string, readonly sync: Sync, readonly history: import("../../dist/index.js").UndoManager,
+ * @typedef {{ readonly label: string, readonly sync: Sync, readonly history: import("articollab").UndoManager,
  *   readonly network: { readonly offline: boolean, set(offline: boolean): void } }} Writer
  */
 
@@ -28,7 +28,7 @@ function attempt(report, edit) {
 /**
  * A button's edit is its own undo step, even right after another one. Typing still merges into one
  * step while the keys come faster than the undo manager's captureTimeout.
- * @param {import("../../dist/index.js").UndoManager} history @param {(message: string) => void} report @param {() => void} edit
+ * @param {import("articollab").UndoManager} history @param {(message: string) => void} report @param {() => void} edit
  */
 function action(history, report, edit) {
   history.stopCapturing();
@@ -37,7 +37,7 @@ function action(history, report, edit) {
 }
 
 /** One item: a checkbox, its title and who else is editing it.
- * @param {{ sync: Sync, history: import("../../dist/index.js").UndoManager, item: Todo, editors: readonly string[],
+ * @param {{ sync: Sync, history: import("articollab").UndoManager, item: Todo, editors: readonly string[],
  *   report: (message: string) => void }} props */
 function Item({ sync, history, item, editors, report }) {
   const items = sync.doc.state.items;

@@ -5,11 +5,11 @@ import type { AddressInfo } from "node:net";
 import { describe, it, type TestContext } from "node:test";
 import { WebSocketServer, type RawData } from "ws";
 
-import { createServer, defineDocument, list, PayloadValidationError, type StandardSchemaV1 } from "../src/index.ts";
+import { createServer, defineDocument, list, PayloadValidationError, type StandardSchemaV1 } from "../packages/articollab/src/index.ts";
 import {
   connectSync, createHttpTransport, createSyncHandler, createWebSocketTransport, SyncRequestError,
   type PresenceSyncClient, type SyncConnection, type SyncHandler, type SyncHandlerOptions, type SyncSocket,
-} from "../src/sync/index.ts";
+} from "../packages/articollab/src/sync/index.ts";
 
 const Board = defineDocument({ items: list<string>() });
 type Shape = typeof Board.definition;

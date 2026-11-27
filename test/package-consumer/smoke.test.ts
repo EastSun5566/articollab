@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, sep } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 const execute = promisify(execFile);
 const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL("../../", import.meta.url));
+const library = join(root, "packages/articollab");
 const env = { ...process.env };
 delete env.NODE_PATH;
 delete env.NODE_OPTIONS;
@@ -827,9 +828,8 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
 
   before(async () => {
     consumer = await mkdtemp(join(tmpdir(), "articollab-consumer-"));
-    const compiler = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
-    await run(process.execPath, [compiler, "-p", "tsconfig.build.json"], root);
-    const result = await pnpm(["pack", "--json", "--pack-destination", consumer], root);
+    await pnpm(["build"], root);
+    const result = await pnpm(["pack", "--json", "--pack-destination", consumer], library);
     const pack = record(JSON.parse(result.stdout));
     assert.ok(typeof pack.filename === "string" && Array.isArray(pack.files));
     packed = { filename: pack.filename, files: pack.files.map((entry: unknown) => {
@@ -864,7 +864,7 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
         /^dist\/.*\.(js|js\.map|d\.ts|d\.ts\.map)$/.test(path), path);
       assert.doesNotMatch(path, /(^|\/)(src|test|tests|examples|node_modules)\//);
     }
-    const original = await json(join(root, "package.json"));
+    const original = await json(join(library, "package.json"));
     assert.ok(typeof original.version === "string");
     const installedRoot = join(consumer, "node_modules/articollab");
     const installed = await json(join(installedRoot, "package.json"));
@@ -872,7 +872,7 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
       assert.ok(paths.includes(path), path);
     }
     const vendor = await readFile(join(installedRoot, "dist/vendor/hamt.js"), "utf8");
-    const source = await readFile(join(root, "src/vendor/hamt.ts"), "utf8");
+    const source = await readFile(join(library, "src/vendor/hamt.ts"), "utf8");
     const notice = source.match(/^\/\*![\s\S]*?\*\//)?.[0];
     assert.ok(notice !== undefined);
     assert.ok(vendor.includes(notice), "The complete vendor notice must survive packing");

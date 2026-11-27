@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   createClient, createUndoManager, PayloadValidationError, type DocumentOperation, type ServerCommit, type ServerDocument,
-} from "../../../dist/index.js";
+} from "articollab";
 import { createTreeServer } from "../server.ts";
 import {
   childrenOf, createNode, deleteNode, describeTransform, moveNode, normalizeName, pathOf, renameNode, ROOT, Tree, uniqueName,

@@ -1,7 +1,7 @@
 // @ts-check
 import { Mark } from "prosemirror-model";
 
-/** @typedef {import("../../dist/index.js").JsonValue} JsonValue */
+/** @typedef {import("articollab").JsonValue} JsonValue */
 /** @typedef {Readonly<Record<string, JsonValue>>} Attributes */
 /** A run of equally marked text in one line. @typedef {{ readonly text: string, readonly marks: Attributes }} Run */
 /** One paragraph of the Text: its text as runs, and its paragraph attributes.

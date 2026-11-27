@@ -1,11 +1,11 @@
-import { decodeClientBatch } from "../src/index.ts";
+import { decodeClientBatch } from "../packages/articollab/src/index.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { before as setup, describe, it, type TestContext } from "node:test";
 
-import { createServer, type ClientCheckpoint, type ClientDocument } from "../src/index.ts";
+import { createServer, type ClientCheckpoint, type ClientDocument } from "../packages/articollab/src/index.ts";
 import { startBrowserReloadRecoveryServer } from "./fixtures/browser-reload-recovery/server.ts";
 import { startHttpExampleServer } from "./fixtures/http-sync.ts";
 import { createCheckpointStore } from "./fixtures/persistent-resume.ts";

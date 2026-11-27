@@ -1,4 +1,4 @@
-import type { ServerResolveContext } from "../../dist/index.js";
+import type { ServerResolveContext } from "articollab";
 import { isWithin, ROOT, uniqueName, type Shape, type TreeOperation } from "./tree.js";
 
 /**

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ListState } from "../src/list.ts";
-import type { JsonValue } from "../src/schema.ts";
+import { ListState } from "../packages/articollab/src/list.ts";
+import type { JsonValue } from "../packages/articollab/src/schema.ts";
 
 import {
   assertClientBatchNamespace,
@@ -19,7 +19,7 @@ import {
   type DocumentOperation,
   type DocumentSnapshot,
   type ListInsertOperation,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Board = defineDocument({
   title: value("Draft"),

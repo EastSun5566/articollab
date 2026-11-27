@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import {
   createClient, createServer, decodeClientCheckpoint, decodeServerCommit, defineDocument, list, value,
   type ClientBatch, type ClientDocument, type DiscardEvent, type DocumentOperation, type ServerCommit,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Board = defineDocument({ items: list<string>(), count: value(0) });
 type Shape = typeof Board.definition;

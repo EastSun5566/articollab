@@ -5,7 +5,7 @@ import {
   createClient, createServer, decodeClientCheckpoint, decodeServerCommit, defineDocument, list, map, value,
   type ClientBatch, type ClientDocument, type DocumentOperation, type MapChangeEvent, type MapCollection,
   type ServerCommit,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 type Item = string | { readonly label: string };
 const Board = defineDocument({ fields: map<Item>(), items: list<string>(), count: value(0) });

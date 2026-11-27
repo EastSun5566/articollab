@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { chromium } from "playwright";
-import { createServer } from "../../../../dist/index.js";
+import { createServer } from "articollab";
 import { keepSafeLinks, Note } from "../../schema.js";
 import { startRichEditorServer } from "../../server.ts";
 

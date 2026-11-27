@@ -3,7 +3,7 @@ import { it } from "node:test";
 import {
   createClient, createServer, decodeServerCheckpoint, defineDocument, value,
   WireDecodeError, type ClientBatch, type ServerDocument,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Counter = defineDocument({ count: value(0) });
 function batch(clientId: string, seq = 1): ClientBatch {

@@ -4,8 +4,8 @@ import { describe, it, type TestContext } from "node:test";
 import {
   ClientDocument, createServer, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, value,
   type ClientBatch, type ClientCheckpoint, type CreateServerOptions,
-} from "../src/index.ts";
-import { connectSync, type SyncClient, type SyncStatus, type SyncTransport } from "../src/sync/index.ts";
+} from "../packages/articollab/src/index.ts";
+import { connectSync, type SyncClient, type SyncStatus, type SyncTransport } from "../packages/articollab/src/sync/index.ts";
 
 const Board = defineDocument({ items: list<string>(), count: value(0) });
 type Shape = typeof Board.definition;

@@ -1,5 +1,5 @@
-import { decodeSnapshot } from "../src/index.ts";
-import { decodeClientBatch } from "../src/index.ts";
+import { decodeSnapshot } from "../packages/articollab/src/index.ts";
+import { decodeClientBatch } from "../packages/articollab/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -9,7 +9,7 @@ import { before as setup, describe, it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { createServer, type ClientBatch, type ClientDocument, type DocumentOperation } from "../src/index.ts";
+import { createServer, type ClientBatch, type ClientDocument, type DocumentOperation } from "../packages/articollab/src/index.ts";
 import { startBrowserReloadRecoveryServer } from "./fixtures/browser-reload-recovery/server.ts";
 import { startHttpExampleServer } from "./fixtures/http-sync.ts";
 import { createCheckpointStore } from "./fixtures/persistent-resume.ts";

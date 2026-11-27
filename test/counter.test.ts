@@ -5,7 +5,7 @@ import {
   CollectionConflictError, counter, counterMap, createClient, createServer, createUndoManager, decodeClientBatch, decodeClientCheckpoint,
   decodeServerCommit, decodeSnapshot, defineDocument, value, WireDecodeError,
   type ClientBatch, type ClientDocument, type CounterMapChangeEvent, type DocumentOperation, type ServerCommit,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Board = defineDocument({ likes: counter(), stock: counter(10), votes: counterMap(), title: value("") });
 type Shape = typeof Board.definition;

@@ -5,8 +5,8 @@ import {
   createClient, createServer, decodeClientCheckpoint, decodeCursor, decodeServerCommit,
   defineDocument, list, text, WireDecodeError,
   type ClientBatch, type ClientDocument, type Cursor, type DocumentOperation, type ServerCommit,
-} from "../src/index.ts";
-import type { RuntimeList, SavedIdRange } from "../src/list.ts";
+} from "../packages/articollab/src/index.ts";
+import type { RuntimeList, SavedIdRange } from "../packages/articollab/src/list.ts";
 
 const Board = defineDocument({ items: list<string>(), body: text(), title: text() });
 type Shape = typeof Board.definition;
