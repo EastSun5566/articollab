@@ -1,0 +1,140 @@
+# Recovery
+
+Use a snapshot for a new writer and a checkpoint to resume an existing one. Before resubmitting work, catch up so already-accepted batches are acknowledged first. The [sync adapter](sync.md) follows these rules for you; this page explains them for custom transports.
+
+The snippets use `Board` from [Collections](collections.md) and import factories/decoders from `"articollab"`. `sendLater` is your application's outbound buffer, not a package helper. These are synchronous, in-memory steps; your transport must coordinate catch-up with live delivery.
+
+## Late join: a snapshot
+
+Create a new writer against the current server:
+
+```ts
+const late = createClient(Board, {
+  clientId: server.openClient(),
+  snapshot: server.snapshot(),
+  onBatch: sendLater,
+});
+```
+
+The client immediately sees the snapshot's authoritative state, starts at its watermark, and has no pending work. Its first local batch uses seq 1.
+
+Persist a newly opened session before handing out its ID when recovery matters. Ensure snapshot acquisition and subsequent commit delivery have a gap-free handoff.
+
+## Restore: preserve original pending
+
+Stop the old writer before reconstructing its document. With `savedMessage` containing its client checkpoint:
+
+```ts
+const saved = decodeClientCheckpoint(Board, JSON.parse(savedMessage));
+const restored = createClient(Board, {
+  clientId: saved.clientId,
+  checkpoint: saved,
+  onBatch: sendLater,
+});
+```
+
+Restore preserves identity, pending payloads and allocation progress. It reconstructs the optimistic view and any conflict without sending a batch or emitting change. Do not call `openClient()` again for this writer.
+
+To rebuild the server, use its own saved checkpoint and supply application policy/options again:
+
+```ts
+const server = createServer(Board, {
+  checkpoint: decodeServerCheckpoint(Board, JSON.parse(serverMessage)),
+  resolve,
+});
+```
+
+Here `resolve` is your existing synchronous policy; omit it for accept-only behavior. Restore retains authoritative state, open sessions, allocation progress, retry results and bounded history. A client snapshot is not a server checkpoint.
+
+Use the same schema/document lineage and the original still-open session. Only one writer may use a client ID. Disconnect or reload is not permanent session closure.
+
+### Text snapshot boundaries
+
+Text snapshots preserve each visible element, including surrogate halves inserted separately. One `insert(0, "😀")` creates one element. Separate insertions of `"\ud83d"` and `"\ude00"` create two; although both cases join to the same string, their lengths, IDs and editing indices differ.
+
+Ordinary Text snapshots are `{ idList, value }`, plus `marks` and `blocks` when the Text is formatted. Only when joining would merge separate surrogate elements does saving add `surrogateBoundaries`, an array of UTF-16 offsets in `value`. For the two-half example it is `[1]`. This field is an encoding detail: Text operations and observer notifications still use element indices. Snapshot and checkpoint restore preserve the original IDs, element boundaries and tombstones.
+
+New runtimes accept existing valid snapshots without conversion. Older runtimes reject the new field, so upgrade every reader that may receive an affected snapshot or checkpoint. Batch/commit operations and checkpoint envelopes have not changed; this is not a promise of bidirectional format compatibility.
+
+If an older snapshot already lost the boundaries and its present-ID count no longer matches its text, restore still fails. Do not guess segmentation, discard IDs or clear checkpoints. Preserve the original data and any still-running state or operation records; recovery of such data needs separate investigation, not automatic migration.
+
+## Catch up before resubmitting
+
+With `restored` and its matching `server`:
+
+```ts
+const watermark = restored.checkpoint().snapshot.serverSeq;
+const commits = server.commitsSince(watermark);
+if (commits === null) throw new Error("History gap; preserve checkpoint");
+for (const commit of commits) restored.receive(commit);
+// Re-read pending: catch-up may have acknowledged earlier submissions.
+```
+
+For example, batch 1 may have been accepted before the connection lost its response, while batch 2 was never submitted. Catch-up acknowledges batch 1. Only batch 2 still needs submission.
+
+After catch-up, submit the **current earliest** pending batch, deliver its result in order, then read the checkpoint again. Do not save and resend a stale pending array. Confirm that the submitted batch was acknowledged before choosing the next one; successful submission alone is not confirmation.
+
+A result of `null` means the complete suffix is unavailable. Preserve the checkpoint: replacing pending with a fresh snapshot can lose work. History defaults to 1000 commits, not a byte limit.
+
+## Blocked pending
+
+Inspect a restored or live client's first replay failure:
+
+```ts
+const conflict = restored.replayConflict;
+if (conflict !== null) {
+  console.log(conflict.batch.seq, conflict.operationIndex);
+}
+```
+
+Suppose one pending batch inserted an item and a later batch deletes that item. If the insertion is rejected, the deletion targets an ID that never became authoritative.
+
+The valid server commit still advances the watermark. Visible state contains only the complete replayable batch prefix; the failed batch and later suffix remain pending. Blocked clients can read, checkpoint and receive, but cannot make actual edits. A later commit may make the work replayable again.
+
+## Cancel a range of pending work
+
+Trusted application code can acknowledge abandoned batches with `server.reject(originalBatch)`. This does not undo accepted effects or directly delete pending.
+
+The following function uses the matching in-memory `server` and `restored` client above. It assumes no concurrent submissions or reentrant recovery; listeners may add local work but must not submit it during this function:
+
+```ts
+function cancelPending(): boolean {
+  const limit = restored.checkpoint().lastLocalSeq;
+  const missing = server.commitsSince(
+    restored.checkpoint().snapshot.serverSeq,
+  );
+  if (missing === null) return false;
+  for (const commit of missing) restored.receive(commit);
+
+  while (true) {
+    const batch = restored.checkpoint().pendingBatches[0];
+    if (batch === undefined || batch.seq > limit) return true;
+    const { commit } = server.reject(batch);
+    restored.receive(commit);
+  }
+}
+```
+
+Catch-up first confirms accepted results without undoing them. The loop rereads pending after each acknowledgement and only cancels through the sequence captured at entry. Listener-created higher sequences remain pending and may themselves be blocked. A return value of `true` confirms the chosen range, not that pending is empty.
+
+Other clients still need these commits through normal ordered delivery or catch-up. Runtime/listener errors propagate; completed commits are not rolled back. Authenticate the writer and coordinate cancellation in a real transport.
+
+## Permanently retiring a writer
+
+After stopping the writer and handling pending, call `server.closeClient(saved.clientId)` and persist the server checkpoint.
+
+Closure removes the session and its last retry, releases a `maxClients` slot, and rejects future submissions from that ID. It changes no authoritative state, tombstones or history. Issued IDs are not reused in normal same-lineage restore.
+
+Do not use closure as disconnect, undo or pending recovery.
+
+## Persistence and lineage
+
+Save client pending before sending and server results before delivering. After each successful client receive, save its checkpoint even when the acknowledgement emits no change event. A [server store](sync.md#persist-the-server) saves each server change as it happens and restores the server from the last checkpoint and the changes after it.
+
+A callback failure does not imply runtime rollback. If server saving fails after processing, stop using the advanced in-memory server and reload the last successful checkpoint before continuing.
+
+Your storage and subscription handoff are application responsibilities. Same URL or origin does not prove document identity: bind checkpoints to the same lineage and coordinate one writer per identity. The core provides neither a lineage marker nor a writer lock.
+
+The repository's browser recovery demo uses document-ID envelopes/headers and IndexedDB stores. Those are application examples, not core wire fields or authentication. Neither ordinary checkpoint containers nor these examples promise power-loss durability or cross-file transactions.
+
+[Previous: Server policy and wire](server-wire.md) · [Next: Sync adapter](sync.md)

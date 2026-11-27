@@ -187,8 +187,11 @@ export interface Text<M extends MarkShape = {}, B extends BlockShape = {}> exten
   format<K extends keyof M & string>(index: number, count: number, key: K, value: MarkValue<M[K]> | null): void;
   /** The marks of the element at `index`. */
   attributesAt(index: number): TextAttributesOf<M>;
-  /** The visible text as runs of equal attributes. */
-  toDelta(): readonly TextDeltaOp<M>[];
+  /**
+   * The visible text as runs of equal attributes; with `index`, only the `count` elements from it
+   * (to the end by default).
+   */
+  toDelta(index?: number, count?: number): readonly TextDeltaOp<M>[];
   /**
    * Sets paragraph attribute `key` to `value`, or removes it with `null`, on every paragraph that
    * `count` elements from `index` touch; with `count` 0, on the paragraph that holds gap `index`.
@@ -196,8 +199,11 @@ export interface Text<M extends MarkShape = {}, B extends BlockShape = {}> exten
   formatBlocks<K extends keyof B & string>(index: number, count: number, key: K, value: MarkValue<B[K]> | null): void;
   /** The attributes of the paragraph that holds gap `index`. */
   blockAt(index: number): TextAttributesOf<B>;
-  /** Every paragraph, in order. */
-  blocks(): readonly TextBlock<B>[];
+  /**
+   * Every paragraph, in order; with `index`, only those that `count` elements from it touch (to the
+   * end by default), or with `count` 0 the one that holds gap `index`. Each is returned whole.
+   */
+  blocks(index?: number, count?: number): readonly TextBlock<B>[];
 }
 
 function idKey(id: Readonly<ElementId>): string {
@@ -596,6 +602,42 @@ export class TextState {
         }
       }
       known += count;
+    }
+  }
+
+  /** The runs of equal attributes of `count` visible elements from `index`. */
+  toDeltaRange(index: number, count: number): readonly { readonly insert: string; readonly attributes?: TextAttributes }[] {
+    const runs: { insert: string; attributes: TextAttributes }[] = [];
+    for (let position = index; position < index + count; position++) {
+      const id = this.idList.at(position);
+      const attributes = this.attributesAt(position);
+      const last = runs.at(-1);
+      if (last !== undefined && (last.attributes === attributes || jsonEquals(last.attributes, attributes))) {
+        last.insert += this.valueFor(id);
+      } else runs.push({ insert: this.valueFor(id), attributes });
+    }
+    return Object.freeze(runs.map(({ insert, attributes }) =>
+      Object.freeze(attributes === NO_ATTRIBUTES ? { insert } : { insert, attributes })));
+  }
+
+  /**
+   * The paragraphs that `count` visible elements from `index` touch, whole: the one holding
+   * `index`, and each one a line break among the first `count - 1` elements starts.
+   */
+  blockListRange(index: number, count: number): { id: ElementId | null; index: number; length: number; attributes: TextAttributes }[] {
+    let startIndex = index;
+    while (startIndex > 0 && this.valueFor(this.idList.at(startIndex - 1)) !== "\n") startIndex--;
+    let start: ElementId | null = startIndex === 0 ? null : this.idList.at(startIndex - 1);
+    const blocks: { id: ElementId | null; index: number; length: number; attributes: TextAttributes }[] = [];
+    const last = Math.max(index, index + count - 1);
+    for (let position = startIndex; ; position++) {
+      if (position === this.length || this.valueFor(this.idList.at(position)) === "\n") {
+        blocks.push({ id: start, index: startIndex, length: position - startIndex, attributes: this.blockAttributesOf(start) });
+        // A line break at or after the range's last element ends the last paragraph it touches.
+        if (position >= last || position === this.length) return blocks;
+        start = this.idList.at(position);
+        startIndex = position + 1;
+      }
     }
   }
 
@@ -1073,8 +1115,23 @@ export class RuntimeText implements Text<MarkShape, BlockShape> {
     return this.current.attributesAt(index);
   }
 
-  toDelta(): readonly TextDeltaOp[] {
-    return this.current.toDelta();
+  toDelta(index?: number, count?: number): readonly TextDeltaOp[] {
+    if (index === undefined && count === undefined) return this.current.toDelta();
+    const [from, length] = this.range(index ?? 0, count);
+    return this.current.toDeltaRange(from, length);
+  }
+
+  /** Checks an optional read range: `index` in `0..length`, `count` to the end by default. */
+  private range(index: number, count: number | undefined): [number, number] {
+    requireNumber(index, "Index");
+    if (!Number.isSafeInteger(index) || index < 0 || index > this.length) {
+      throw new RangeError(`Index out of bounds: ${index} (length: ${this.length})`);
+    }
+    if (count === undefined) return [index, this.length - index];
+    requireNumber(count, "Count");
+    if (!Number.isSafeInteger(count) || count < 0) throw new RangeError(`Invalid count: ${count}`);
+    if (count > this.length - index) throw new RangeError(`Range out of bounds: ${index} + ${count} (length: ${this.length})`);
+    return [index, count];
   }
 
   formatBlocks(index: number, count: number, key: string, value: JsonValue | null): void {
@@ -1121,8 +1178,11 @@ export class RuntimeText implements Text<MarkShape, BlockShape> {
     return this.current.blockAttributesOf(this.current.blockStartAt(index));
   }
 
-  blocks(): readonly TextBlock[] {
-    return Object.freeze(this.current.blockList().map(({ index, length, attributes }) => Object.freeze({ index, length, attributes })));
+  blocks(index?: number, count?: number): readonly TextBlock[] {
+    const list = index === undefined && count === undefined
+      ? this.current.blockList()
+      : this.current.blockListRange(...this.range(index ?? 0, count));
+    return Object.freeze(list.map(({ index: start, length, attributes }) => Object.freeze({ index: start, length, attributes })));
   }
 
   /** ID-targeted writes for the undo manager; each records one operation like the index-based API. */
