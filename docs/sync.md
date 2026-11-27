@@ -67,7 +67,19 @@ The store creates the tables `articollab_checkpoints` and `articollab_entries` w
 
 Only one server may write a document. Opening a second store for it throws `CheckpointLockedError`: on any connection to the database for Postgres, and within the process for files, so give each process its own directory.
 
-When you change the server outside the handler, for example with `server.closeClient()`, call `await handleSync.notify()`: it saves the change, then pushes any new commits. Without the handler, call `await persisted.flush()` after each change and before you tell anyone about it. Call `await persisted.close()` when the server stops. To keep the log somewhere else, implement a [`ServerStore`](reference.md#server-persistence).
+When you change the server outside the handler, for example with `server.closeClient()`, call `await handleSync.notify()`: it saves the change, then pushes any new commits. Without the handler, call `await persisted.flush()` after each change and before you tell anyone about it. Call `await persisted.close()` when the server stops. It finishes pending writes and waits for the store to release its lock. You can then reopen that document.
+
+With Postgres, close the dedicated connection after the store finishes closing. Use `finally` so a failed unlock also discards the connection.
+
+```ts
+try {
+  await persisted.close();
+} finally {
+  await client.end();
+}
+```
+
+To keep the log somewhere else, implement a [`ServerStore`](reference.md#server-persistence).
 
 ## Connect a client
 

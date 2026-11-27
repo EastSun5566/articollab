@@ -32,7 +32,7 @@ export async function openFileServerStore(directory: string, options: FileServer
   const target = resolve(directory);
   const release = await acquireLock(`articollab:server-file:${target}`, options.locks);
   try { await nodeFs.mkdir(target, { recursive: true }); }
-  catch (error) { release(); throw error; }
+  catch (error) { await release().catch(() => {}); throw error; }
   /** The generation of the newest checkpoint, once known. */
   let generation: number | undefined;
   let log: nodeFs.FileHandle | undefined;

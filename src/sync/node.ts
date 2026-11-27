@@ -71,6 +71,6 @@ export async function openFileStore(path: string, options: FileStoreOptions = {}
       }
     }),
     clear: () => state.run(async () => { await fs.rm(target, { force: true }); }),
-    close: () => state.close(),
+    close() { state.close().catch(() => {}); },
   };
 }

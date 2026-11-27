@@ -717,14 +717,14 @@ A `ServerStore` holds one server's latest checkpoint and the log entries after i
 - `load()` returns `{ checkpoint, entries }` with the entries in append order, or `undefined` when empty.
 - `append(entries)` resolves once the entries are stored after the earlier ones.
 - `compact(checkpoint)` replaces the checkpoint with one that includes every appended entry and drops those entries, so that no load sees the new checkpoint with entries it includes.
-- `close()` releases the lock once started operations finish; later calls reject.
+- `close()` stops new operations and lets accepted operations finish. Await it before reopening the store. The file and Postgres stores resolve after releasing the lock. Repeated calls share the same result. A custom store may return `void` if it finishes synchronously.
 
 #### Flushes
 
 - `persistServer(server, store, { compactEvery? })` records the server's entries from then on; `store` must already hold a checkpoint they follow. `compactEvery` is a positive integer, default 1000.
 - `flush()` appends the entries recorded since the last flush, one flush at a time. Once `compactEvery` entries are in the store after its checkpoint, and none is waiting, it also compacts with `server.checkpoint()`.
 - After a failed append or compaction, every flush rejects with that error: the server has changes the store lacks, so open it again from the store.
-- `close()` flushes, stops recording and closes the store, also after a failure. Flushes after it reject.
+- `close()` stops recording, finishes the last flush and waits for the store to close. It closes the store even if the flush fails. If both fail, it rejects with the flush error. Later flushes reject, and repeated closes share the same result.
 - `openServer(schema, store, options)` loads the store and passes its checkpoint and entries to `createServer` with `options`. An empty store gets a new server's checkpoint first. Entries already past `compactEvery` are compacted at the first flush. If it rejects, the caller still owns the store.
 - With `persist`, the sync handler calls `flush()` where it would call `saveCheckpoint`, and at the start of `notify()`. A rejected flush fails the handler as a failed save does.
 
@@ -742,7 +742,7 @@ A `ServerStore` holds one server's latest checkpoint and the log entries after i
 - `client` needs only `query(text, values?)` returning `{ rows }`. Use one dedicated connection, not a pool.
 - It creates `<table>_checkpoints (document, checkpoint)` and `<table>_entries (document, position, entry)` when missing, with `json` values kept as written. `table` matches `[a-z_][a-z0-9_]*`, at most 48 characters, default `"articollab"`.
 - An append is one insert. A compaction upserts the checkpoint and deletes the document's entries in one transaction.
-- It takes a session advisory lock keyed by 64 bits of a SHA-256 of the table prefix and document, so a second store on any connection throws `CheckpointLockedError`, and so does a second store on the same connection. `close()` unlocks but does not end the connection.
+- It takes a session advisory lock keyed by 64 bits of a SHA-256 of the table prefix and document, so a second store on any connection throws `CheckpointLockedError`, and so does a second store on the same connection. Await `close()` before reopening on another connection. If unlocking fails, close and discard the dedicated connection. The store leaves connection shutdown to its caller.
 
 ### Submission and recovery
 

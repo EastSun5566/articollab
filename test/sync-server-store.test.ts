@@ -125,6 +125,51 @@ describe("Server persistence", () => {
     assert.ok(memory.state.closed);
   });
 
+  it("shares close while waiting for the store after the last flush", async () => {
+    const memory = memoryStore();
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let calls = 0;
+    memory.store.close = async () => {
+      calls++;
+      assert.deepEqual(memory.calls, ["compact", "append 1"]);
+      started.resolve();
+      await release.promise;
+      memory.state.closed = true;
+    };
+    const opened = await openServer(Board, memory.store);
+    opened.server.openClient();
+    const closing = opened.close();
+    try {
+      assert.equal(opened.close(), closing);
+      await assert.rejects(opened.flush(), /closed/);
+      await started.promise;
+      assert.equal(await Promise.race([closing, Promise.resolve("pending")]), "pending");
+    } finally {
+      release.resolve();
+      await closing;
+    }
+    assert.equal(opened.close(), closing);
+    assert.equal(calls, 1);
+    assert.ok(memory.state.closed);
+  });
+
+  it("reports cleanup failure and keeps the flush error if both fail", async () => {
+    const cleanupError = new Error("unlock failed");
+    for (const flushError of [undefined, new Error("disk full")]) {
+      const memory = memoryStore();
+      memory.state.fail = flushError;
+      let calls = 0;
+      memory.store.close = async () => { calls++; throw cleanupError; };
+      const opened = await openServer(Board, memory.store);
+      opened.server.openClient();
+      const closing = opened.close();
+      assert.equal(opened.close(), closing);
+      await assert.rejects(closing, (error) => error === (flushError ?? cleanupError));
+      assert.equal(calls, 1);
+    }
+  });
+
   it("persists a server it did not open, and checks compactEvery", async () => {
     const server = createServer(Board);
     const memory = memoryStore();
@@ -234,16 +279,16 @@ function storeContract(name: string, factory: StoreFactory) {
       await store.append([{ entry: 1 }, { entry: 2, text: "😀\n\u2028" }]);
       await store.append([]);
       await store.append([{ entry: 3 }]);
-      store.close();
+      await store.close();
       store = await open();
       assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 1 }, entries: [{ entry: 1 }, { entry: 2, text: "😀\n\u2028" }, { entry: 3 }] });
       await store.compact({ checkpoint: 2 });
       assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 2 }, entries: [] });
       await store.append([{ entry: 4 }]);
-      store.close();
+      await store.close();
       store = await open();
       assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 2 }, entries: [{ entry: 4 }] });
-      store.close();
+      await store.close();
       await assert.rejects(store.load(), /closed/);
       await assert.rejects(store.append([{ entry: 5 }]), /closed/);
     });
@@ -252,10 +297,11 @@ function storeContract(name: string, factory: StoreFactory) {
       const open = await factory(t);
       const first = await open();
       await assert.rejects(open(), CheckpointLockedError);
-      first.close();
+      const closing = first.close();
       const second = await open();
+      await closing;
       assert.equal(await second.load(), undefined);
-      second.close();
+      await second.close();
     });
 
     it("restores a server that writers used through the handler", async (t) => {
@@ -293,17 +339,68 @@ describe("File server store recovery", () => {
     return join(root, "board");
   }
 
+  it("drains file appends and waits for the lock manager to release the lock", async (t) => {
+    const path = await directory(t);
+    const releasing = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const store = await openFileServerStore(path, {
+      locks: {
+        request: (name, options, callback) => navigator.locks.request(name, options, async (lock) => {
+          await callback(lock);
+          releasing.resolve();
+          await release.promise;
+        }),
+      },
+    });
+    await store.compact({ checkpoint: 1 });
+    const appended = store.append([{ entry: 1 }]);
+    const closing = store.close();
+    try {
+      assert.ok(closing instanceof Promise);
+      assert.equal(store.close(), closing);
+      await assert.rejects(store.load(), /closed/);
+      await releasing.promise;
+      await appended;
+      assert.equal(await readFile(join(path, "log-1.jsonl"), "utf8"), '{"entry":1}\n');
+      assert.equal(await Promise.race([closing, Promise.resolve("pending")]), "pending");
+    } finally {
+      release.resolve();
+      await closing;
+    }
+    const reopened = await openFileServerStore(path);
+    assert.deepEqual(await reopened.load(), { checkpoint: { checkpoint: 1 }, entries: [{ entry: 1 }] });
+    await reopened.close();
+  });
+
+  it("reports failure to release a file store lock", async (t) => {
+    const path = await directory(t);
+    const failure = new Error("lock manager failed");
+    const store = await openFileServerStore(path, {
+      locks: {
+        request: (name, options, callback) => navigator.locks.request(name, options, async (lock) => {
+          await callback(lock);
+          throw failure;
+        }),
+      },
+    });
+    const closing = store.close();
+    assert.ok(closing instanceof Promise);
+    await assert.rejects(closing, (error) => error === failure);
+    const reopened = await openFileServerStore(path);
+    await reopened.close();
+  });
+
   it("drops a line cut short by a crash, and appends after the complete ones", async (t) => {
     const path = await directory(t);
     let store = await openFileServerStore(path);
     await store.compact({ checkpoint: 1 });
     await store.append([{ entry: 1 }]);
-    store.close();
+    await store.close();
     await appendFile(join(path, "log-1.jsonl"), '{"entry":');
     store = await openFileServerStore(path);
     assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 1 }, entries: [{ entry: 1 }] });
     await store.append([{ entry: 2 }]);
-    store.close();
+    await store.close();
     assert.equal(await readFile(join(path, "log-1.jsonl"), "utf8"), '{"entry":1}\n{"entry":2}\n');
   });
 
@@ -312,12 +409,12 @@ describe("File server store recovery", () => {
     let store = await openFileServerStore(path);
     await store.compact({ checkpoint: 1 });
     await store.append([{ entry: 1 }]);
-    store.close();
+    await store.close();
     await appendFile(join(path, "log-1.jsonl"), '{"entry":');
     store = await openFileServerStore(path);
     await store.append([{ entry: 2 }]);
     assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 1 }, entries: [{ entry: 1 }, { entry: 2 }] });
-    store.close();
+    await store.close();
   });
 
   it("recovers from a compaction interrupted at any step", async (t) => {
@@ -325,18 +422,18 @@ describe("File server store recovery", () => {
     let store = await openFileServerStore(path);
     await store.compact({ checkpoint: 1 });
     await store.append([{ entry: 1 }]);
-    store.close();
+    await store.close();
     // Interrupted while writing the next checkpoint: only a temporary file exists.
     await writeFile(join(path, ".checkpoint-2.json.crash.tmp"), '{"checkp');
     store = await openFileServerStore(path);
     assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 1 }, entries: [{ entry: 1 }] });
-    store.close();
+    await store.close();
     // Interrupted after the rename: the new checkpoint has no log yet, and the old files remain.
     await writeFile(join(path, "checkpoint-2.json"), '{"checkpoint":2}');
     store = await openFileServerStore(path);
     assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 2 }, entries: [] });
     await store.append([{ entry: 2 }]);
-    store.close();
+    await store.close();
     assert.deepEqual((await readdir(path)).toSorted(), ["checkpoint-2.json", "log-2.jsonl"]);
   });
 
@@ -345,11 +442,11 @@ describe("File server store recovery", () => {
     let store = await openFileServerStore(path);
     await assert.rejects(store.append([{ entry: 1 }]), /no checkpoint yet/);
     await store.compact({ checkpoint: 1 });
-    store.close();
+    await store.close();
     await writeFile(join(path, "log-1.jsonl"), "{}\nnot json\n");
     store = await openFileServerStore(path);
     await assert.rejects(store.load(), /Log line 2 is not valid JSON/);
-    store.close();
+    await store.close();
     await assert.rejects(openFileServerStore(""), TypeError);
   });
 });
@@ -391,7 +488,7 @@ describe("Postgres server store details", () => {
     // json keeps values exactly as written, including key order.
     await b.append([{ z: 1, a: [1.5, -2, "\u0000"] }]);
     assert.equal(JSON.stringify((await b.load())?.entries), '[{"z":1,"a":[1.5,-2,"\\u0000"]}]');
-    for (const store of [a, b, other]) store.close();
+    await Promise.all([a.close(), b.close(), other.close()]);
     await assert.rejects(openPostgresServerStore({ client: database, document: "" }), TypeError);
     await assert.rejects(openPostgresServerStore({ client: database, document: "a", table: "Bad-Name" }), TypeError);
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A wrong type on purpose.
@@ -413,8 +510,83 @@ describe("Postgres server store details", () => {
     await assert.rejects(store.compact({ checkpoint: 2 }), /connection lost/);
     failDelete = false;
     assert.deepEqual(await store.load(), { checkpoint: { checkpoint: 1 }, entries: [{ entry: 1 }] });
-    store.close();
+    await store.close();
   });
+
+  it("waits for queued Postgres writes and for the unlock response", async (t) => {
+    const database = new PGlite();
+    const writing = Promise.withResolvers<void>();
+    const write = Promise.withResolvers<void>();
+    const unlocking = Promise.withResolvers<void>();
+    const unlock = Promise.withResolvers<void>();
+    t.after(async () => {
+      write.resolve();
+      unlock.resolve();
+      await database.close();
+    });
+    const calls: string[] = [];
+    const client: PostgresClient = {
+      async query(text, values) {
+        if (text.startsWith("INSERT INTO articollab_entries")) {
+          calls.push("append");
+          writing.resolve();
+          await write.promise;
+        }
+        if (text.startsWith("SELECT pg_advisory_unlock")) {
+          calls.push("unlock");
+          unlocking.resolve();
+          await unlock.promise;
+        }
+        return database.query(text, values);
+      },
+    };
+    const store = await openPostgresServerStore({ client, document: "board" });
+    await store.compact({ checkpoint: 1 });
+    const appended = store.append([{ entry: 1 }]);
+    const closing = store.close();
+    try {
+      assert.ok(closing instanceof Promise);
+      assert.equal(store.close(), closing);
+      await assert.rejects(store.compact({ checkpoint: 2 }), /closed/);
+      await writing.promise;
+      assert.deepEqual(calls, ["append"]);
+      write.resolve();
+      await appended;
+      await unlocking.promise;
+      assert.equal(await Promise.race([closing, Promise.resolve("pending")]), "pending");
+    } finally {
+      write.resolve();
+      unlock.resolve();
+      await closing;
+    }
+    assert.deepEqual(calls, ["append", "unlock"]);
+    const reopened = await openPostgresServerStore({ client, document: "board" });
+    assert.deepEqual(await reopened.load(), { checkpoint: { checkpoint: 1 }, entries: [{ entry: 1 }] });
+    await reopened.close();
+  });
+
+  for (const failure of [new Error("connection lost"), false] as const) {
+    it(`rejects close and keeps the Postgres session guarded when unlock ${failure === false ? "returns false" : "throws"}`, async (t) => {
+      const database = new PGlite();
+      t.after(() => database.close());
+      let unlocks = 0;
+      const client: PostgresClient = {
+        async query(text, values) {
+          if (!text.startsWith("SELECT pg_advisory_unlock")) return database.query(text, values);
+          unlocks++;
+          if (failure !== false) throw failure;
+          return { rows: [{ unlocked: false }] };
+        },
+      };
+      const store = await openPostgresServerStore({ client, document: "board" });
+      const closing = store.close();
+      assert.ok(closing instanceof Promise);
+      assert.equal(store.close(), closing);
+      await assert.rejects(closing, failure === false ? /did not release/ : (error: unknown) => error === failure);
+      await assert.rejects(openPostgresServerStore({ client, document: "board" }), CheckpointLockedError);
+      assert.equal(unlocks, 1);
+    });
+  }
 
   // The advisory lock needs two connections, which PGlite does not have: set ARTICOLLAB_POSTGRES_URL.
   const url = process.env.ARTICOLLAB_POSTGRES_URL;
@@ -429,10 +601,10 @@ describe("Postgres server store details", () => {
     const [first, second] = [await connect(), await connect()];
     const store = await openPostgresServerStore({ client: first, document });
     await assert.rejects(openPostgresServerStore({ client: second, document }), CheckpointLockedError);
-    store.close();
+    await store.close();
     const reopened = await openPostgresServerStore({ client: second, document });
     assert.equal(await reopened.load(), undefined);
-    reopened.close();
+    await reopened.close();
     await first.query("DROP TABLE IF EXISTS articollab_checkpoints, articollab_entries");
   });
 });

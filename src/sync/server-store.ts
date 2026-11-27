@@ -24,10 +24,10 @@ export interface ServerStore {
    */
   compact(checkpoint: unknown): Promise<void>;
   /**
-   * Releases the lock and any connection once operations already started have finished. Further
-   * calls are no-ops; other methods then reject.
+   * Stops accepting operations, finishes accepted work and releases any resources and locks.
+   * Await the result before reopening the store. Repeated calls share the same outcome.
    */
-  close(): void;
+  close(): void | Promise<void>;
 }
 
 export interface PersistServerOptions {
@@ -43,7 +43,7 @@ export interface ServerPersistence {
    * changes the store lacks, so open it again from the store.
    */
   flush(): Promise<void>;
-  /** Flushes, stops recording and closes the store. */
+  /** Stops recording, flushes and waits for the store to close. */
   close(): Promise<void>;
 }
 
@@ -74,7 +74,8 @@ function persist<S extends SchemaShape>(
   let pending: ServerLogEntry<S>[] = [];
   /** Entries in the store after its checkpoint. */
   let appended = saved;
-  let failed = false, closed = false;
+  let failed = false;
+  let closing: Promise<void> | undefined;
   let failure: unknown;
   const stop = server.on("entry", (entry) => { pending.push(entry); });
   let queue: Promise<unknown> = Promise.resolve();
@@ -101,19 +102,25 @@ function persist<S extends SchemaShape>(
     }
   }
   function flush(): Promise<void> {
-    if (closed) return Promise.reject(new Error("Server persistence is closed"));
+    if (closing !== undefined) return Promise.reject(new Error("Server persistence is closed"));
     const result = queue.then(write);
     queue = result.catch(() => {});
     return result;
   }
   return {
     flush,
-    async close() {
-      if (closed) return;
+    close() {
+      if (closing !== undefined) return closing;
       const last = flush();
-      closed = true;
       stop();
-      try { await last; } finally { store.close(); }
+      closing = last.then(
+        () => store.close(),
+        async (error) => {
+          try { await store.close(); } catch { /* Keep the first persistence failure. */ }
+          throw error;
+        }
+      );
+      return closing;
     },
   };
 }

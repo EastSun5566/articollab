@@ -43,14 +43,14 @@ function defaultLocks(): LockManagerLike {
 const releasing = new Map<string, Promise<unknown>>();
 
 /**
- * Takes an exclusive lock without waiting for another holder, and returns the function that releases
- * it once `after` settles. A lock this realm is releasing is awaited first, so close-then-reopen
- * works immediately and never overlaps the closing store's last operations.
+ * Takes an exclusive lock without waiting for another holder. The returned function waits for
+ * `after` before releasing the lock and resolves once the lock manager has freed it. A reopen
+ * in this realm waits for a pending release, so it cannot overlap the closing store's operations.
  * @internal Shared by the IndexedDB and file stores.
  */
 export async function acquireLock(
   name: string, locks: LockManagerLike = defaultLocks()
-): Promise<(after?: Promise<unknown>) => void> {
+): Promise<(after?: Promise<unknown>) => Promise<void>> {
   await releasing.get(name);
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
@@ -65,9 +65,10 @@ export async function acquireLock(
   });
   if (!granted) throw new CheckpointLockedError(`Checkpoint store is in use elsewhere: ${name}`);
   return (after = Promise.resolve()) => {
-    const done = after.catch(() => {}).then(() => { release(); return finished; }).catch(() => {})
-      .finally(() => { if (releasing.get(name) === done) releasing.delete(name); });
-    releasing.set(name, done);
+    const released = after.catch(() => {}).then(() => { release(); return finished; }).then(() => {});
+    const ready = released.catch(() => {}).finally(() => { if (releasing.get(name) === ready) releasing.delete(name); });
+    releasing.set(name, ready);
+    return released;
   };
 }
 
@@ -76,22 +77,28 @@ export async function acquireLock(
  * finish first; then `onClose` runs, and the lock is released once it settles.
  * @internal
  */
-export function closable(release: (after: Promise<unknown>) => void, onClose: () => void | Promise<void> = () => {}) {
-  let closed = false;
+export function closable(
+  release: (after: Promise<unknown>) => Promise<void>, onClose: () => void | Promise<void> = () => {}
+) {
+  let closing: Promise<void> | undefined;
   const running = new Set<Promise<unknown>>();
   return {
     run<T>(operation: () => Promise<T>): Promise<T> {
-      if (closed) return Promise.reject(new Error("Checkpoint store is closed"));
+      if (closing !== undefined) return Promise.reject(new Error("Checkpoint store is closed"));
       const promise = operation();
       running.add(promise);
       const settled = () => { running.delete(promise); };
       promise.then(settled, settled);
       return promise;
     },
-    close(): void {
-      if (closed) return;
-      closed = true;
-      release(Promise.allSettled([...running]).then(() => onClose()));
+    close(): Promise<void> {
+      if (closing !== undefined) return closing;
+      const cleanup = Promise.allSettled([...running]).then(onClose);
+      closing = Promise.allSettled([cleanup, release(cleanup)]).then(([cleaned, unlocked]) => {
+        if (cleaned.status === "rejected") throw cleaned.reason;
+        if (unlocked.status === "rejected") throw unlocked.reason;
+      });
+      return closing;
     },
   };
 }
@@ -202,7 +209,7 @@ export async function openIndexedDbStore(options: IndexedDbStoreOptions): Promis
   if (factory === undefined) throw new Error("indexedDB is unavailable; pass `indexedDB`");
   const keys = Array.from({ length: slots }, (_, slot) => slot === 0 ? options.key : `${options.key}#${slot}`);
   // With one slot, a held lock fails before the database is opened.
-  let release: ((after?: Promise<unknown>) => void) | undefined =
+  let release =
     slots === 1 ? await acquireLock(`articollab:${database}:${keys[0]!}`, options.locks) : undefined;
   let slot = 0;
   let db: IdbDatabase;
@@ -214,7 +221,7 @@ export async function openIndexedDbStore(options: IndexedDbStoreOptions): Promis
     };
     db = await settle(request);
   } catch (cause) {
-    release?.();
+    release?.().catch(() => {});
     throw cause;
   }
   if (release === undefined) {
@@ -264,6 +271,6 @@ export async function openIndexedDbStore(options: IndexedDbStoreOptions): Promis
     }),
     save: (checkpoint) => write((store) => { store.put(JSON.stringify(checkpoint), key); }),
     clear: () => write((store) => { store.delete(key); }),
-    close: () => state.close(),
+    close() { state.close().catch(() => {}); },
   };
 }
