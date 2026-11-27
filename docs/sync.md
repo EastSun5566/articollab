@@ -34,6 +34,8 @@ Authenticate callers and authorize each request, including the requested `client
 
 ## Persist the server
 
+The server store examples require Articollab 0.11 or later. If you are switching an existing server to a store, see [Upgrading from 0.10 to 0.11](upgrading.md#upgrading-from-010-to-011).
+
 A server store appends each change, a few hundred bytes, and writes a full checkpoint only every `compactEvery` changes (1,000 by default). With a file store:
 
 ```ts

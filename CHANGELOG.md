@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.11.0-beta.0](https://github.com/EastSun5566/articollab/compare/v0.10.0...v0.11.0-beta.0) (2026-11-28)
+
+### Features
+
+* **react:** hooks for documents, collections, sync, presence and undo ([eceb866](https://github.com/EastSun5566/articollab/commit/eceb866eb3faaac0834d9a6e5e5abe765390944e))
+* **server:** record server changes and restore from a log ([8030a26](https://github.com/EastSun5566/articollab/commit/8030a26597ea199fcf2bcb1f5558459e51a5d15f))
+* **sync:** persist a server incrementally through a store ([3e4b56c](https://github.com/EastSun5566/articollab/commit/3e4b56ce21830b9c2f0ec0a47a91ffac7b02675a))
+* **sync:** store a server's log in files ([98d2771](https://github.com/EastSun5566/articollab/commit/98d27711fb11691b231833a360120620e5925fbd))
+* **sync:** store a server's log in Postgres ([a3e98f9](https://github.com/EastSun5566/articollab/commit/a3e98f95cc2e213fe896b66d661fbc8f5dade38c))
+
+### Bug Fixes
+
+* **examples:** keep IME drafts local in the rich text editor ([0cdf459](https://github.com/EastSun5566/articollab/commit/0cdf459786cace7e020db01b6ec0edcb29648f04))
+
 ## [0.10.0](https://github.com/EastSun5566/articollab/compare/v0.9.0...v0.10.0) (2026-11-27)
 
 ### ⚠ BREAKING CHANGES

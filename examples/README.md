@@ -29,6 +29,8 @@ Two writers connect to `createSyncHandler` over HTTP. Writer A's first response 
 
 ## Server store
 
+Requires Articollab 0.11 or later. The workspace uses the local build.
+
 ```sh
 node examples/server-store.ts [directory]
 ```
@@ -36,6 +38,8 @@ node examples/server-store.ts [directory]
 A server saves each change in a directory through a [server store](../docs/sync.md#persist-the-server), and compacts every three changes. A writer adds two items; the server closes its store and opens again from the directory; the writer adds a third without registering again. It prints the items, the server sequence and the files left: the latest checkpoint and the changes after it.
 
 ## React todo list
+
+Requires Articollab 0.11 or later. The workspace uses the local build.
 
 ```sh
 pnpm --dir examples/react-todo start

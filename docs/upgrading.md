@@ -11,6 +11,14 @@ New operation types are different: a runtime that does not know an operation rej
 
 Keep the original checkpoints until you no longer need to roll back. Once saved data contains a new operation, rolling back means restoring those backups, not just installing the old package.
 
+## Upgrading from 0.10 to 0.11
+
+0.11 adds [React hooks](react.md) and [incremental server stores](sync.md#persist-the-server). Existing import paths still work. Operation, snapshot and checkpoint formats stay the same. Keep your schema and document lineage, and restore clients with their original writer IDs so their pending edits can catch up.
+
+You can keep saving server checkpoints the way you did in 0.10. To switch to a file or Postgres store, stop the old writers and take a final server checkpoint. Write that checkpoint to a new, empty store with `await store.compact(checkpoint)`, then pass the store to `openServer()`. Keep your original backup until you have verified recovery.
+
+A 0.11 store may contain changes saved after its latest checkpoint. Before returning to 0.10, flush the 0.11 server and export a current `server.checkpoint()` while writes are stopped. Restore that checkpoint using your 0.10 setup. Reading the store's earlier checkpoint alone can miss saved changes.
+
 ## Upgrading from 0.9 to 0.10
 
 0.10 adds [Counters](collections.md#counter-additions-that-all-count), [Text marks](collections.md#format-text) and [paragraph attributes](collections.md#format-paragraphs). A 0.9 reader rejects `counter/add`, `counterMap/add`, `counterMap/delete`, `text/mark` and `text/block`, and it rejects Text snapshots that have a `marks` or `blocks` field. So finish the steps above before adding a `counter()` or `counterMap()` path or calling `format()` or `formatBlocks()`.
