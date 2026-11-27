@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { createServer } from "../../../src/index.ts";
+import { createServer } from "../../../packages/articollab/src/index.ts";
 import { createBrowserAssetHandler } from "../../../examples/shared/assets.ts";
 import { startHttpExampleServer } from "../http-sync.ts";
 import { Board } from "../resume.ts";

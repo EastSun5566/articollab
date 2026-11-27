@@ -17,7 +17,7 @@ import {
   type ClientDocument,
   type DocumentOperation,
   type ServerLogEntry,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Board = defineDocument({
   count: value(0),

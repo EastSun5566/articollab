@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { createServer as createHttpServer } from "node:http";
 import { pathToFileURL } from "node:url";
 
-import { createServer, defineDocument, list, type ServerDocument } from "../src/index.ts";
-import { connectSync, createHttpTransport, createSyncHandler } from "../src/sync/index.ts";
+import { createServer, defineDocument, list, type ServerDocument } from "articollab";
+import { connectSync, createHttpTransport, createSyncHandler } from "articollab/sync";
 import { toNodeListener } from "./shared/fetch-bridge.ts";
 
 const Board = defineDocument({ items: list<string>() });

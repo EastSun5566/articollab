@@ -7,11 +7,11 @@ import { createRoot } from "react-dom/client";
 import {
   counter, counterMap, createClient, createServer, createUndoManager, defineDocument, list, map, text, value,
   type ClientBatch, type ClientDocument, type DocumentOperation,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 import {
   shallowEqual, useCollection, useDocument, usePeers, useSyncStatus, useTextBlocks, useTextDelta, useUndoState,
-} from "../src/react.ts";
-import type { PresenceSyncClient, SyncClient, SyncPushState, SyncStatus } from "../src/sync/index.ts";
+} from "../packages/articollab/src/react.ts";
+import type { PresenceSyncClient, SyncClient, SyncPushState, SyncStatus } from "../packages/articollab/src/sync/index.ts";
 
 // A DOM for react-dom, and the flag that lets act() flush updates.
 const window = new Window();

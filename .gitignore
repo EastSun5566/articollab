@@ -3,3 +3,5 @@ dist/
 coverage/
 *.tsbuildinfo
 .docs-site/
+/packages/articollab/README.md
+/packages/articollab/LICENSE

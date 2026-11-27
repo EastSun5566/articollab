@@ -15,7 +15,7 @@ import {
   type DocumentOperation,
   type ServerCommit,
   type ServerDocument,
-} from "../../src/index.ts";
+} from "../../packages/articollab/src/index.ts";
 
 export const Board = defineDocument({
   count: value(0),

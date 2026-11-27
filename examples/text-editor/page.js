@@ -1,6 +1,6 @@
 // @ts-check
-import { createUndoManager } from "../../dist/index.js";
-import { connectSync, createWebSocketTransport } from "../../dist/sync/index.js";
+import { createUndoManager } from "articollab";
+import { connectSync, createWebSocketTransport } from "articollab/sync";
 import { Note } from "./schema.js";
 import { createTextEditor } from "./editor.js";
 import { selectionOf, selectionSchema } from "../shared/presence.js";
@@ -34,10 +34,10 @@ export async function mountTextEditors(root, url) {
   const columns = document.createElement("div");
   columns.className = "editors";
   root.append(status, columns);
-  /** @type {{sync: import("../../dist/sync/index.js").PresenceSyncClient<typeof Note.definition,
+  /** @type {{sync: import("articollab/sync").PresenceSyncClient<typeof Note.definition,
    *   import("../shared/presence.js").SelectionPresence>,
    * editor: Awaited<ReturnType<typeof createTextEditor>>, details: HTMLPreElement, cleanup: () => void,
-   * history: import("../../dist/index.js").UndoManager}[]} */
+   * history: import("articollab").UndoManager}[]} */
   const panes = [];
   let destroyed = false, failed = false;
   // Each writer's requests, commits and carets share one socket.

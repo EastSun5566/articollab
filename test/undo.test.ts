@@ -5,7 +5,7 @@ import {
   createClient, createServer, createUndoManager, decodeServerCommit, defineDocument, list, map, text, value,
   type ClientBatch, type ClientDocument, type DocumentOperation, type ServerCommit, type UndoManager,
   type UndoManagerOptions,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Doc = defineDocument({ count: value(0), items: list<string>(), body: text(), tags: map<string>() });
 type Shape = typeof Doc.definition;

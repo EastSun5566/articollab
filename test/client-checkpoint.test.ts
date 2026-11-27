@@ -5,8 +5,8 @@ import {
   createClient, createServer, decodeClientCheckpoint, decodeServerCommit,
   defineDocument, list, text, value, WireDecodeError,
   type ClientBatch, type ClientCheckpoint, type DocumentOperation,
-} from "../src/index.ts";
-import { TextState } from "../src/text.ts";
+} from "../packages/articollab/src/index.ts";
+import { TextState } from "../packages/articollab/src/text.ts";
 
 const Board = defineDocument({ count: value(0), items: list<string>(), body: text() });
 type BoardBatch = ClientBatch<DocumentOperation<typeof Board.definition>>;

@@ -1,5 +1,5 @@
-import { decodeClientBatch } from "../src/index.ts";
-import { decodeServerCommit, type TextBlockEntry, type TextMark } from "../src/index.ts";
+import { decodeClientBatch } from "../packages/articollab/src/index.ts";
+import { decodeServerCommit, type TextBlockEntry, type TextMark } from "../packages/articollab/src/index.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { request as httpRequest } from "node:http";
@@ -10,7 +10,7 @@ import { Board } from "./fixtures/resume.ts";
 import {
   createServer, decodeClientCheckpoint, decodeServerCheckpoint, WireDecodeError,
   type ClientCheckpoint, type ServerDocument,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 // Marks hold arbitrary JSON, whose recursive type is too deep to map; this test does not change them.
 type Mutable<T> = T extends TextMark | TextBlockEntry ? T : T extends object ? { -readonly [K in keyof T]: Mutable<T[K]> } : T;
@@ -956,7 +956,7 @@ describe("localhost HTTP sync example", { timeout: 15_000 }, () => {
     original.doc.state.items.push("Unsent");
     const checkpoint = roundTrip(original.doc.checkpoint());
     assert.equal(await post(url, checkpoint.pendingBatches[0]), 204);
-    const coreUrl = new URL("../src/index.ts", import.meta.url).href;
+    const coreUrl = new URL("../packages/articollab/src/index.ts", import.meta.url).href;
     const boardUrl = new URL("./fixtures/resume.ts", import.meta.url).href;
     const code = [
       "import { connectHttpExampleClient } from " + JSON.stringify(exampleUrl),

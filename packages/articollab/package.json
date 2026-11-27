@@ -1,0 +1,84 @@
+{
+  "name": "articollab",
+  "version": "0.10.0",
+  "private": false,
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public",
+    "tag": "beta"
+  },
+  "description": "Server-authoritative collaborative collections powered by articulated.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EastSun5566/articollab.git"
+  },
+  "homepage": "https://eastsun5566.github.io/articollab/",
+  "bugs": {
+    "url": "https://github.com/EastSun5566/articollab/issues"
+  },
+  "keywords": [
+    "collaboration",
+    "realtime",
+    "sync",
+    "local-first",
+    "server-reconciliation"
+  ],
+  "author": {
+    "name": "EastSun5566",
+    "email": "hi@eastsun.me",
+    "url": "https://github.com/EastSun5566"
+  },
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./sync": {
+      "types": "./dist/sync/index.d.ts",
+      "import": "./dist/sync/index.js"
+    },
+    "./sync/node": {
+      "types": "./dist/sync/node.d.ts",
+      "import": "./dist/sync/node.js"
+    },
+    "./sync/postgres": {
+      "types": "./dist/sync/postgres.d.ts",
+      "import": "./dist/sync/postgres.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "articulated": "^1.4.0"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node ../../scripts/stage-package.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.3.3",
+    "react": "^19.3.1",
+    "typescript": "^7.0.2"
+  }
+}

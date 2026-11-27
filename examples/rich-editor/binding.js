@@ -3,11 +3,11 @@ import { EditorState, PluginKey, TextSelection } from "prosemirror-state";
 import { buildDoc, flattenDoc, positions, same, textLines } from "./flat.js";
 import { editorSchema } from "./schema.js";
 
-/** @typedef {import("../../dist/index.js").Cursor} Cursor */
+/** @typedef {import("articollab").Cursor} Cursor */
 /** A selection as two cursors; `from === to` is a caret. @typedef {{ readonly from: Cursor, readonly to: Cursor }} CursorSelection */
 /** @typedef {import("./flat.js").Line} Line */
-/** @typedef {import("../../dist/index.js").JsonValue} JsonValue */
-/** @typedef {import("../../dist/index.js").Text<import("./schema.js").NoteMarks, import("./schema.js").NoteBlocks>} NoteText */
+/** @typedef {import("articollab").JsonValue} JsonValue */
+/** @typedef {import("articollab").Text<import("./schema.js").NoteMarks, import("./schema.js").NoteBlocks>} NoteText */
 
 const INDENTS = /** @type {const} */ ([1, 2, 3, 4, 5, 6, 7, 8]);
 

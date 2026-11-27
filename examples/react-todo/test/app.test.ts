@@ -5,7 +5,7 @@ import { describe, it, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { Window } from "happy-dom";
 import { act } from "react";
-import { createServer } from "../../../dist/index.js";
+import { createServer } from "articollab";
 import { mountTodos } from "../page.js";
 import { Todos } from "../schema.js";
 import { startTodoServer } from "../server.ts";

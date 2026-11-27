@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { describe, it, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { IDBFactory } from "fake-indexeddb";
-import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "../../../dist/sync/index.js";
+import { CheckpointLockedError, connectSync, createHttpTransport, openIndexedDbStore } from "articollab/sync";
 import { createOfflineSwitch } from "../../shared/sync-ui.js";
 import { addCard, Board, cardsIn, COLUMNS, deleteCard, findCard, moveCard, onDroppedEdits, renameCard } from "../board.js";
 import { createBoardServer, SEED_CARDS, startKanbanServer } from "../server.ts";

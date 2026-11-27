@@ -1,0 +1,8 @@
+{
+  "packageFiles": [
+    "packages/articollab/package.json"
+  ],
+  "bumpFiles": [
+    "packages/articollab/package.json"
+  ]
+}

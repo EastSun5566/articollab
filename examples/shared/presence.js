@@ -1,7 +1,7 @@
 // @ts-check
-import { decodeCursor } from "../../dist/index.js";
+import { decodeCursor } from "articollab";
 
-/** @typedef {import("../../dist/index.js").Cursor} Cursor */
+/** @typedef {import("articollab").Cursor} Cursor */
 /** A selection as two cursors; `from === to` is a caret. @typedef {{ readonly from: Cursor, readonly to: Cursor }} CursorSelection */
 /** A cursor as it travels: its anchor element, or null for a document edge, and the side it binds to.
  * @typedef {{ readonly anchor: { readonly bunchId: string, readonly counter: number } | null, readonly bind: "left" | "right" }} WireCursor */
@@ -22,7 +22,7 @@ function decodeSelection(input) {
 
 /**
  * Checked by the host and by every writer, so a malformed cursor is refused and skipped.
- * @type {import("../../dist/index.js").StandardSchemaV1<SelectionPresence>}
+ * @type {import("articollab").StandardSchemaV1<SelectionPresence>}
  */
 export const selectionSchema = {
   "~standard": {

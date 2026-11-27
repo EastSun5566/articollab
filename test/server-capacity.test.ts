@@ -4,7 +4,7 @@ import {
   createClient, createServer, decodeClientBatch, decodeServerCheckpoint,
   defineDocument, list, ServerDocument, text, value, WireDecodeError,
   type ClientBatch, type CreateServerOptions, type DocumentOperation,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 const Board = defineDocument({ count: value(0), items: list<string>(), body: text() });
 type Shape = typeof Board.definition;
 type Batch = ClientBatch<DocumentOperation<Shape>>;

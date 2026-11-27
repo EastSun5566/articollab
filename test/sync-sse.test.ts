@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { readServerSentEvents, type ServerSentEvent } from "../src/sync/sse.ts";
+import { readServerSentEvents, type ServerSentEvent } from "../packages/articollab/src/sync/sse.ts";
 
 /** Streams `text` split at the given character offsets, encoded as UTF-8. */
 function chunked(text: string, cuts: readonly number[]): ReadableStream<Uint8Array> {

@@ -15,6 +15,6 @@
     "noEmitOnError": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts"],
+  "include": ["packages/articollab/src/**/*.ts", "test/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["examples/text-editor", "examples/rich-editor", "examples/kanban", "examples/file-tree", "examples/react-todo"]
 }

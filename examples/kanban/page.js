@@ -1,6 +1,6 @@
 // @ts-check
-import { createUndoManager } from "../../dist/index.js";
-import { connectSync, createHttpTransport } from "../../dist/sync/index.js";
+import { createUndoManager } from "articollab";
+import { connectSync, createHttpTransport } from "articollab/sync";
 import { createOfflineSwitch, describeSync } from "../shared/sync-ui.js";
 import { clearWriterStores, openWriterStore, readDocumentId } from "../shared/writer-store.js";
 import {
@@ -10,7 +10,7 @@ import {
 
 /** @typedef {import("./board.js").Card} Card */
 /** @typedef {import("./board.js").Column} Column */
-/** @typedef {import("../../dist/sync/index.js").SyncClient<import("./board.js").Shape>} BoardSync */
+/** @typedef {import("articollab/sync").SyncClient<import("./board.js").Shape>} BoardSync */
 
 const COLUMN_NAMES = { todo: "To do", doing: "Doing", done: "Done" };
 const ACTIONS = /** @type {const} */ ([

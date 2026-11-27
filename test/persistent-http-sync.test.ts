@@ -9,7 +9,7 @@ import { describe, it, type TestContext } from "node:test";
 import { connectHttpExampleClient, startHttpExampleServer } from "./fixtures/http-sync.ts";
 import { createCheckpointStore } from "./fixtures/persistent-resume.ts";
 import { Board } from "./fixtures/resume.ts";
-import { createServer, type ClientDocument, type CreateServerOptions } from "../src/index.ts";
+import { createServer, type ClientDocument, type CreateServerOptions } from "../packages/articollab/src/index.ts";
 
 type Shape = typeof Board.definition;
 type Store = ReturnType<typeof createCheckpointStore>;

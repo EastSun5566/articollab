@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ListState } from "../src/list.ts";
-import { TextState } from "../src/text.ts";
+import { ListState } from "../packages/articollab/src/list.ts";
+import { TextState } from "../packages/articollab/src/text.ts";
 
 import {
   createClient,
@@ -20,7 +20,7 @@ import {
   type DocumentOperation,
   type DocumentSnapshot,
   type JsonValue,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Board = defineDocument({
   meta: valueSchema<{

@@ -1,6 +1,6 @@
 // @ts-check
 // Shared by the page, the server and the tests: no DOM and no network.
-import { defineDocument, map } from "../../dist/index.js";
+import { defineDocument, map } from "articollab";
 
 /** The parent of top-level nodes. It is not a node itself. */
 export const ROOT = "root";
@@ -10,9 +10,9 @@ const MAX_NAME_LENGTH = 100;
 
 /**
  * A hand-written Standard Schema; Zod, Valibot or ArkType schemas work the same way.
- * @template {import("../../dist/index.js").JsonValue} T
+ * @template {import("articollab").JsonValue} T
  * @param {(input: unknown) => input is T} accepts @param {string} message
- * @returns {import("../../dist/index.js").StandardSchemaV1<T>}
+ * @returns {import("articollab").StandardSchemaV1<T>}
  */
 function standardSchema(accepts, message) {
   return { "~standard": { version: 1, vendor: "articollab-file-tree",
@@ -35,8 +35,8 @@ export const Tree = defineDocument({
     "A kind is folder or file")),
 });
 /** @typedef {typeof Tree.definition} Shape */
-/** @typedef {import("../../dist/index.js").ClientDocument<Shape>} TreeDocument */
-/** @typedef {import("../../dist/index.js").DocumentOperation<Shape>} TreeOperation */
+/** @typedef {import("articollab").ClientDocument<Shape>} TreeDocument */
+/** @typedef {import("articollab").DocumentOperation<Shape>} TreeOperation */
 
 /** @param {string} name */
 export function normalizeName(name) {
@@ -170,7 +170,7 @@ export function deleteNode(doc, id) {
 /**
  * What the server changed in one of this writer's batches, as notices: a dropped create, move or
  * rename, or a name the server made unique. Takes a `transform` event or a batch outcome.
- * @param {Pick<import("../../dist/index.js").TransformEvent<TreeOperation>, "batch" | "dropped" | "added">} outcome
+ * @param {Pick<import("articollab").TransformEvent<TreeOperation>, "batch" | "dropped" | "added">} outcome
  * @param {TreeDocument} doc The writer's document, after it received the commit.
  * @returns {string[]}
  */

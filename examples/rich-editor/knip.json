@@ -1,6 +1,0 @@
-{
-  "$schema": "../../node_modules/knip/schema.json",
-  "entry": ["page.js", "test/**/*.test.ts"],
-  "project": ["*.{ts,js}", "test/**/*.ts"],
-  "ignoreBinaries": ["tsc", "oxlint", "knip"]
-}

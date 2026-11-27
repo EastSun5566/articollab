@@ -1,4 +1,4 @@
-import { decodeServerCommit } from "../src/index.ts";
+import { decodeServerCommit } from "../packages/articollab/src/index.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
@@ -8,7 +8,7 @@ import { Board } from "./fixtures/resume.ts";
 import {
   createServer, decodeClientCheckpoint, decodeServerCheckpoint, WireDecodeError,
   type ClientDocument, type ClientCheckpoint,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 type Shape = typeof Board.definition;
 

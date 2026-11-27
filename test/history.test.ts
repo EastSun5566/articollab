@@ -15,7 +15,7 @@ import {
   type DocumentOperation,
   type ServerCheckpoint,
   type ServerCommit,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Board = defineDocument({ count: valueSchema(0), items: list<string>(), body: text() });
 type BoardOperation = DocumentOperation<typeof Board.definition>;

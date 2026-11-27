@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import {
   createClient, createServer, createUndoManager, decodeClientBatch, defineDocument, list, map, text, value,
   PayloadValidationError, type ClientBatch, type DocumentOperation, type JsonValue, type StandardSchemaV1,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 /** A hand-written Standard Schema: `check` returns an issue message, or undefined to accept. */
 function schema<T extends JsonValue>(check: (input: unknown) => string | undefined): StandardSchemaV1<T> {

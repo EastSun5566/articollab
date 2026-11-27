@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { decodeClientBatch, decodeServerCommit } from "../src/index.ts";
+import { decodeClientBatch, decodeServerCommit } from "../packages/articollab/src/index.ts";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +12,7 @@ import { Board } from "./fixtures/resume.ts";
 import {
   createClient, createServer, WireDecodeError,
   type ClientDocument, type CreateServerOptions,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 type Shape = typeof Board.definition;
 type Store = ReturnType<typeof createCheckpointStore>;
@@ -157,7 +157,7 @@ describe("file-backed checkpoint recovery example", () => {
     const example = new URL("./fixtures/persistent-resume.ts", import.meta.url).href;
     const asyncExample = new URL("./fixtures/async-resume.ts", import.meta.url).href;
     const syncExample = new URL("./fixtures/resume.ts", import.meta.url).href;
-    const entry = new URL("../src/index.ts", import.meta.url).href;
+    const entry = new URL("../packages/articollab/src/index.ts", import.meta.url).href;
     const code = [
       "import { createCheckpointStore } from " + JSON.stringify(example),
       "import { createAsyncExampleNetwork } from " + JSON.stringify(asyncExample),

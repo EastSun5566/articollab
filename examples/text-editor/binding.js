@@ -4,7 +4,7 @@ import { createMirror, editorEdits, editorOffset, elementIndexAt, mirrorElements
 
 const fromText = Annotation.define();
 
-/** @typedef {import("../../dist/index.js").Cursor} Cursor */
+/** @typedef {import("articollab").Cursor} Cursor */
 /** @typedef {{ readonly from: Cursor, readonly to: Cursor }} CursorSelection */
 /** @typedef {{ readonly label: string, readonly selection: CursorSelection }} RemoteSelection */
 /** A remote selection in current UTF-16 offsets; `from === to` is a caret.
@@ -16,7 +16,7 @@ const fromText = Annotation.define();
 /** @type {import("@codemirror/state").StateEffectType<readonly RemoteRange[]>} */
 const setRemoteRanges = StateEffect.define();
 
-/** @typedef {Readonly<Record<string, import("../../dist/index.js").JsonValue>>} Attributes */
+/** @typedef {Readonly<Record<string, import("articollab").JsonValue>>} Attributes */
 /** A formatted run in UTF-16 offsets. @typedef {{ readonly from: number, readonly to: number, readonly attributes: Attributes }} FormatRange */
 
 /** Replaces the marks of each run, in the offsets of the transaction's new document.
@@ -113,7 +113,7 @@ export const remoteRanges = StateField.define({
 });
 
 /** This example-only bridge also runs with EditorState alone in Node tests.
- * @param {{state: {body: import("../../dist/index.js").Text<import("./schema.js").NoteMarks, import("./schema.js").NoteBlocks>},
+ * @param {{state: {body: import("articollab").Text<import("./schema.js").NoteMarks, import("./schema.js").NoteBlocks>},
  *   transact: (callback: () => void) => void, readonly replayConflict: unknown}} doc
  * @param {{update: (transactions: readonly import("@codemirror/state").Transaction[]) => void,
  *   canEdit: () => boolean, onError: (error: unknown) => void,

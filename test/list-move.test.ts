@@ -5,7 +5,7 @@ import {
   assertClientBatchNamespace, createClient, createServer, decodeClientBatch, decodeClientCheckpoint,
   decodeServerCheckpoint, decodeSnapshot, defineDocument, list, value, WireDecodeError,
   type ClientBatch, type ClientDocument, type DiscardEvent, type DocumentOperation, type ServerCommit,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Board = defineDocument({ items: list<string>(), count: value(0) });
 type Shape = typeof Board.definition;

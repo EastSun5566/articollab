@@ -2,11 +2,12 @@ import { readFileSync, readdirSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** Serves fixed routes plus the built package and its dependencies; never a path from the request. */
 export function createBrowserAssetHandler(entries: ReadonlyMap<string, { file: string; type: string }>) {
-  const directory = import.meta.dirname;
-  const require = createRequire(import.meta.url);
+  const entrypoint = import.meta.resolve("articollab");
+  const require = createRequire(entrypoint);
   const articulatedPackage = require.resolve("articulated/package.json");
   const sparsePackage = createRequire(articulatedPackage).resolve("sparse-array-rled/package.json");
   const assets = new Map(entries);
@@ -26,7 +27,7 @@ export function createBrowserAssetHandler(entries: ReadonlyMap<string, { file: s
   }
 
   try {
-    addModules(join(directory, "../../dist"), "/dist");
+    addModules(dirname(fileURLToPath(entrypoint)), "/dist");
     addModules(join(dirname(articulatedPackage), "build/esm"), "/vendor/articulated", true);
     addModules(join(dirname(sparsePackage), "build/esm"), "/vendor/sparse-array-rled", true);
     for (const route of [...entries.keys(), "/dist/index.js", "/vendor/articulated/index.js", "/vendor/sparse-array-rled/index.js"]) {

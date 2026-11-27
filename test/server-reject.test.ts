@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import {
   createClient, createServer, decodeClientBatch, decodeClientCheckpoint, decodeServerCheckpoint,
   type ClientBatch, type DocumentOperation, type ServerReceipt,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 import { Board } from "./fixtures/resume.ts";
 import { rejectPending } from "./fixtures/reject-pending.ts";
 

@@ -6,13 +6,13 @@ import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { IDBFactory } from "fake-indexeddb";
 
-import { createServer, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, value, type ClientBatch } from "../src/index.ts";
-import { ListState } from "../src/list.ts";
+import { createServer, decodeClientBatch, decodeClientCheckpoint, defineDocument, list, value, type ClientBatch } from "../packages/articollab/src/index.ts";
+import { ListState } from "../packages/articollab/src/list.ts";
 import {
   CheckpointLockedError, connectSync, openIndexedDbStore,
   type CheckpointStore, type IndexedDbCheckpointStore, type SyncTransport,
-} from "../src/sync/index.ts";
-import { openFileStore, type FileStoreFileSystem } from "../src/sync/node.ts";
+} from "../packages/articollab/src/sync/index.ts";
+import { openFileStore, type FileStoreFileSystem } from "../packages/articollab/src/sync/node.ts";
 
 const Board = defineDocument({ items: list<string>(), count: value(0) });
 const wire = (input: unknown): unknown => JSON.parse(JSON.stringify(input));

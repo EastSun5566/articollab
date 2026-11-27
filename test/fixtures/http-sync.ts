@@ -14,7 +14,7 @@ import {
   type DocumentOperation,
   type ServerCheckpoint,
   type ServerDocument,
-} from "../../src/index.ts";
+} from "../../packages/articollab/src/index.ts";
 import { Board } from "./resume.ts";
 import { createHttpSyncController, readClientRegistration } from "./http-sync-controller.js";
 

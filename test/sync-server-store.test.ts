@@ -6,13 +6,13 @@ import { describe, it, type TestContext } from "node:test";
 
 import {
   createClient, createServer, decodeServerLogEntry, decodeSnapshot, defineDocument, list, value, type ClientBatch, type DocumentOperation,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 import {
   CheckpointLockedError, connectSync, createHttpTransport, createSyncHandler, openServer, persistServer,
   type ServerStore, type SyncClient,
-} from "../src/sync/index.ts";
-import { openFileServerStore } from "../src/sync/node.ts";
-import { openPostgresServerStore, type PostgresClient } from "../src/sync/postgres.ts";
+} from "../packages/articollab/src/sync/index.ts";
+import { openFileServerStore } from "../packages/articollab/src/sync/node.ts";
+import { openPostgresServerStore, type PostgresClient } from "../packages/articollab/src/sync/postgres.ts";
 import { PGlite } from "@electric-sql/pglite";
 import pg from "pg";
 import { runServerStoreDemo } from "../examples/server-store.ts";

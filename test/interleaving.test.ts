@@ -7,7 +7,7 @@ import {
   defineDocument, list, text, value,
   type ClientBatch, type ClientCheckpoint, type ClientDocument,
   type DocumentOperation, type DocumentSnapshot, type ServerCommit, type ServerResolver,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Board = defineDocument({
   count: value(0), items: list<string>(),

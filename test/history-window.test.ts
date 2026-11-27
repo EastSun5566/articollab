@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import {
   createServer, decodeServerCheckpoint, defineDocument, value,
   type DocumentOperation, type ServerCommit,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Counter = defineDocument({ count: value(0) });
 type Commit = ServerCommit<DocumentOperation<typeof Counter.definition>>;

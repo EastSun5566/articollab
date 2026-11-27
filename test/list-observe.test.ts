@@ -6,8 +6,8 @@ import {
   defineDocument, list, text, value,
   type ClientBatch, type ClientDocument, type DocumentOperation, type List, type ListChangeEvent,
   type ServerCommit,
-} from "../src/index.ts";
-import { ListState, RuntimeList } from "../src/list.ts";
+} from "../packages/articollab/src/index.ts";
+import { ListState, RuntimeList } from "../packages/articollab/src/list.ts";
 
 type Item = string | { readonly label: string };
 const Board = defineDocument({ items: list<Item>(), other: list<string>(), body: text(), count: value(0) });

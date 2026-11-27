@@ -1,6 +1,6 @@
 // @ts-check
-import { createUndoManager } from "../../dist/index.js";
-import { connectSync, createHttpTransport } from "../../dist/sync/index.js";
+import { createUndoManager } from "articollab";
+import { connectSync, createHttpTransport } from "articollab/sync";
 import { createOfflineSwitch, describeSync } from "../shared/sync-ui.js";
 import { clearWriterStores, openWriterStore, readDocumentId } from "../shared/writer-store.js";
 import { selectionSchema } from "./presence.js";
@@ -8,7 +8,7 @@ import {
   childrenOf, createNode, deleteNode, describeTransform, isFolder, isWithin, moveNode, pathOf, renameNode, ROOT, Tree,
 } from "./tree.js";
 
-/** @typedef {import("../../dist/sync/index.js").PresenceSyncClient<import("./tree.js").Shape,
+/** @typedef {import("articollab/sync").PresenceSyncClient<import("./tree.js").Shape,
  *   import("./presence.js").Selection>} TreeSync */
 
 const DATABASE = "articollab-file-tree";

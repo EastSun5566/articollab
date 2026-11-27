@@ -112,7 +112,7 @@ export async function checkDocs(): Promise<void> {
   assert.ok(expected, "Missing expected quick start output");
   const temporary = await mkdtemp(join(output, ".quick-start-"));
   try {
-    // Inside the checkout only for self-package resolution; no source imports or paths aliases.
+    // Inside the checkout to resolve the built workspace package; no source imports or paths aliases.
     const filename = join(temporary, "score.ts");
     await writeFile(filename, snippet[1]!);
     const require = createRequire(import.meta.url);

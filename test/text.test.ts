@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { IdList } from "articulated";
-import { TextState } from "../src/text.ts";
+import { TextState } from "../packages/articollab/src/text.ts";
 
 import {
   createClient,
@@ -20,7 +20,7 @@ import {
   type TextDeleteOperation,
   type TextInsertOperation,
   type TextOperation,
-} from "../src/index.ts";
+} from "../packages/articollab/src/index.ts";
 
 const Note = defineDocument({
   title: value("Draft"),

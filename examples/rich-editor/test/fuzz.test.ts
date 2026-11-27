@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { baseKeymap, lift, setBlockType, toggleMark, wrapIn } from "prosemirror-commands";
 import { liftListItem, sinkListItem, splitListItem, wrapInList } from "prosemirror-schema-list";
 import { Selection, TextSelection, type Command } from "prosemirror-state";
-import { createClient, createServer, type ClientBatch, type DocumentOperation } from "../../../dist/index.js";
+import { createClient, createServer, type ClientBatch, type DocumentOperation } from "articollab";
 import { createRichTextBinding } from "../binding.js";
 import { buildDoc, textLines } from "../flat.js";
 import { editorSchema, keepSafeLinks, Note } from "../schema.js";

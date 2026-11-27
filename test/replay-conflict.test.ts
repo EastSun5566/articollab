@@ -7,9 +7,9 @@ import { describe, it } from "node:test";
 import {
   createClient, createServer, decodeClientCheckpoint, WireDecodeError,
   type ClientBatch, type ClientCheckpoint, type DocumentOperation, type PendingReplayConflict,
-} from "../src/index.ts";
-import { PendingReplayError } from "../src/conflict.ts";
-import { initialStates, replayPending } from "../src/state.ts";
+} from "../packages/articollab/src/index.ts";
+import { PendingReplayError } from "../packages/articollab/src/conflict.ts";
+import { initialStates, replayPending } from "../packages/articollab/src/state.ts";
 import { Board, createExampleNetwork } from "./fixtures/resume.ts";
 import { createAsyncExampleNetwork } from "./fixtures/async-resume.ts";
 import { connectHttpExampleClient, startHttpExampleServer } from "./fixtures/http-sync.ts";

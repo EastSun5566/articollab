@@ -2,18 +2,18 @@
 import { Schema } from "prosemirror-model";
 import { schema as basic } from "prosemirror-schema-basic";
 import { addListNodes } from "prosemirror-schema-list";
-import { defineDocument, text } from "../../dist/index.js";
+import { defineDocument, text } from "articollab";
 
 /** A tiny Standard Schema, so the example needs no validation library.
- * @template {import("../../dist/index.js").JsonValue} T @param {readonly T[]} allowed
- * @returns {import("../../dist/index.js").PayloadSchema<T>} */
+ * @template {import("articollab").JsonValue} T @param {readonly T[]} allowed
+ * @returns {import("articollab").PayloadSchema<T>} */
 function oneOf(allowed) {
   return { "~standard": { version: 1, vendor: "example", validate: (value) =>
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Checked against the allowed values first.
     allowed.includes(/** @type {T} */ (value)) ? { value: /** @type {T} */ (value) } : { issues: [{ message: "Not allowed: " + String(value) }] } } };
 }
 
-/** @type {import("../../dist/index.js").PayloadSchema<string>} */
+/** @type {import("articollab").PayloadSchema<string>} */
 const href = { "~standard": { version: 1, vendor: "example", validate: (value) =>
   typeof value === "string" ? { value } : { issues: [{ message: "Expected a URL string" }] } } };
 
@@ -37,7 +37,7 @@ export const Note = defineDocument({
 
 /** @typedef {NonNullable<(typeof Note.definition.body)["marks"]>} NoteMarks */
 /** @typedef {NonNullable<(typeof Note.definition.body)["blocks"]>} NoteBlocks */
-/** @typedef {import("../../dist/index.js").DocumentOperation<typeof Note.definition>} NoteOperation */
+/** @typedef {import("articollab").DocumentOperation<typeof Note.definition>} NoteOperation */
 
 /** The editor's schema: ProseMirror's basic nodes and marks, without images, rules or hard breaks, plus lists. */
 export const editorSchema = new Schema({

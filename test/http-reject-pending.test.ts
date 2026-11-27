@@ -1,4 +1,4 @@
-import { decodeClientBatch } from "../src/index.ts";
+import { decodeClientBatch } from "../packages/articollab/src/index.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -9,7 +9,7 @@ import { describe, it, type TestContext } from "node:test";
 import { connectHttpExampleClient, startHttpExampleServer } from "./fixtures/http-sync.ts";
 import { createCheckpointStore } from "./fixtures/persistent-resume.ts";
 import { Board } from "./fixtures/resume.ts";
-import { createServer, type ClientCheckpoint, type ServerDocument, type ServerResolver } from "../src/index.ts";
+import { createServer, type ClientCheckpoint, type ServerDocument, type ServerResolver } from "../packages/articollab/src/index.ts";
 
 type Shape = typeof Board.definition;
 type HostOptions = NonNullable<Parameters<typeof startHttpExampleServer>[1]>;

@@ -2,20 +2,19 @@
   "name": "articollab-text-editor-example",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@12.15.0",
   "engines": {
     "node": ">=24.0.0"
   },
   "scripts": {
     "start": "node server.ts",
-    "check": "../../node_modules/.bin/tsc -p tsconfig.json",
-    "lint": "../../node_modules/.bin/oxlint --deny-warnings --report-unused-disable-directives",
-    "knip": "../../node_modules/.bin/knip --no-progress --treat-config-hints-as-errors",
+    "check": "tsc -p tsconfig.json",
+    "lint": "oxlint --deny-warnings --report-unused-disable-directives",
     "test": "node --unhandled-rejections=strict --test --test-concurrency=2 test/*.test.ts"
   },
   "dependencies": {
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.15",
+    "articollab": "workspace:*",
     "ws": "^8.23.0"
   },
   "devDependencies": {

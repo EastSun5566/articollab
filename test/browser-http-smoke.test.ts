@@ -1,4 +1,4 @@
-import { decodeSnapshot } from "../src/index.ts";
+import { decodeSnapshot } from "../packages/articollab/src/index.ts";
 import { Board } from "./fixtures/resume.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
