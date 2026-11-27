@@ -235,4 +235,4 @@ After a history gap, preserve the checkpoint if pending work remains. With an em
 
 See the [reference](reference.md#sync-adapter) for exact retry, persistence and shutdown behavior.
 
-[Previous: Recovery](recovery.md) · [Next: Core reference](reference.md)
+[Previous: Recovery](recovery.md) · [Next: React](react.md)
