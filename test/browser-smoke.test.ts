@@ -46,8 +46,8 @@ describe("browser core smoke example", { timeout: 30_000 }, () => {
     const cases = [
       ["/", join(root, "test/fixtures/browser-smoke/index.html"), "text/html"],
       ["/smoke.js", join(root, "test/fixtures/browser-smoke/smoke.js"), "text/javascript"],
-      ["/dist/index.js", join(root, "dist/index.js"), "text/javascript"],
-      ["/dist/vendor/hamt.js", join(root, "dist/vendor/hamt.js"), "text/javascript"],
+      ["/dist/index.js", join(root, "packages/articollab/dist/index.js"), "text/javascript"],
+      ["/dist/vendor/hamt.js", join(root, "packages/articollab/dist/vendor/hamt.js"), "text/javascript"],
       ["/vendor/articulated/index.js", join(dirname(articulated), "build/esm/index.js"), "text/javascript"],
       ["/vendor/articulated/id_list", join(dirname(articulated), "build/esm/id_list.js"), "text/javascript"],
       ["/vendor/articulated/id_list.js", join(dirname(articulated), "build/esm/id_list.js"), "text/javascript"],
@@ -89,7 +89,7 @@ describe("browser core smoke example", { timeout: 30_000 }, () => {
   });
 
   it("imports without sockets, smoke execution, DOM access or demo output", async () => {
-    const builtUrl = new URL("../dist/index.js", import.meta.url).href;
+    const builtUrl = import.meta.resolve("articollab");
     const code = `
       const { ClientDocument } = await import(${JSON.stringify(builtUrl)});
       ClientDocument.prototype.transact = () => { throw new Error("Unexpected smoke execution"); };

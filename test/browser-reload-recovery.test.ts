@@ -313,7 +313,7 @@ describe("browser checkpoint reload recovery", { timeout: 30_000 }, () => {
       ["/browser-reload-recovery/recovery.js", "test/fixtures/browser-reload-recovery/recovery.js", "text/javascript"],
       ["/browser-http-smoke/smoke.js", "test/fixtures/browser-http-smoke/smoke.js", "text/javascript"],
       ["/http-sync-controller.js", "test/fixtures/http-sync-controller.js", "text/javascript"],
-      ["/dist/index.js", "dist/index.js", "text/javascript"],
+      ["/dist/index.js", "packages/articollab/dist/index.js", "text/javascript"],
     ] as const) {
       const response = await fetch(http.url + path);
       assert.equal(response.status, 200);
