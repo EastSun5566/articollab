@@ -10,7 +10,6 @@
     "release": "commit-and-tag-version --sign",
     "lint": "oxlint --disable-nested-config --deny-warnings --report-unused-disable-directives",
     "knip": "knip --no-progress --treat-config-hints-as-errors",
-    "docs:build": "node scripts/docs.ts build",
     "docs:check": "node scripts/docs.ts check",
     "docs:serve": "node scripts/docs.ts serve",
     "build": "pnpm --filter articollab build",

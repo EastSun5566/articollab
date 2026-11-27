@@ -11,7 +11,7 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-Run the install once at the root. The library and all five example projects share the root lockfile. Build before running examples, browser tests or the docs check. The build writes to `packages/articollab/dist` and copies the root README and LICENSE into the package for packing.
+Run the install once at the root. The library and all five example projects share the root lockfile. Build before running examples, browser tests or the docs check. The build writes to `packages/articollab/dist`. The published package has its own README and inherits the root LICENSE when pnpm packs it.
 
 ## Check your changes
 
@@ -22,7 +22,6 @@ pnpm knip
 pnpm check
 pnpm test
 pnpm test:package
-pnpm docs:build
 pnpm docs:check
 git diff --check
 ```
@@ -32,15 +31,15 @@ git diff --check
 - Lint warnings, unused lint exceptions and Knip findings all fail. Keep any lint exception next to the line it covers, with a reason.
 - Knip also checks exports. Public entrypoint exports are API even if nothing in the repository calls them.
 
-Each example has its own typecheck, lint and tests. CI runs these after building the library:
+After building the library, run the example checks with the same commands as CI:
 
 ```sh
-pnpm --dir examples/text-editor check
-pnpm --dir examples/text-editor lint
-pnpm --dir examples/text-editor test
+pnpm --filter './examples/*' --fail-if-no-match check
+pnpm --filter './examples/*' --fail-if-no-match lint
+pnpm --filter './examples/*' --fail-if-no-match --workspace-concurrency=1 test
 ```
 
-Run the same three checks for `examples/rich-editor`, `examples/kanban`, `examples/react-todo` and `examples/file-tree`. Root `pnpm knip` checks all workspaces.
+Use `pnpm --dir examples/text-editor test` to run one example. Root `pnpm knip` checks all workspaces.
 
 The Rich Text browser test also runs in CI. To run it locally after building and installing the example dependencies:
 
@@ -70,14 +69,13 @@ node --test --test-name-pattern="seed=42" test/interleaving.test.ts
 
 ```sh
 pnpm build
-pnpm docs:build
 pnpm docs:check
 pnpm docs:serve
 ```
 
 Open `http://127.0.0.1:5566/articollab/`, or run `pnpm docs:serve 0` for any free port. Restart the preview after editing. `docs:check` checks links and anchors, and it type-checks and runs the quick start example against the built package.
 
-User pages live in `docs/`; this guide is not published. When writing them:
+GitHub Pages serves the static files in `docs/` after CI checks them. When writing user pages:
 
 - Give each page one job: teach a task, explain an idea or list exact rules. Exact rules belong in the reference.
 - Show an example, then say what it did.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -8,40 +8,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const source = join(root, "docs");
-const output = join(root, ".docs-site");
+const site = join(root, "docs");
 const prefix = "/articollab/";
 const pages = ["README.md", "quick-start.md", "concepts.md", "collections.md",
   "transactions.md", "server-wire.md", "recovery.md", "sync.md", "react.md", "reference.md", "upgrading.md", "faq.md"];
 const files = ["index.html", "_sidebar.md", ".nojekyll", ...pages];
-const retiredPages = ["development.md", "examples.md"];
 const execute = promisify(execFile);
 
 async function requireRegular(path: string): Promise<void> {
   const stat = await lstat(path);
   assert.ok(stat.isFile(), `Expected a regular file: ${path}`);
-}
-
-/** Stage only the fixed docs assets, never the whole checkout. */
-export async function buildDocs(): Promise<void> {
-  await mkdir(output, { recursive: true });
-  assert.ok((await lstat(output)).isDirectory(), "Staging must not be a symlink");
-  const stagedFiles = await readdir(output);
-  for (const name of stagedFiles) {
-    assert.ok(files.includes(name) || retiredPages.includes(name), `Unexpected staging asset: ${name}`);
-    await requireRegular(join(output, name));
-  }
-  const sourceFiles = files.filter((name) => name !== ".nojekyll");
-  assert.deepEqual((await readdir(source)).sort(), [...sourceFiles].sort(), "Keep docs assets on the allowlist");
-  for (const name of retiredPages) {
-    if (stagedFiles.includes(name)) await rm(join(output, name));
-  }
-  for (const name of sourceFiles) {
-    await requireRegular(join(source, name));
-    await copyFile(join(source, name), join(output, name));
-  }
-  await writeFile(join(output, ".nojekyll"), "");
-  console.log("Staged docs in .docs-site/");
 }
 
 // Matches this site's plain Markdown heading/link style, not a general Markdown parser.
@@ -53,11 +29,9 @@ function headingId(heading: string): string {
   return heading.toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s/g, "-");
 }
 
-/** Check staged links/assets, then typecheck and execute the exact quick start example. */
+/** Check published links and assets, then typecheck and execute the exact quick start example. */
 export async function checkDocs(): Promise<void> {
-  // Reader and contributor links must work directly in the checkout too.
-  for (const name of ["README.md", "CONTRIBUTING.md", "examples/README.md",
-    ...[...pages, "_sidebar.md"].map((page) => "docs/" + page)]) {
+  for (const name of ["README.md", "packages/articollab/README.md", "CONTRIBUTING.md", "examples/README.md"]) {
     const filename = join(root, name);
     const markdown = await readFile(filename, "utf8");
     for (const match of withoutCode(markdown).matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
@@ -74,10 +48,11 @@ export async function checkDocs(): Promise<void> {
       }
     }
   }
-  assert.deepEqual((await readdir(output)).sort(), [...files].sort(), "Unexpected/missing staging assets");
-  for (const name of files) await requireRegular(join(output, name));
+  assert.ok((await lstat(site)).isDirectory(), "Expected a regular docs directory");
+  assert.deepEqual((await readdir(site)).sort(), [...files].sort(), "Keep docs assets on the allowlist");
+  for (const name of files) await requireRegular(join(site, name));
   const markdown = new Map<string, string>();
-  for (const name of [...pages, "_sidebar.md"]) markdown.set(name, await readFile(join(output, name), "utf8"));
+  for (const name of [...pages, "_sidebar.md"]) markdown.set(name, await readFile(join(site, name), "utf8"));
   for (const [name, content] of markdown) {
     for (const match of withoutCode(content).matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
       const link = match[1]!;
@@ -94,7 +69,7 @@ export async function checkDocs(): Promise<void> {
   }
   const sidebar = [...markdown.get("_sidebar.md")!.matchAll(/\]\(([^)]+)\)/g)].map((match) => match[1]);
   assert.deepEqual(sidebar, pages, "Keep the documented reading order");
-  const index = await readFile(join(output, "index.html"), "utf8");
+  const index = await readFile(join(site, "index.html"), "utf8");
   const assets = [...index.matchAll(/(?:src|href)="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(assets, [
     "https://cdn.jsdelivr.net/npm/docsify@5.0.0/dist/themes/core.min.css",
@@ -110,7 +85,7 @@ export async function checkDocs(): Promise<void> {
   assert.ok(snippet, "Missing complete checked quick start snippet");
   const expected = /Expected output:\s*```text\n([\s\S]*?)\n```/.exec(quickStart);
   assert.ok(expected, "Missing expected quick start output");
-  const temporary = await mkdtemp(join(output, ".quick-start-"));
+  const temporary = await mkdtemp(join(root, ".quick-start-"));
   try {
     // Inside the checkout to resolve the built workspace package; no source imports or paths aliases.
     const filename = join(temporary, "score.ts");
@@ -151,11 +126,10 @@ export async function checkDocs(): Promise<void> {
 /** Local project-site preview: fixed allowlist, no directory traversal or checkout serving. */
 export async function serveDocs(port = 5566) {
   assert.ok(Number.isInteger(port) && port >= 0 && port <= 65535, "Invalid preview port");
-  await buildDocs();
   const assets = new Map<string, { body: Buffer; type: string }>();
   for (const name of files) {
-    await requireRegular(join(output, name));
-    assets.set(prefix + name, { body: await readFile(join(output, name)),
+    await requireRegular(join(site, name));
+    assets.set(prefix + name, { body: await readFile(join(site, name)),
       type: name.endsWith(".html") ? "text/html; charset=utf-8" : "text/plain; charset=utf-8" });
   }
   const server = createServer((request, response) => {
@@ -186,8 +160,7 @@ export async function serveDocs(port = 5566) {
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const action = process.argv[2];
-  if (action === "build" && process.argv.length === 3) await buildDocs();
-  else if (action === "check" && process.argv.length === 3) await checkDocs();
+  if (action === "check" && process.argv.length === 3) await checkDocs();
   else if (action === "serve" && process.argv.length <= 4) {
     const host = await serveDocs(process.argv[3] === undefined ? undefined : Number(process.argv[3]));
     console.log("Open " + host.url + " in your browser. Press Ctrl+C to close.");
@@ -196,5 +169,5 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
       host.close().catch((error: unknown) => { console.error(error); process.exitCode = 1; });
     };
     process.on("SIGINT", stop); process.on("SIGTERM", stop);
-  } else throw new Error("Usage: node scripts/docs.ts build|check|serve [port]");
+  } else throw new Error("Usage: node scripts/docs.ts check|serve [port]");
 }
