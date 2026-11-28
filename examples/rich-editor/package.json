@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@types/ws": "^8.18.2",
+    "happy-dom": "^21.0.4",
     "playwright": "^1.65.1"
   }
 }

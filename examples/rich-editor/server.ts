@@ -39,7 +39,7 @@ export async function startRichEditorServer(
     ["/shared/sync-ui.js", { file: join(directory, "../shared/sync-ui.js"), type: javascript }],
     ["/shared/presence.js", { file: join(directory, "../shared/presence.js"), type: javascript }],
   ]);
-  for (const name of ["page", "editor", "binding", "flat", "schema"]) {
+  for (const name of ["page", "editor", "schema"]) {
     entries.set(`/rich-editor/${name}.js`, { file: join(directory, `${name}.js`), type: javascript });
   }
   for (const [name, file] of prosemirrorModules()) entries.set(`/prosemirror/${name}.js`, { file, type: javascript });
