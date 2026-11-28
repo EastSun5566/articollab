@@ -94,6 +94,26 @@ describe("collection benchmark", () => {
     assert.match(output.stdout, /signed GC estimate/);
   });
 
+  it("measures ProseMirror keystrokes, local and remote, and refuses other modes with them", async () => {
+    const output = await run(["--expose-gc", script, "--prosemirror", "--smoke", "--json"]);
+    assert.equal(output.stderr, "");
+    const report = record(JSON.parse(output.stdout));
+    assert.deepEqual(report.config, { sizes: [500], keystrokes: 5, warmups: 1 });
+    assert.ok(Array.isArray(report.results));
+    assert.deepEqual(report.results.map((input) => { const row = record(input); return `${String(row.size)}/${String(row.scenario)}`; }),
+      ["500/local-keystroke", "500/remote-keystroke"]);
+    for (const input of report.results) {
+      const row = record(input);
+      assert.equal(row.unit, "ms/op");
+      assert.ok(Array.isArray(row.samples) && row.samples.length === 5);
+      for (const field of ["median", "min", "max"]) assert.ok(typeof row[field] === "number" && Number.isFinite(row[field]) && row[field] >= 0);
+    }
+    const printed = await run(["--expose-gc", script, "--prosemirror", "--smoke"]);
+    assert.match(printed.stdout, /size\tscenario\tmedian\tmin\tmax\tunit/);
+    assert.match(printed.stdout, /^500\tremote-keystroke\t/m);
+    await assert.rejects(run(["--expose-gc", script, "--prosemirror", "--extended", "--smoke"]), /--prosemirror is a separate mode/);
+  });
+
   it("reports just the three List move smoke workloads", async () => {
     const args = ["--expose-gc", script, "--list-move", "--smoke"];
     const output = await run([...args, "--json"]);

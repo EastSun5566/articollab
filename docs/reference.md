@@ -4,7 +4,7 @@ Look up the public API and exact collaboration contracts here. For a runnable in
 
 ## Compatibility
 
-Articollab 0.10 adds Text marks and paragraph attributes, undo and redo, `track()` and `settled()`, payload schemas, Counters, presence, store `slots` and the WebSocket transport. Articollab 0.9 added List moves and the `transform` event.
+Articollab 0.12 adds Text range reads and the [ProseMirror plugin](#prosemirror). Articollab 0.11 added the [React hooks](#react) and [server stores](#server-persistence). Articollab 0.10 added Text marks and paragraph attributes, undo and redo, `track()` and `settled()`, payload schemas, Counters, presence, store `slots` and the WebSocket transport. Articollab 0.9 added List moves and the `transform` event.
 
 Upgrade every runtime that reads a document before it exchanges new operations or snapshot formats; see [Upgrading](upgrading.md).
 
@@ -29,8 +29,8 @@ Import from `"articollab"`; internal modules and example helpers are not package
 | `doc.track(callback)`, `doc.settled(batch)` | Like `transact`, and also return the batch and a promise of its outcome; or that promise for any pending batch. |
 | `createUndoManager(doc, options?)` | Undo and redo for this writer's own changes; optional `captureTimeout` (default 500 ms), `maxSteps` (default 1000) and `paths`. |
 | `doc.state.body.observe(listener)` | Opt-in visible Text edits and format changes; returns an unsubscribe function. |
-| `format(index, count, key, value)`, `attributesAt(index)`, `toDelta()` on Text | Set or remove a mark on a range; read one element's marks; read the text as runs of equal marks. |
-| `formatBlocks(index, count, key, value)`, `blockAt(index)`, `blocks()` on Text | Set or remove a paragraph attribute on the paragraphs a range touches; read one paragraph's attributes; list every paragraph. |
+| `format(index, count, key, value)`, `attributesAt(index)`, `toDelta(index?, count?)` on Text | Set or remove a mark on a range; read one element's marks; read the text, or `count` elements from `index`, as runs of equal marks. |
+| `formatBlocks(index, count, key, value)`, `blockAt(index)`, `blocks(index?, count?)` on Text | Set or remove a paragraph attribute on the paragraphs a range touches; read one paragraph's attributes; list every paragraph, or those a range touches. |
 | `doc.state.items.observe(listener)` | Opt-in visible List moves, splices and in-place sets; returns an unsubscribe function. |
 | `doc.state.settings.observe(listener)` | Opt-in visible Map sets and deletes, with previous values; returns an unsubscribe function. |
 | `doc.state.votes.observe(listener)` | Opt-in visible `counterMap()` changes, each key's new and previous count; returns an unsubscribe function. |
@@ -82,7 +82,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 | --- | --- | --- |
 | `Value<T>` | `.value` | `.value = next` or `.set(next)`; replace the whole JSON value. |
 | `List<T>` | `.length`, `.get(index)`, `.values()`, `.toArray()`, iteration | `.insert(index, value)`, `.push(value)`, `.delete(index)`; `.set(index, value)` updates one element and `.move(from, to)` repositions it, both without changing its ID. |
-| `Text` | `.length`, `.values()`, `.toString()`, iteration, `.attributesAt(index)`, `.toDelta()`, `.blockAt(index)`, `.blocks()` | `.insert(index, string)`, `.delete(index, count = 1)`, `.format(index, count, key, value)`, `.formatBlocks(index, count, key, value)`; Unicode code points. |
+| `Text` | `.length`, `.values()`, `.toString()`, iteration, `.attributesAt(index)`, `.toDelta(index?, count?)`, `.blockAt(index)`, `.blocks(index?, count?)` | `.insert(index, string)`, `.delete(index, count = 1)`, `.format(index, count, key, value)`, `.formatBlocks(index, count, key, value)`; Unicode code points. |
 | `MapCollection<T>` | `.size`, `.get(key)`, `.has(key)`, `.keys()`, `.values()`, `.entries()`, `.toObject()`, iteration of `[key, value]` | `.set(key, value)`, `.delete(key)`, `.clear()`; each key holds one whole JSON value. |
 | `Counter` | `.value` | `.add(delta)`; a safe integer. |
 | `CounterMap` | `.size`, `.get(key)`, `.has(key)`, `.keys()`, `.values()`, `.entries()`, `.toObject()`, iteration of `[key, count]` | `.add(key, delta)`, `.delete(key)`, `.clear()`; one safe integer per key, 0 when absent. |
@@ -151,7 +151,8 @@ The entrypoint also exports these types, grouped by role rather than implementat
 - An unknown anchor is a [collection conflict](#collection-conflicts). A `start` that is not before `end` is invalid.
 - `attributesAt()` returns a frozen object with one entry per mark that is set, keys sorted. `toDelta()` returns frozen `{ insert, attributes? }` runs; neighbors with equal marks merge.
 - Snapshots save marks in application order, in a `marks` field that is absent when there are none. A mark that a later mark of its key covers completely is dropped; this never changes any element's marks.
-- `attributesAt()` costs O(m log n) for m marks. `toDelta()` reads the whole Text. After a mark, observers and change events compute every element's marks once, then compare only the elements inside the marks that changed.
+- `toDelta(index, count)` returns the runs of `count` elements from `index`, as the whole text's runs cut to that range. Without `count` it reads to the end; without arguments, the whole Text. The range follows the Text deletion bounds rules.
+- `attributesAt()` costs O(m log n) for m marks. `toDelta()` reads the whole Text, and a range costs O(count · m log n). After a mark, observers and change events compute every element's marks once, then compare only the elements inside the marks that changed.
 
 #### Text paragraphs
 
@@ -161,6 +162,7 @@ The entrypoint also exports these types, grouped by role rather than implementat
 - Each paragraph's value for a key is the last applied one; `null` removes it. On the server this is commit order; on a client, pending operations apply after authoritative ones.
 - Inserting a `"\n"` starts a paragraph without attributes. Deleting one removes its paragraph's attributes. An operation on a deleted `"\n"` has no effect; an unknown `id` is a [collection conflict](#collection-conflicts); an `id` that is not a `"\n"` is invalid.
 - `blockAt()` and `blocks()` return frozen objects. A `blocks()` entry is `{ index, length, attributes }`: its first element and its length, not counting the `"\n"` on either side.
+- `blocks(index, count)` returns the paragraphs `formatBlocks(index, count, …)` would set, whole: with `count` 0 the one holding gap `index`, otherwise the one holding `index` and each one a `"\n"` among the first `count - 1` elements starts. Without `count` it reads to the end. The range follows the Text deletion bounds rules.
 - Snapshots save `blocks: [{ id, attributes }]` for paragraphs that have attributes, in document order, and leave the field out when none do.
 
 #### List `set()`
@@ -920,6 +922,50 @@ Import from `"articollab/react"`; it needs React 18 or later as a peer dependenc
 **Undo steps**
 - The hooks do not change how the undo manager groups steps. Buttons should call `history.stopCapturing()` around their change, so that quick presses stay separate steps.
 
+## ProseMirror
+
+Import from `"articollab/prosemirror"`; it needs `prosemirror-model`, `prosemirror-state` and `prosemirror-view` as peer dependencies.
+
+| API | Purpose |
+| --- | --- |
+| `textSync(doc, path, options?)` | A plugin that keeps the editor and the Text at `path` in step. Options: `mapping` (default `basicMapping`), `history`, `canEdit`, `onError`, `onUnsentComposition`. |
+| `textToDoc(text, schema, mapping?)` | The ProseMirror document showing a Text, in the mapping's standard shape. |
+| `basicMapping`, `TextMapping`, `MarkMapping` | The mapping for `prosemirror-schema-basic` with `prosemirror-schema-list`, and the types for your own. |
+| `undo(history)`, `redo(history)` | Commands for an undo manager. |
+| `isComposing(view)` | Whether an input method composition is open. |
+| `selectionCursors(state)`, `resolveSelection(state, cursors)` | The selection as `CursorSelection` cursors, and another writer's cursors as positions in this editor. |
+| `remoteSelections(options?)`, `setRemoteSelections(view, selections)` | A plugin that draws other writers' selections, and the function that sets them. |
+| `TextPath<S>`, `TextSyncOptions`, `CursorSelection`, `RemoteSelection`, `RemoteSelectionStatus`, `RemoteSelectionsOptions` | Types. |
+
+**Mapping**
+- Each top-level node stands for one or more Text lines, joined by `"\n"`. A line's paragraph attributes come from the nodes around its text, and its marks from the mapping's marks.
+- The standard shape: lines with the same `quote` share one blockquote; consecutive `code` lines share one code block, and its text has no marks; a list item holds one paragraph, then its nested lists, and a line is nested at most one level deeper than the line before. Inside a list there are no headings; `code` wins over `list` and `heading`.
+- A level outside `heading.levels` is read as the nearest one. Nesting deeper than `lists.maxIndent` is read as `maxIndent`.
+- Nodes and marks the mapping does not name are left out. Text paragraph attributes and marks the mapping does not use are never written.
+- A schema without a node or mark the mapping names throws `TypeError` when the editor state is created. `textSync` throws `TypeError` for a path that is not a Text.
+
+**Local changes**
+- After each transaction that changes the document, the plugin first puts the changed top-level nodes into the standard shape, in an appended transaction that is not added to ProseMirror history.
+- It then writes the change in one `doc.transact()`: the code points that differ as one delete and one insert, then the marks and paragraph attributes that differ.
+- It compares only the top-level nodes that differ from the previous document, plus one on each side, and reads only that range of the Text. Each node's lines are cached.
+- `filterTransaction` refuses a change to the document while `canEdit()` returns `false`, while `doc.replayConflict` is set, or after an error. Selection changes always apply.
+
+**Changes from elsewhere**
+- Each `observe()` event replaces the top-level nodes that hold its changed range, plus one on each side, with the Text's lines there, in one transaction that is not added to ProseMirror history. The selection stays on the same text, through cursors.
+- An error while writing or showing a change calls `onError` once; then the plugin refuses local changes and stops showing others.
+
+**Compositions**
+- A composition starts at `compositionstart`, or at the first transaction ProseMirror marks as part of one. Until it ends, transactions change only the editor, and changes from elsewhere wait.
+- It ends after `compositionend`, once ProseMirror has read the final text, or at the next key outside it. <kbd>Esc</kbd> during it cancels it.
+- If nothing changed elsewhere, the editor's change is written as usual. Otherwise the replacement is written into the Text as it is now: elements deleted elsewhere stay deleted, and text inserted elsewhere stays. This requires the replacement to stay in the paragraphs the composition started in, without a line break, and the rest of their marks and attributes to be unchanged.
+- A composition that is not written calls `onUnsentComposition` with its text, or `"(a deletion)"`. `history.stopCapturing()` runs before and after one that is.
+- The editor then shows the Text again.
+
+**Selections**
+- `selectionCursors()` returns `undefined` while composing or without the plugin. A caret is one cursor bound left; a range binds its start right and its end left.
+- `resolveSelection()` returns `undefined` while composing, without the plugin, or while a cursor's anchor is unknown here. A selection whose text was deleted collapses instead of inverting.
+- `remoteSelections()` places selections from their cursors when they are set and after each change from the Text, and maps them through local changes in between. While composing it draws none.
+
 ## Boundaries
 
 - The server uses explicit writer sessions.
@@ -931,4 +977,4 @@ Import from `"articollab/react"`; it needs React 18 or later as a peer dependenc
 - Not promised: same-ID server rollback or forks, power-loss durability, or cross-file transactions.
 - These gaps are not a roadmap.
 
-[Previous: React](react.md) · [Next: Upgrading](upgrading.md)
+[Previous: ProseMirror](prosemirror.md) · [Next: Upgrading](upgrading.md)

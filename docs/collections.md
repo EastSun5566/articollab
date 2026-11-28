@@ -263,6 +263,8 @@ A paragraph's attributes belong to the `"\n"` that starts it; the first paragrap
 
 A `text()` without `blocks` is unchanged, and `toDelta()` lists only marks. Nest lists with an attribute such as `indent`; there are no tables or other nested blocks.
 
+`toDelta(index, count)` and `blocks(index, count)` read only part of a long Text (0.12 or later). To edit a formatted Text in an editor, use the [ProseMirror plugin](prosemirror.md).
+
 ## Validate payloads
 
 Payload schemas require [Articollab 0.10 or later](reference.md#compatibility).

@@ -1094,7 +1094,24 @@ async function main(args: string[]): Promise<void> {
   }
   const { values } = parseArgs({ args, options: { json: { type: "boolean" }, smoke: { type: "boolean" },
     extended: { type: "boolean" }, "checkpoint-storage": { type: "boolean" }, "profile-remote-replace": { type: "string" },
-    "list-move": { type: "boolean" } } });
+    "list-move": { type: "boolean" }, prosemirror: { type: "boolean" } } });
+  if (values.prosemirror) {
+    assert.ok(!values.extended && !values["checkpoint-storage"] && !values["list-move"] && values["profile-remote-replace"] === undefined,
+      "--prosemirror is a separate mode");
+    const { prosemirrorBench, prosemirrorSettings } = await import("./bench-prosemirror.ts");
+    const smoke = values.smoke === true, environment = await metadata(), results = await prosemirrorBench(smoke);
+    if (values.json) {
+      console.log(JSON.stringify({ environment, config: prosemirrorSettings(smoke), results }, null, 2));
+      return;
+    }
+    console.log(`Articollab ${environment.packageVersion} · ${environment.node} · ${environment.os}/${environment.architecture}`);
+    console.log("size\tscenario\tmedian\tmin\tmax\tunit");
+    for (const row of results) {
+      console.log([row.size, row.scenario, row.median.toFixed(3), row.min.toFixed(3), row.max.toFixed(3), row.unit].join("\t"));
+    }
+    console.log("A keystroke in the middle of a ProseMirror editor on happy-dom: local includes the write to the Text, remote the other writer's receive.");
+    return;
+  }
   if (values["list-move"]) {
     assert.ok(!values.extended && !values["checkpoint-storage"] && values["profile-remote-replace"] === undefined,
       "--list-move is separate from --extended, --checkpoint-storage and --profile-remote-replace");
