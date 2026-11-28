@@ -68,7 +68,10 @@ describe("Text lines and ProseMirror documents", () => {
       { runs: [{ text: "x", marks: {} }], attributes: { code: true } },
       { runs: [{ text: "y", marks: {} }], attributes: { code: true } },
     ]);
-    assert.deepEqual(plain(textLines(body, 6, 9)), plain(lines.slice(1, 3)), "the middle two lines");
+    assert.deepEqual(plain(textLines(body, 6, 8)), plain(lines.slice(1, 3)), "the middle two lines");
+    // Lines are joined by line breaks, so a range ending after one also holds the empty start of the next line.
+    assert.deepEqual(plain(textLines(body, 6, 9)), plain([...lines.slice(1, 3), { runs: [], attributes: { code: true } }]));
+    assert.deepEqual(plain(textLines(body, 16, 0)), [{ runs: [], attributes: { code: true } }], "the empty end");
     const editor = shape.doc(lines);
     // <h1>Title</h1><ul><li><p>😀 item</p></li></ul><pre>x\ny</pre>
     const elements = [0, 5, 6, 7, 12, 13, 14, 15, 16];

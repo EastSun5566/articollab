@@ -71,7 +71,6 @@
   "peerDependencies": {
     "prosemirror-model": "^1.25.0",
     "prosemirror-state": "^1.4.0",
-    "prosemirror-transform": "^1.10.0",
     "prosemirror-view": "^1.38.0",
     "react": ">=18"
   },
@@ -80,9 +79,6 @@
       "optional": true
     },
     "prosemirror-state": {
-      "optional": true
-    },
-    "prosemirror-transform": {
       "optional": true
     },
     "prosemirror-view": {
@@ -99,6 +95,8 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.3.3",
     "prosemirror-model": "^1.25.13",
+    "prosemirror-state": "^1.4.4",
+    "prosemirror-view": "^1.44.0",
     "react": "^19.3.1",
     "typescript": "^7.0.2"
   }

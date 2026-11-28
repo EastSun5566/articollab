@@ -64,7 +64,7 @@ const NONE: Attributes = Object.freeze({});
 const EMPTY_LINE: Line = Object.freeze({ runs: Object.freeze([]), attributes: NONE });
 
 /** Whether two JSON values are equal; object key order does not matter. */
-function sameJson(a: unknown, b: unknown): boolean {
+export function sameJson(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a !== "object" || typeof b !== "object" || a === null || b === null || Array.isArray(a) !== Array.isArray(b)) return false;
   const left = Object.entries(a), right = new Map(Object.entries(b));
@@ -88,7 +88,7 @@ function lineText(line: Line): string {
 }
 
 /** A line's length in Text elements. */
-function lineLength(line: Line): number {
+export function lineLength(line: Line): number {
   let length = 0;
   for (const { text } of line.runs) length += codePointLength(text);
   return length;
@@ -104,10 +104,14 @@ export function textLines(
   count?: number,
 ): Line[] {
   const ranged = index !== undefined;
-  const lines: { runs: Run[]; attributes: Attributes }[] = (ranged ? body.blocks(index, count) : body.blocks())
-    .map(({ attributes }) => ({ runs: [], attributes: sorted({ ...attributes }) }));
+  const delta = ranged ? body.toDelta(index, count) : body.toDelta();
+  const blocks = [...(ranged ? body.blocks(index, count) : body.blocks())];
+  // A range ending just after a line break also holds the empty start of the next line, which
+  // blocks() leaves out: a paragraph starts within a range only before its last element.
+  if (ranged && delta.at(-1)?.insert.endsWith("\n") === true) blocks.push(...body.blocks(index + delta.reduce((sum, run) => sum + codePointLength(run.insert), 0), 0));
+  const lines: { runs: Run[]; attributes: Attributes }[] = blocks.map(({ attributes }) => ({ runs: [], attributes: sorted({ ...attributes }) }));
   let line = 0;
-  for (const { insert, attributes } of ranged ? body.toDelta(index, count) : body.toDelta()) {
+  for (const { insert, attributes } of delta) {
     insert.split("\n").forEach((part, position) => {
       if (position > 0) line++;
       if (part !== "") lines[line]?.runs.push({ text: part, marks: attributes === undefined ? NONE : sorted({ ...attributes }) });
@@ -137,10 +141,17 @@ interface NodeInfo {
   readonly length: number;
 }
 
-/** Where each top-level node of a document starts, in Text elements and as a ProseMirror position. */
-interface Layout {
+/**
+ * Where each top-level node of a document starts, in Text elements and as a ProseMirror position,
+ * by child index. A node without lines, such as one the mapping leaves out, takes no elements.
+ */
+export interface Layout {
   readonly elements: readonly number[];
   readonly positions: readonly number[];
+  /** The child indices of the nodes that have lines, in order. */
+  readonly lined: readonly number[];
+  /** The text's length in elements. */
+  readonly length: number;
 }
 
 /** The last index whose value is at most `target` in an ascending array, or 0. */
@@ -338,15 +349,27 @@ export class TextShape {
           const levels = heading.levels, level = Number(node.attrs.level);
           attributes.heading = levels.includes(level) ? level : (level < Math.min(...levels) ? Math.min(...levels) : Math.max(...levels));
         }
-        const runs: Run[] = [];
-        node.forEach((child) => {
+        // A line break typed into the text, as insertText("a\nb") makes, starts another line like it.
+        let runs: Run[] = [], start = position + 1;
+        const own = sorted(attributes);
+        node.forEach((child, at) => {
           if (!child.isText) return;
-          const marks = this.textMarks(child), last = runs.at(-1);
-          if (last !== undefined && sameJson(last.marks, marks)) runs[runs.length - 1] = { text: last.text + (child.text ?? ""), marks };
-          else runs.push({ text: child.text ?? "", marks });
+          const marks = this.textMarks(child);
+          for (const [index, part] of (child.text ?? "").split("\n").entries()) {
+            if (index > 0) {
+              lines.push({ runs, attributes: own });
+              starts.push(start);
+              runs = [];
+              start = position + 1 + at + (child.text ?? "").split("\n").slice(0, index).join("\n").length + 1;
+            }
+            if (part === "") continue;
+            const last = runs.at(-1);
+            if (last !== undefined && sameJson(last.marks, marks)) runs[runs.length - 1] = { text: last.text + part, marks };
+            else runs.push({ text: part, marks });
+          }
         });
-        lines.push({ runs, attributes: sorted(attributes) });
-        starts.push(position + 1);
+        lines.push({ runs, attributes: own });
+        starts.push(start);
       } else {
         this.walk(node, position + 1, context, lines, starts);
       }
@@ -377,60 +400,67 @@ export class TextShape {
   layout(doc: Node): Layout {
     let layout = this.layouts.get(doc);
     if (layout === undefined) {
-      const elements: number[] = [], positions: number[] = [];
+      const elements: number[] = [], positions: number[] = [], lined: number[] = [];
       let element = 0;
-      doc.forEach((node, position) => {
+      doc.forEach((node, position, index) => {
         const info = this.nodeInfo(node);
-        if (info.lines.length === 0) return;
-        elements.push(element);
+        // A line break separates this node's first line from the line before.
+        const start = info.lines.length > 0 && lined.length > 0 ? element + 1 : element;
+        elements.push(start);
         positions.push(position);
-        element += info.length + 1;
+        if (info.lines.length === 0) return;
+        lined.push(index);
+        element = start + info.length;
       });
-      layout = Object.freeze({ elements: Object.freeze(elements), positions: Object.freeze(positions) });
+      layout = Object.freeze({ elements: Object.freeze(elements), positions: Object.freeze(positions), lined: Object.freeze(lined), length: element });
       this.layouts.set(doc, layout);
     }
     return layout;
   }
 
+  /** The child index of the node with lines that holds Text element gap `element`. */
+  childAtElement(doc: Node, element: number): number {
+    const layout = this.layout(doc);
+    const starts = layout.lined.map((index) => layout.elements[index]!);
+    return layout.lined[lastAtMost(starts, element)] ?? 0;
+  }
+
   /** The document position of Text element gap `element`. */
   positionAt(doc: Node, element: number): number {
     const layout = this.layout(doc);
-    if (layout.elements.length === 0) return 0;
-    const top = lastAtMost(layout.elements, element);
-    const info = this.nodeInfo(doc.child(this.childIndex(doc, layout.positions[top]!)));
-    let offset = element - layout.elements[top]!, line = 0;
+    if (layout.lined.length === 0) return 0;
+    const child = this.childAtElement(doc, element);
+    const info = this.nodeInfo(doc.child(child));
+    let offset = element - layout.elements[child]!, line = 0;
     while (line < info.lines.length - 1 && offset > info.lengths[line]!) { offset -= info.lengths[line]! + 1; line++; }
-    offset = Math.min(offset, info.lengths[line]!);
+    offset = Math.max(0, Math.min(offset, info.lengths[line]!));
     let units = 0, seen = 0;
     for (const point of lineText(info.lines[line]!)) {
       if (seen++ === offset) break;
       units += point.length;
     }
-    return layout.positions[top]! + info.starts[line]! + units;
+    return layout.positions[child]! + info.starts[line]! + units;
   }
 
   /** The Text element gap nearest document position `position`; between blocks, the end of the line before. */
   elementAt(doc: Node, position: number): number {
     const layout = this.layout(doc);
-    if (layout.elements.length === 0) return 0;
-    const top = lastAtMost(layout.positions, position);
-    const nodeStart = layout.positions[top]!;
-    const info = this.nodeInfo(doc.child(this.childIndex(doc, nodeStart)));
-    const relative = position - nodeStart;
+    if (layout.lined.length === 0) return 0;
+    const lined = layout.lined.map((index) => layout.positions[index]!);
+    const at = lastAtMost(lined, position);
+    const child = layout.lined[at]!;
+    const info = this.nodeInfo(doc.child(child));
+    const relative = position - layout.positions[child]!;
     // Before the node's first text, as between two blocks: the end of the line before.
-    if (relative < info.starts[0]! && top > 0) return layout.elements[top]! - 1;
+    if (relative < info.starts[0]! && at > 0) return layout.elements[child]! - 1;
     const line = lastAtMost(info.starts, relative);
-    let element = layout.elements[top]!;
+    let element = layout.elements[child]!;
     for (let before = 0; before < line; before++) element += info.lengths[before]! + 1;
     const text = lineText(info.lines[line]!);
     const units = Math.max(0, Math.min(text.length, relative - info.starts[line]!));
     return element + codePointLength(text.slice(0, units));
   }
 
-  /** The index of the top-level child that starts at `position`. */
-  private childIndex(doc: Node, position: number): number {
-    return doc.resolve(position).index(0);
-  }
 
   /** The lines of one top-level node. */
   nodeLines(node: Node): readonly Line[] {
