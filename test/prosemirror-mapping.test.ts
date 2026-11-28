@@ -90,6 +90,48 @@ describe("Text lines and ProseMirror documents", () => {
   });
 });
 
+describe("Line breaks and code block languages", () => {
+  it("reads a hard break as a new line like the one it breaks", () => {
+    const { nodes, marks } = editorSchema;
+    const doc = editorSchema.node("doc", null, [
+      nodes.heading!.create({ level: 2 }, [editorSchema.text("one", [marks.strong!.create()]), nodes.hard_break!.create(), editorSchema.text("two")]),
+      nodes.paragraph!.create(null, [nodes.hard_break!.create()]),
+    ]);
+    assert.deepEqual(plain(shape.lines(doc)), [
+      { runs: [{ text: "one", marks: { bold: true } }], attributes: { heading: 2 } },
+      { runs: [{ text: "two", marks: {} }], attributes: { heading: 2 } },
+      { runs: [], attributes: {} }, { runs: [], attributes: {} },
+    ]);
+    // Positions skip the break: "two" starts after it.
+    assert.equal(shape.positionAt(doc, 4), doc.resolve(1).pos + 4);
+    assert.equal(shape.elementAt(doc, 5), 4);
+    assert.equal(shape.elementAt(doc, 4), 3, "before the break is the end of the line before");
+    // The standard shape has no breaks.
+    assert.equal(shape.doc(shape.lines(doc)).childCount, 4);
+  });
+
+  it("stores a code block's language as the value of code, and keeps languages a mapping cannot show", () => {
+    const schema = new Schema({
+      nodes: basic.spec.nodes.update("code_block", { ...basic.spec.nodes.get("code_block")!, attrs: { lang: { default: null } } }),
+      marks: basic.spec.marks,
+    });
+    const { lists: _lists, ...withoutLists } = basicMapping;
+    const own = new TextShape(schema, { ...withoutLists, codeBlock: { node: "code_block", language: "lang" } });
+    const lines = [line("let a;", { code: "js" }), line("b", { code: "js" }), line("x = 1", { code: "py" }), line("plain", { code: true })];
+    const doc = own.doc(lines);
+    const blocks: unknown[] = [];
+    doc.forEach((node) => { blocks.push([node.attrs.lang, node.textContent]); });
+    assert.deepEqual(blocks,
+      [["js", "let a;\nb"], ["py", "x = 1"], [null, "plain"]]);
+    assert.deepEqual(plain(own.lines(doc)), plain(lines));
+    // Without a language attribute, every code value is one code block, and none needs rewriting.
+    assert.equal(shape.doc(lines).childCount, 1);
+    assert.equal(shape.sameAttribute("code", true, "js"), true);
+    assert.equal(own.sameAttribute("code", true, "js"), false);
+    assert.equal(shape.sameAttribute("code", undefined, "js"), false);
+  });
+});
+
 describe("Custom mappings", () => {
   it("maps other node and mark names, and leaves out what the mapping lacks", () => {
     const custom = new Schema({

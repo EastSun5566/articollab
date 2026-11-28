@@ -14,9 +14,9 @@ export interface MarkMapping {
 
 /**
  * Which ProseMirror nodes and marks stand for a Text's lines, marks and paragraph attributes. A
- * paragraph's attributes use fixed keys: `heading` (a level), `code` and `quote` (`true`), `list`
- * (`"bullet"` or `"ordered"`) and `indent` (a list depth from 1). Nodes and marks that are not
- * listed are left out.
+ * paragraph's attributes use fixed keys: `heading` (a level), `code` (`true`, or a code block's
+ * language), `quote` (`true`), `list` (`"bullet"` or `"ordered"`) and `indent` (a list depth from 1).
+ * Nodes and marks that are not listed are left out.
  */
 export interface TextMapping {
   /** The document node; `"doc"` by default. */
@@ -26,8 +26,12 @@ export interface TextMapping {
   readonly marks: Readonly<Record<string, MarkMapping>>;
   /** A heading node with a `level` attribute, for the `heading` attribute, kept within `levels`. */
   readonly heading?: { readonly node: string; readonly levels: readonly number[] };
-  /** A code block, one line per `"\n"` in it, for the `code` attribute. Its text has no marks. */
-  readonly codeBlock?: { readonly node: string };
+  /**
+   * A code block, one line per `"\n"` in it, for the `code` attribute. Its text has no marks. With
+   * `language`, the name of its language attribute, a block with a language stores it as the value of
+   * `code`; otherwise every value of `code` is a code block, and writing leaves the value as it is.
+   */
+  readonly codeBlock?: { readonly node: string; readonly language?: string };
   /** A quote around paragraphs, for the `quote` attribute. */
   readonly blockquote?: { readonly node: string };
   /**
@@ -35,6 +39,8 @@ export interface TextMapping {
    * lists. Lists nested deeper than `maxIndent` levels below the first are flattened to it.
    */
   readonly lists?: { readonly item: string; readonly bullet: string; readonly ordered: string; readonly maxIndent?: number };
+  /** An inline node that breaks a line, such as a hard break: it starts another line with the same attributes. */
+  readonly lineBreak?: { readonly node: string };
 }
 
 /** The nodes and marks of `prosemirror-schema-basic` with `prosemirror-schema-list`'s lists. */
@@ -54,6 +60,7 @@ export const basicMapping: TextMapping = Object.freeze({
   codeBlock: Object.freeze({ node: "code_block" }),
   blockquote: Object.freeze({ node: "blockquote" }),
   lists: Object.freeze({ item: "list_item", bullet: "bullet_list", ordered: "ordered_list" }),
+  lineBreak: Object.freeze({ node: "hard_break" }),
 });
 
 /** Paragraph attributes or marks: JSON values by key, keys sorted. */
@@ -189,6 +196,7 @@ export class TextShape {
     if (mapping.codeBlock !== undefined) this.node(mapping.codeBlock.node);
     if (mapping.blockquote !== undefined) this.node(mapping.blockquote.node);
     if (mapping.lists !== undefined) for (const name of [mapping.lists.item, mapping.lists.bullet, mapping.lists.ordered]) this.node(name);
+    if (mapping.lineBreak !== undefined) this.node(mapping.lineBreak.node);
     for (const [key, { mark }] of Object.entries(mapping.marks)) {
       if (schema.marks[mark] === undefined) throw new TypeError(`The schema has no ${mark} mark for ${key}`);
     }
@@ -208,6 +216,15 @@ export class TextShape {
       blocks: [...(heading ? ["heading"] : []), ...(codeBlock ? ["code"] : []), ...(blockquote ? ["quote"] : []),
         ...(lists ? ["list", "indent"] : [])],
     };
+  }
+
+  /**
+   * Whether two values of a paragraph attribute show the same: for `code` without a language
+   * attribute, any two values make a code block.
+   */
+  sameAttribute(key: string, a: JsonValue | undefined, b: JsonValue | undefined): boolean {
+    if (key === "code" && this.mapping.codeBlock?.language === undefined && a != null && b != null) return true;
+    return sameJson(a ?? null, b ?? null);
   }
 
   // Lines to nodes.
@@ -275,7 +292,9 @@ export class TextShape {
       return end;
     };
     const quoted = (line: Line) => blockquote !== undefined && !inQuote && line.attributes.quote === true;
-    const coded = (line: Line) => codeBlock !== undefined && line.attributes.code === true;
+    const coded = (line: Line) => codeBlock !== undefined && line.attributes.code != null;
+    // Lines of one code block: the same language, when the mapping stores one.
+    const language = (line: Line) => (codeBlock?.language === undefined || typeof line.attributes.code !== "string" ? true : line.attributes.code);
     const listed = (line: Line) => lists !== undefined && (line.attributes.list === "bullet" || line.attributes.list === "ordered");
     for (let index = 0; index < lines.length;) {
       const line = lines[index]!;
@@ -284,9 +303,11 @@ export class TextShape {
         blocks.push(this.node(blockquote!.node).create(null, this.buildBlocks(lines.slice(index, end), true)));
         index = end;
       } else if (coded(line)) {
-        const end = runEnd(index, (next) => coded(next) && !quoted(next));
+        const value = language(line);
+        const end = runEnd(index, (next) => coded(next) && !quoted(next) && language(next) === value);
         const code = lines.slice(index, end).map(lineText).join("\n");
-        blocks.push(this.node(codeBlock!.node).create(null, code === "" ? [] : [this.schema.text(code)]));
+        const attrs = codeBlock!.language === undefined ? null : { [codeBlock!.language]: value === true ? null : value };
+        blocks.push(this.node(codeBlock!.node).create(attrs, code === "" ? [] : [this.schema.text(code)]));
         index = end;
       } else if (listed(line)) {
         const end = runEnd(index, (next) => listed(next) && !coded(next) && !quoted(next));
@@ -325,7 +346,7 @@ export class TextShape {
   /** Collects the lines under `parent`, whose content starts at position `offset`, and where each line's text starts. */
   private walk(parent: Node, offset: number, context: { quote: boolean; list?: "bullet" | "ordered"; depth: number },
     lines: Line[], starts: number[]): void {
-    const { heading, codeBlock, blockquote, lists } = this.mapping;
+    const { heading, codeBlock, blockquote, lists, lineBreak } = this.mapping;
     parent.forEach((node, childOffset) => {
       const position = offset + childOffset;
       const name = node.type.name;
@@ -339,8 +360,10 @@ export class TextShape {
         node.forEach((item, itemOffset) => { this.walk(item, position + 1 + itemOffset + 1, { quote: context.quote, list, depth }, lines, starts); });
       } else if (codeBlock !== undefined && name === codeBlock.node) {
         let start = position + 1;
+        const language: unknown = codeBlock.language === undefined ? undefined : node.attrs[codeBlock.language];
+        const code = typeof language === "string" && language !== "" ? language : true;
         for (const part of node.textContent.split("\n")) {
-          lines.push({ runs: part === "" ? [] : [{ text: part, marks: NONE }], attributes: sorted({ ...attributes, code: true }) });
+          lines.push({ runs: part === "" ? [] : [{ text: part, marks: NONE }], attributes: sorted({ ...attributes, code }) });
           starts.push(start);
           start += part.length + 1;
         }
@@ -352,10 +375,18 @@ export class TextShape {
           const levels = heading.levels, level = Number(node.attrs.level);
           attributes.heading = levels.includes(level) ? level : (level < Math.min(...levels) ? Math.min(...levels) : Math.max(...levels));
         }
-        // A line break typed into the text, as insertText("a\nb") makes, starts another line like it.
+        // A line break typed into the text, as insertText("a\nb") makes, or a line break node starts
+        // another line like it.
         let runs: Run[] = [], start = position + 1;
         const own = sorted(attributes);
         node.forEach((child, at) => {
+          if (lineBreak !== undefined && child.type.name === lineBreak.node) {
+            lines.push({ runs, attributes: own });
+            starts.push(start);
+            runs = [];
+            start = position + 1 + at + child.nodeSize;
+            return;
+          }
           if (!child.isText) return;
           const marks = this.textMarks(child);
           for (const [index, part] of (child.text ?? "").split("\n").entries()) {
