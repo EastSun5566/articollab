@@ -30,8 +30,11 @@ export interface TextMapping {
   readonly codeBlock?: { readonly node: string };
   /** A quote around paragraphs, for the `quote` attribute. */
   readonly blockquote?: { readonly node: string };
-  /** List nodes, for the `list` and `indent` attributes. Each item holds one paragraph and nested lists. */
-  readonly lists?: { readonly item: string; readonly bullet: string; readonly ordered: string };
+  /**
+   * List nodes, for the `list` and `indent` attributes. Each item holds one paragraph and nested
+   * lists. Lists nested deeper than `maxIndent` levels below the first are flattened to it.
+   */
+  readonly lists?: { readonly item: string; readonly bullet: string; readonly ordered: string; readonly maxIndent?: number };
 }
 
 /** The nodes and marks of `prosemirror-schema-basic` with `prosemirror-schema-list`'s lists. */
@@ -237,7 +240,7 @@ export class TextShape {
     const depths: number[] = [];
     for (const [index, line] of lines.entries()) {
       const indent = typeof line.attributes.indent === "number" ? line.attributes.indent : 0;
-      depths.push(index === 0 ? 0 : Math.min(indent, depths[index - 1]! + 1));
+      depths.push(index === 0 ? 0 : Math.min(indent, depths[index - 1]! + 1, lists.maxIndent ?? Infinity));
     }
     const level = (start: number, depth: number): [Node[], number] => {
       const result: Node[] = [];
@@ -331,7 +334,7 @@ export class TextShape {
       if (blockquote !== undefined && name === blockquote.node) {
         this.walk(node, position + 1, { ...context, quote: true }, lines, starts);
       } else if (lists !== undefined && (name === lists.bullet || name === lists.ordered)) {
-        const depth = context.list === undefined ? 0 : context.depth + 1;
+        const depth = context.list === undefined ? 0 : Math.min(context.depth + 1, lists.maxIndent ?? Infinity);
         const list = name === lists.ordered ? "ordered" : "bullet";
         node.forEach((item, itemOffset) => { this.walk(item, position + 1 + itemOffset + 1, { quote: context.quote, list, depth }, lines, starts); });
       } else if (codeBlock !== undefined && name === codeBlock.node) {

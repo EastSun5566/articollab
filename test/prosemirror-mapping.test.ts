@@ -122,6 +122,11 @@ describe("Custom mappings", () => {
     assert.deepEqual(plain(own.lines(custom.node("root", null, [custom.node("title", { level: 5 }, [custom.text("t")])]))),
       [line("t", { heading: 2 })]);
     assert.deepEqual(own.keys(), { marks: ["bold", "link"], blocks: ["heading", "quote"] });
+    // Lists nested deeper than maxIndent are flattened to it.
+    const shallow = new TextShape(editorSchema, { ...basicMapping, lists: { ...basicMapping.lists!, maxIndent: 1 } });
+    const deep = shape.doc([line("a", { list: "bullet" }), line("b", { indent: 1, list: "bullet" }), line("c", { indent: 2, list: "bullet" })]);
+    assert.deepEqual(shallow.lines(deep).map((each) => plain(each.attributes)),
+      [{ list: "bullet" }, { indent: 1, list: "bullet" }, { indent: 1, list: "bullet" }]);
   });
 
   it("refuses a mapping the schema cannot hold", () => {
