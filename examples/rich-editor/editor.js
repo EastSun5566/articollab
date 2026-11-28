@@ -98,7 +98,7 @@ export async function createRichEditor(parent, doc, options) {
     "Mod-Shift-8": commands.bullets, "Mod-Shift-7": commands.numbers,
     Enter: splitListItem(nodeType("list_item")), Tab: sinkListItem(nodeType("list_item")), "Shift-Tab": liftListItem(nodeType("list_item")),
   });
-  let editable = false, destroyed = false;
+  let editable = false, destroyed = false, wasComposing = false;
   /** A read-only change that waits for the composition to end. @type {boolean | undefined} */
   let pendingReadOnly;
   /** Reports changes, and applies a read-only change that waited for a composition. */
@@ -110,8 +110,11 @@ export async function createRichEditor(parent, doc, options) {
           pendingReadOnly = undefined;
           queueMicrotask(() => { setReadOnly(value); });
         }
-        const changed = previous.doc !== current.state.doc;
-        if (changed || !previous.selection.eq(current.state.selection)) options.onChange({ doc: changed });
+        const changed = previous.doc !== current.state.doc, composing = isComposing(current);
+        // A composition that ended moves the caret to its text, even when the editor already shows it.
+        const ended = wasComposing && !composing;
+        wasComposing = composing;
+        if (changed || ended || !previous.selection.eq(current.state.selection)) options.onChange({ doc: changed || ended });
       },
     }),
   });
