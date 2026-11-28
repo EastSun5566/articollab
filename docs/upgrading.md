@@ -13,9 +13,9 @@ Keep the original checkpoints until you no longer need to roll back. Once saved 
 
 ## Upgrading from 0.11 to 0.12
 
-0.12 adds a [ProseMirror plugin](prosemirror.md) at `"articollab/prosemirror"`, and `index` and `count` arguments to Text `toDelta()` and `blocks()`. Operation, snapshot and checkpoint formats stay the same, so writers on 0.11 and 0.12 can share a document.
+0.12 adds a [ProseMirror plugin](prosemirror.md) at `"articollab/prosemirror"`, a [Tiptap extension](tiptap.md) at `"articollab/tiptap"`, and `index` and `count` arguments to Text `toDelta()` and `blocks()`. Operation, snapshot and checkpoint formats stay the same, so writers on 0.11 and 0.12 can share a document.
 
-If you built your own ProseMirror binding from the rich text example, replace it with `textSync`. It stores marks and paragraph attributes with the same keys, so existing Texts show unchanged.
+If you built your own ProseMirror binding from the rich text example, replace it with `textSync`. It stores marks and paragraph attributes with the same keys, so existing Texts show unchanged. A Text that Tiptap writes can also hold `strike` and `underline` marks and a language as the value of `code`; editors using `basicMapping` show such a code block and keep its language.
 
 ## Upgrading from 0.10 to 0.11
 

@@ -39,9 +39,9 @@ export const Note = defineDocument({
 /** @typedef {NonNullable<(typeof Note.definition.body)["blocks"]>} NoteBlocks */
 /** @typedef {import("articollab").DocumentOperation<typeof Note.definition>} NoteOperation */
 
-/** The editor's schema: ProseMirror's basic nodes and marks, without images, rules or hard breaks, plus lists. */
+/** The editor's schema: ProseMirror's basic nodes and marks, without images or rules, plus lists. */
 export const editorSchema = new Schema({
-  nodes: addListNodes(basic.spec.nodes.remove("image").remove("horizontal_rule").remove("hard_break"), "paragraph block*", "block"),
+  nodes: addListNodes(basic.spec.nodes.remove("image").remove("horizontal_rule"), "paragraph block*", "block"),
   marks: basic.spec.marks,
 });
 

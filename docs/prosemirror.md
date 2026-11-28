@@ -10,7 +10,7 @@ Use Articollab 0.12 or later:
 pnpm add articollab prosemirror-model prosemirror-state prosemirror-view
 ```
 
-Import it from `"articollab/prosemirror"`. Use `prosemirror-schema-basic` and `prosemirror-schema-list` for the editor's schema, or [map your own](#map-your-own-schema).
+Import it from `"articollab/prosemirror"`. Use `prosemirror-schema-basic` and `prosemirror-schema-list` for the editor's schema, or [map your own](#map-your-own-schema). For Tiptap, use the [Tiptap extension](tiptap.md).
 
 ## Define the Text
 
@@ -24,6 +24,7 @@ Import it from `"articollab/prosemirror"`. Use `prosemirror-schema-basic` and `p
 | `code_block` | `code: true` on each of its lines |
 | `blockquote` | `quote: true` on each paragraph inside it |
 | `bullet_list`, `ordered_list` | `list: "bullet"` or `"ordered"` on each item, and `indent` from 1 for nested items |
+| `hard_break` | a line break: the text after it is a new paragraph |
 
 So the Text lists those keys:
 
@@ -148,11 +149,12 @@ const mapping: TextMapping = {
 | `paragraph` | The textblock for a plain paragraph. |
 | `marks` | One entry per Text mark key: the ProseMirror mark, and for a mark with attributes, `value(mark)` to read the Text value and `attrs(value)` to build the attributes. Without them the value is `true`. |
 | `heading` | A node with a `level` attribute. A level outside `levels` is stored as the nearest one. |
-| `codeBlock` | A code block. Each of its lines is a paragraph with `code: true`; its text has no marks. |
+| `codeBlock` | A code block. Each of its lines is a paragraph with `code: true`; its text has no marks. With `language`, the name of its language attribute, a block with a language stores it as the value of `code`. Without it, every `code` value shows as a code block and is kept when written. |
 | `blockquote` | A node around paragraphs, for `quote: true`. |
 | `lists` | `item`, `bullet` and `ordered` nodes, for `list` and `indent`. Each item holds one paragraph and its nested lists. `maxIndent` flattens deeper nesting. |
+| `lineBreak` | An inline node, such as a hard break, that ends a line: the text after it is a new paragraph with the same attributes. So <kbd>Shift</kbd>+<kbd>Enter</kbd> works like <kbd>Enter</kbd>. |
 
-Leave out what your schema does not have. Creating the editor state throws `TypeError` if the schema lacks a node or mark the mapping names. Nodes and marks the mapping does not name are not stored: an image, a horizontal rule or a hard break disappears from the editor.
+Leave out what your schema does not have. Creating the editor state throws `TypeError` if the schema lacks a node or mark the mapping names. Nodes and marks the mapping does not name are not stored: an image or a horizontal rule disappears from the editor.
 
 ## Limits
 
@@ -162,4 +164,4 @@ Leave out what your schema does not have. Creating the editor state throws `Type
 
 The [rich text editor example](https://github.com/EastSun5566/articollab/blob/main/examples/README.md#rich-text-editor) uses every part of the plugin. See the [reference](reference.md#prosemirror) for the exact rules.
 
-[Previous: React](react.md) · [Next: Core reference](reference.md)
+[Previous: React](react.md) · [Next: Tiptap](tiptap.md)

@@ -17,10 +17,11 @@ const { EditorView } = await import("prosemirror-view");
 const href: PayloadSchema<string> = { "~standard": { version: 1, vendor: "test", validate: (value) =>
   typeof value === "string" ? { value } : { issues: [{ message: "Expected a URL string" }] } } };
 
-/** A note with every mark and paragraph attribute `basicMapping` uses. */
+/** A note with every mark and paragraph attribute `basicMapping` and Tiptap's `starterKitMapping` use. */
 export const Note = defineDocument({
   body: text({
-    marks: { bold: { expand: "after" }, italic: { expand: "after" }, code: { expand: "after" }, link: { expand: "none", payload: href } },
+    marks: { bold: { expand: "after" }, italic: { expand: "after" }, strike: { expand: "after" }, underline: { expand: "after" },
+      code: { expand: "after" }, link: { expand: "none", payload: href } },
     blocks: { heading: {}, list: {}, indent: {}, quote: {}, code: {} },
   }),
 });
@@ -37,7 +38,7 @@ function keepSafeLinks({ batch }: { batch: { operations: readonly Operation[] } 
 }
 
 /** A server, and writers with editors whose batches and commits move only when a test says so. */
-export function network() {
+export function network(schema: Schema = editorSchema) {
   const server = createServer(Note, { resolve: keepSafeLinks });
   const writers: { send(): void; receive(): void; destroy(): void }[] = [];
   /** A writer; `options` can depend on its document, as an undo manager does. */
@@ -49,7 +50,7 @@ export function network() {
     const remote = remoteSelections();
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- happy-dom implements the DOM's HTMLElement.
     const view = new EditorView(window.document.createElement("div") as unknown as HTMLElement,
-      { state: EditorState.create({ schema: editorSchema, plugins: [sync, remote] }) });
+      { state: EditorState.create({ schema, plugins: [sync, remote] }) });
     const binding = sync.getState(view.state)!.binding;
     const entry = {
       doc, view, binding, remote, outbox,

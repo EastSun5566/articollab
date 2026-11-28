@@ -11,7 +11,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const site = join(root, "docs");
 const prefix = "/articollab/";
 const pages = ["README.md", "quick-start.md", "concepts.md", "collections.md",
-  "transactions.md", "server-wire.md", "recovery.md", "sync.md", "react.md", "prosemirror.md", "reference.md", "upgrading.md", "faq.md"];
+  "transactions.md", "server-wire.md", "recovery.md", "sync.md", "react.md", "prosemirror.md", "tiptap.md", "reference.md", "upgrading.md", "faq.md"];
 const files = ["index.html", "_sidebar.md", ".nojekyll", ...pages];
 const execute = promisify(execFile);
 

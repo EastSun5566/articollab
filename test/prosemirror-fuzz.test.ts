@@ -2,30 +2,69 @@ import assert from "node:assert/strict";
 import { after, describe, it } from "node:test";
 import { baseKeymap, lift, setBlockType, toggleMark, wrapIn } from "prosemirror-commands";
 import { liftListItem, sinkListItem, splitListItem, wrapInList } from "prosemirror-schema-list";
+import type { Schema } from "prosemirror-model";
 import { Selection, TextSelection, type Command } from "prosemirror-state";
 
-import { selectionCursors, textToDoc } from "../packages/articollab/src/prosemirror/index.ts";
+import { basicMapping, selectionCursors, textToDoc, type TextMapping } from "../packages/articollab/src/prosemirror/index.ts";
 import { editorSchema, json, network } from "./prosemirror-helpers.ts";
 
-const nodes = editorSchema.nodes, marks = editorSchema.marks;
-const commands: [string, Command][] = [
-  ["enter", (state, dispatch) => splitListItem(nodes.list_item!)(state, dispatch) || baseKeymap.Enter!(state, dispatch)],
-  ["backspace", baseKeymap.Backspace!],
-  ["delete", baseKeymap.Delete!],
-  ["bold", toggleMark(marks.strong!)],
-  ["italic", toggleMark(marks.em!)],
-  ["code", toggleMark(marks.code!)],
-  ["link", toggleMark(marks.link!, { href: "https://example.com" })],
-  ["heading", setBlockType(nodes.heading!, { level: 2 })],
-  ["paragraph", setBlockType(nodes.paragraph!)],
-  ["code block", setBlockType(nodes.code_block!)],
-  ["bullets", wrapInList(nodes.bullet_list!)],
-  ["numbers", wrapInList(nodes.ordered_list!)],
-  ["sink", sinkListItem(nodes.list_item!)],
-  ["lift item", liftListItem(nodes.list_item!)],
-  ["quote", wrapIn(nodes.blockquote!)],
-  ["lift", lift],
-];
+// Loaded after the helpers set up a DOM.
+const { getSchema } = await import("@tiptap/core");
+const { StarterKit } = await import("@tiptap/starter-kit");
+const { starterKitMapping } = await import("../packages/articollab/src/tiptap/index.ts");
+
+/** An editor schema with its mapping, and the commands a writer runs at random. */
+interface Variant { readonly schema: Schema; readonly mapping: TextMapping; readonly commands: readonly (readonly [string, Command])[] }
+
+/** The commands for a schema whose nodes and marks have these names. */
+function variant(schema: Schema, mapping: TextMapping, names: {
+  item: string; bullets: string; numbers: string; code: string; quote: string; br: string; strong: string; em: string;
+}, extra: readonly (readonly [string, Command])[] = []): Variant {
+  const node = (name: string) => schema.nodes[name]!, mark = (name: string) => schema.marks[name]!;
+  const commands: (readonly [string, Command])[] = [
+    ["enter", (state, dispatch) => splitListItem(node(names.item))(state, dispatch) || baseKeymap.Enter!(state, dispatch)],
+    ["backspace", baseKeymap.Backspace!],
+    ["delete", baseKeymap.Delete!],
+    ["bold", toggleMark(mark(names.strong))],
+    ["italic", toggleMark(mark(names.em))],
+    ["code", toggleMark(mark("code"))],
+    ["link", toggleMark(mark("link"), { href: "https://example.com" })],
+    ["heading", setBlockType(node("heading"), { level: 2 })],
+    ["paragraph", setBlockType(node("paragraph"))],
+    ["code block", setBlockType(node(names.code))],
+    ["bullets", wrapInList(node(names.bullets))],
+    ["numbers", wrapInList(node(names.numbers))],
+    ["sink", sinkListItem(node(names.item))],
+    ["lift item", liftListItem(node(names.item))],
+    ["quote", wrapIn(node(names.quote))],
+    ["lift", lift],
+    // Shift+Enter: a hard break, which starts another line.
+    ["hard break", (state, dispatch) => {
+      if (!state.selection.$from.parent.type.contentMatch.matchType(node(names.br))) return false;
+      dispatch?.(state.tr.replaceSelectionWith(node(names.br).create()).scrollIntoView());
+      return true;
+    }],
+    ...extra,
+  ];
+  return { schema, mapping, commands };
+}
+
+const tiptapSchema = getSchema([StarterKit.configure({ undoRedo: false, trailingNode: false })]);
+const variants: Record<string, Variant> = {
+  ProseMirror: variant(editorSchema, basicMapping, {
+    item: "list_item", bullets: "bullet_list", numbers: "ordered_list", code: "code_block", quote: "blockquote", br: "hard_break",
+    strong: "strong", em: "em",
+  }),
+  Tiptap: variant(tiptapSchema, starterKitMapping, {
+    item: "listItem", bullets: "bulletList", numbers: "orderedList", code: "codeBlock", quote: "blockquote", br: "hardBreak",
+    strong: "bold", em: "italic",
+  }, [
+    ["strike", toggleMark(tiptapSchema.marks.strike!)],
+    ["underline", toggleMark(tiptapSchema.marks.underline!)],
+    ["code block js", setBlockType(tiptapSchema.nodes.codeBlock!, { language: "js" })],
+    ["code block py", setBlockType(tiptapSchema.nodes.codeBlock!, { language: "py" })],
+  ]),
+};
 
 /** An open input method composition: its candidate is at `at` to `end`, and replaced `replaced`. */
 type Composition = { at: number; end: number; text: string; replaced: string; multiline: boolean; batches: number };
@@ -39,15 +78,15 @@ after(() => { for (const each of networks) each.destroy(); });
  * the writers must converge at the end. Writers also compose: candidates stay local while the other
  * writer's changes arrive, then they confirm or cancel.
  */
-function run(seed: number, steps: number) {
+function run(seed: number, steps: number, { schema, mapping, commands }: Variant) {
   let state = seed >>> 0;
   const pick = (n: number) => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state % n; };
-  const made = network();
+  const made = network(schema);
   networks.push(made);
   const writers = [0, 1].map(() => {
     const unsent: string[] = [];
     let batches = 0;
-    const writer = made.writer({ onUnsentComposition(text) { unsent.push(text); } });
+    const writer = made.writer({ mapping, onUnsentComposition(text) { unsent.push(text); } });
     const send = writer.send.bind(writer);
     return Object.assign(writer, {
       unsent, composition: undefined as Composition | undefined,
@@ -59,7 +98,7 @@ function run(seed: number, steps: number) {
   const context = () => `seed ${seed}: ${trace.slice(-6).join(" | ")}`;
   /** The editor, updated in place, equals a rebuild of the whole Text. */
   const rebuilt = (writer: (typeof writers)[number]) => {
-    assert.equal(json(writer.state), JSON.stringify(textToDoc(writer.doc.state.body, editorSchema).toJSON()), context());
+    assert.equal(json(writer.state), JSON.stringify(textToDoc(writer.doc.state.body, schema, mapping).toJSON()), context());
   };
   function candidate(writer: (typeof writers)[number], composition: Composition) {
     const text = ["ㄏ", "ㄏㄠ", "好", "你好"][pick(4)]!;
@@ -141,6 +180,8 @@ function run(seed: number, steps: number) {
 const count = Number(process.env.PROSEMIRROR_FUZZ_SEEDS ?? 0);
 const seeds = count > 0 ? Array.from({ length: count }, (_, index) => index + 1) : [1, 7, 42, 2026];
 
-describe("ProseMirror sync under random edits", () => {
-  for (const seed of seeds) it(`matches a full rebuild and converges for seed ${seed}`, () => { run(seed, 300); });
-});
+for (const [name, editor] of Object.entries(variants)) {
+  describe(`${name} sync under random edits`, () => {
+    for (const seed of seeds) it(`matches a full rebuild and converges for seed ${seed}`, () => { run(seed, 300, editor); });
+  });
+}

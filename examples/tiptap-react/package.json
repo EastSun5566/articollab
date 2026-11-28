@@ -1,0 +1,30 @@
+{
+  "name": "articollab-tiptap-react-example",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node server.ts",
+    "check": "tsc -p tsconfig.json",
+    "lint": "oxlint --deny-warnings --report-unused-disable-directives",
+    "test": "node --unhandled-rejections=strict --test --test-concurrency=2 test/*.test.ts"
+  },
+  "dependencies": {
+    "@tiptap/core": "^3.35.1",
+    "@tiptap/pm": "^3.35.1",
+    "@tiptap/react": "^3.35.1",
+    "@tiptap/starter-kit": "^3.35.1",
+    "articollab": "workspace:*",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "ws": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.3",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
+    "happy-dom": "^21.0.4"
+  }
+}

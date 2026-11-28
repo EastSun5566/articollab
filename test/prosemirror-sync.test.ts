@@ -201,6 +201,33 @@ describe("ProseMirror sync", () => {
     view.destroy();
   });
 
+  it("keeps a code block language this editor cannot show, and splits at a hard break", () => {
+    const { writer } = open();
+    const a = writer();
+    a.doc.state.body.insert(0, "let x;");
+    a.doc.state.body.formatBlocks(0, 0, "code", "js");
+    assert.equal(a.state.doc.firstChild?.type.name, "code_block");
+    a.select(end(a.state));
+    a.type(" // ok");
+    assert.deepEqual(a.doc.state.body.blocks().map(({ attributes }) => attributes), [{ code: "js" }]);
+    a.run(setBlockType(nodes.paragraph!));
+    a.run((state, dispatch) => { dispatch?.(state.tr.replaceSelectionWith(nodes.hard_break!.create())); return true; });
+    a.type("next");
+    assert.equal(a.doc.state.body.toString(), "let x; // ok\nnext");
+    assert.deepEqual(a.doc.state.body.blocks().map(({ attributes }) => attributes), [{}, {}]);
+    showsText(a);
+  });
+
+  it("refuses an editor that loads another copy of prosemirror-model", async () => {
+    // The same package under another URL is another module instance, as a second install would be.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The same file as prosemirror-model.
+    const copy = await import(import.meta.resolve("prosemirror-model") + "?copy") as typeof import("prosemirror-model");
+    const schema = new copy.Schema({ nodes: { doc: { content: "paragraph+" }, paragraph: { content: "text*" }, text: {} } });
+    const doc = createClient(Note, { clientId: "a", onBatch() {} });
+    assert.throws(() => EditorState.create({ schema, plugins: [textSync(doc, "body", { mapping: { paragraph: "paragraph", marks: {} } })] }),
+      /another copy of prosemirror-model or prosemirror-state/);
+  });
+
   it("refuses a path that is not a Text", () => {
     const doc = createClient(Note, { clientId: "a", onBatch() {} });
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A wrong path on purpose.

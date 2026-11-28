@@ -99,6 +99,23 @@ Two ProseMirror editors share one Text. Bold, italic, code and links are [marks]
 
 [`editor.js`](rich-editor/editor.js) adds the [`textSync`](../docs/prosemirror.md) plugin from `articollab/prosemirror`, which keeps the editor in one standard shape and writes each transaction's change to the Text. It compares only the top-level nodes a change touched, so a keystroke costs about the same in a long document as in a short one. During a composition, edits from elsewhere wait, so the input method's text is left alone; the confirmed text is then written into the Text as it is by then.
 
+## Tiptap in React
+
+Requires Articollab 0.12 or later. The workspace uses the local build.
+
+```sh
+pnpm --dir examples/tiptap-react start
+```
+
+Two writers share one Text, each a React tree with a [Tiptap](https://tiptap.dev) editor and StarterKit. The page loads React and Tiptap from esm.sh, so it needs internet access; there is no bundler. Try:
+
+- Use the toolbar or shortcuts for bold, strikethrough, underline, headings and lists while the other writer types.
+- Pick a language for a code block, and press <kbd>Shift</kbd>+<kbd>Enter</kbd>: the new line is a paragraph of its own in both writers.
+- Turn one writer **Offline**, quote a paragraph there and edit it in the other writer, then go back online.
+- Press **Undo** or <kbd>Ctrl</kbd>+<kbd>Z</kbd>: only your own edits come back.
+
+[`app.js`](tiptap-react/app.js) adds the [`ArticollabText`](../docs/tiptap.md) extension from `articollab/tiptap` and draws the other writers' carets; [`page.js`](tiptap-react/page.js) creates the sync clients outside React.
+
 ## Folder tree
 
 ```sh

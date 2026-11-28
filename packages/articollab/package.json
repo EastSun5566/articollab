@@ -57,6 +57,10 @@
     "./prosemirror": {
       "types": "./dist/prosemirror/index.d.ts",
       "import": "./dist/prosemirror/index.js"
+    },
+    "./tiptap": {
+      "types": "./dist/tiptap/index.d.ts",
+      "import": "./dist/tiptap/index.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -69,12 +73,16 @@
     "articulated": "^1.4.0"
   },
   "peerDependencies": {
+    "@tiptap/core": "^3.0.0",
     "prosemirror-model": "^1.25.0",
     "prosemirror-state": "^1.4.0",
     "prosemirror-view": "^1.38.0",
     "react": ">=18"
   },
   "peerDependenciesMeta": {
+    "@tiptap/core": {
+      "optional": true
+    },
     "prosemirror-model": {
       "optional": true
     },
@@ -92,6 +100,8 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "devDependencies": {
+    "@tiptap/core": "^3.35.1",
+    "@tiptap/pm": "^3.35.1",
     "@types/node": "^24.0.0",
     "@types/react": "^19.3.3",
     "prosemirror-model": "^1.25.13",

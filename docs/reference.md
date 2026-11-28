@@ -4,7 +4,7 @@ Look up the public API and exact collaboration contracts here. For a runnable in
 
 ## Compatibility
 
-Articollab 0.12 adds Text range reads and the [ProseMirror plugin](#prosemirror). Articollab 0.11 added the [React hooks](#react) and [server stores](#server-persistence). Articollab 0.10 added Text marks and paragraph attributes, undo and redo, `track()` and `settled()`, payload schemas, Counters, presence, store `slots` and the WebSocket transport. Articollab 0.9 added List moves and the `transform` event.
+Articollab 0.12 adds Text range reads, the [ProseMirror plugin](#prosemirror) and the [Tiptap extension](#tiptap). Articollab 0.11 added the [React hooks](#react) and [server stores](#server-persistence). Articollab 0.10 added Text marks and paragraph attributes, undo and redo, `track()` and `settled()`, payload schemas, Counters, presence, store `slots` and the WebSocket transport. Articollab 0.9 added List moves and the `transform` event.
 
 Upgrade every runtime that reads a document before it exchanges new operations or snapshot formats; see [Upgrading](upgrading.md).
 
@@ -942,8 +942,11 @@ Import from `"articollab/prosemirror"`; it needs `prosemirror-model`, `prosemirr
 - Each top-level node stands for one or more Text lines, joined by `"\n"`. A line's paragraph attributes come from the nodes around its text, and its marks from the mapping's marks.
 - The standard shape: lines with the same `quote` share one blockquote; consecutive `code` lines share one code block, and its text has no marks; a list item holds one paragraph, then its nested lists, and a line is nested at most one level deeper than the line before. Inside a list there are no headings; `code` wins over `list` and `heading`.
 - A level outside `heading.levels` is read as the nearest one. Nesting deeper than `lists.maxIndent` is read as `maxIndent`.
+- A `lineBreak` node ends a line: the text after it is another line with the same paragraph attributes. The standard shape has no line break nodes.
+- With `codeBlock.language`, a code block's language is the value of `code`, or `true` without one, and consecutive lines share a block only with the same value. Without it, any `code` value is a code block, and a write keeps the Text's value while the line stays code.
 - Nodes and marks the mapping does not name are left out. Text paragraph attributes and marks the mapping does not use are never written.
 - A schema without a node or mark the mapping names throws `TypeError` when the editor state is created. `textSync` throws `TypeError` for a path that is not a Text.
+- Creating the editor state also throws `TypeError` when the editor's document or selection is not an instance of the `prosemirror-model` or `prosemirror-state` this package loads: two copies of ProseMirror cannot share an editor.
 
 **Local changes**
 - After each transaction that changes the document, the plugin first puts the changed top-level nodes into the standard shape, in an appended transaction that is not added to ProseMirror history.
@@ -967,6 +970,23 @@ Import from `"articollab/prosemirror"`; it needs `prosemirror-model`, `prosemirr
 - `resolveSelection()` returns `undefined` while composing, without the plugin, or while a cursor's anchor is unknown here. A selection whose text was deleted collapses instead of inverting.
 - `remoteSelections()` places selections from their cursors when they are set and after each change from the Text, and maps them through local changes in between. While composing it draws none.
 
+## Tiptap
+
+Import from `"articollab/tiptap"`; it needs `@tiptap/core` 3 as a peer dependency, with the ProseMirror packages above.
+
+| API | Purpose |
+| --- | --- |
+| `ArticollabText` | A Tiptap extension named `articollabText`. Options: `document` and `path` (required), `history`, `mapping` (default `starterKitMapping`), `canEdit`, `onError`, `onUnsentComposition`, `remoteSelections` (`RemoteSelectionsOptions` or `false`). |
+| `starterKitMapping` | The mapping for StarterKit: its marks, headings, code blocks with `language`, blockquotes, lists and `hardBreak`. |
+| `basicMapping`, `textToDoc`, `isComposing`, `selectionCursors`, `resolveSelection`, `remoteSelections`, `setRemoteSelections` | As in [ProseMirror](#prosemirror). |
+| `ArticollabTextOptions`, `CollaborativeDocument`, `TextMapping`, `MarkMapping`, `TextPath`, `CursorSelection`, `RemoteSelection`, `RemoteSelectionStatus`, `RemoteSelectionsOptions` | Types. |
+
+- `addProseMirrorPlugins` returns a new `textSync` plugin, then a `remoteSelections` plugin unless `remoteSelections` is `false`. It throws `TypeError` without a `document`, and as `textSync` does for a path that is not a Text.
+- Creating an editor that also has an extension named `undoRedo` or `trailingNode` throws `TypeError`.
+- Commands `undo()` and `redo()` run `undo(history)` and `redo(history)`. Without `history` they return `false`. When they change the Text, the command's own transaction is not dispatched (`preventDispatch`), so other commands chained with them are dropped.
+- Keys: <kbd>Mod</kbd>+<kbd>Z</kbd> runs `undo`; <kbd>Shift</kbd>+<kbd>Mod</kbd>+<kbd>Z</kbd> and <kbd>Mod</kbd>+<kbd>Y</kbd> run `redo`.
+- `starterKitMapping` stores a link's `href` only; building a link from the Text sets only `href`.
+
 ## Boundaries
 
 - The server uses explicit writer sessions.
@@ -978,4 +998,4 @@ Import from `"articollab/prosemirror"`; it needs `prosemirror-model`, `prosemirr
 - Not promised: same-ID server rollback or forks, power-loss durability, or cross-file transactions.
 - These gaps are not a roadmap.
 
-[Previous: ProseMirror](prosemirror.md) · [Next: Upgrading](upgrading.md)
+[Previous: Tiptap](tiptap.md) · [Next: Upgrading](upgrading.md)

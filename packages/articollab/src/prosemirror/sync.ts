@@ -1,5 +1,5 @@
-import { Fragment, type Node, type Schema } from "prosemirror-model";
-import { Plugin, PluginKey, TextSelection, type Command, type EditorState, type Transaction } from "prosemirror-state";
+import { Node, type Fragment, type Schema } from "prosemirror-model";
+import { Plugin, PluginKey, Selection, TextSelection, type Command, type EditorState, type Transaction } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
 
 import type { ClientDocument, Cursor, JsonValue, SchemaShape, TextChangeEvent, TextSchema, UndoManager } from "../index.ts";
@@ -84,6 +84,18 @@ function splice(before: readonly string[], after: readonly string[]) {
   while (suffix < before.length - prefix && suffix < after.length - prefix &&
     before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix++;
   return { index: prefix, count: before.length - prefix - suffix, insert: after.slice(prefix, after.length - suffix) };
+}
+
+/** A fragment's nodes, so that nodes cross between copies of prosemirror-model as an array. */
+function children(fragment: Fragment): Node[] {
+  const nodes: Node[] = [];
+  fragment.forEach((node) => { nodes.push(node); });
+  return nodes;
+}
+
+/** Whether a fragment holds exactly `nodes`. */
+function holds(fragment: Fragment, nodes: readonly Node[]): boolean {
+  return fragment.childCount === nodes.length && nodes.every((node, index) => node.eq(fragment.child(index)));
 }
 
 /** The length in elements of some lines joined by line breaks. */
@@ -199,7 +211,7 @@ export class TextBinding {
   /** Replaces the editor's document with `target`, keeping the selection on the same text. */
   private show(view: EditorView, target: Node): void {
     const tr = view.state.tr;
-    if (!target.eq(tr.doc)) tr.replaceWith(0, tr.doc.content.size, target.content);
+    if (!target.eq(tr.doc)) tr.replaceWith(0, tr.doc.content.size, children(target.content));
     this.restoreSelection(tr);
     view.dispatch(tr.setMeta(syncKey, "text").setMeta("addToHistory", false));
   }
@@ -242,7 +254,7 @@ export class TextBinding {
       const have = now[index]?.attributes ?? {};
       for (const key of keys) {
         const value = line.attributes[key];
-        if (!sameJson(value ?? null, have[key] ?? null)) this.text.formatBlocks(start, 0, key, value ?? null);
+        if (!this.shape.sameAttribute(key, value, have[key])) this.text.formatBlocks(start, 0, key, value ?? null);
       }
       start += lineLength(line) + 1;
     }
@@ -286,13 +298,13 @@ export class TextBinding {
     if (window === undefined) return undefined;
     const lines = this.windowLines(after, window.from, window.toB);
     const whole = window.from === 0 && window.toB === after.childCount;
-    const nodes = lines.length === 0 ? (whole ? this.shape.doc([]).content : undefined) : Fragment.from(this.shape.nodes(lines));
+    const nodes = lines.length === 0 ? (whole ? children(this.shape.doc([]).content) : undefined) : this.shape.nodes(lines);
     // A window without lines inside a larger document: the neighbors' lines decide; rebuild it all.
-    const standard = nodes ?? this.shape.doc(this.shape.lines(after)).content;
+    const standard = nodes ?? children(this.shape.doc(this.shape.lines(after)).content);
     const fromPos = nodes === undefined ? 0 : this.shape.layout(after).positions[window.from] ?? 0;
     const toPos = nodes === undefined ? after.content.size
       : window.toB < after.childCount ? this.shape.layout(after).positions[window.toB]! : after.content.size;
-    if (after.slice(fromPos, toPos).content.eq(standard)) return undefined;
+    if (holds(after.slice(fromPos, toPos).content, standard)) return undefined;
     // The lines stay the same, so the selection keeps its elements.
     const head = this.shape.elementAt(after, tr.selection.head), anchor = this.shape.elementAt(after, tr.selection.anchor);
     tr.replaceWith(fromPos, toPos, standard);
@@ -342,7 +354,7 @@ export class TextBinding {
     const lines = textLines(this.text, offset, textLength(before) + delta);
     const layout = this.shape.layout(doc);
     const fromPos = layout.positions[from]!, toPos = to < doc.childCount ? layout.positions[to]! : doc.content.size;
-    const tr = view.state.tr.replaceWith(fromPos, toPos, Fragment.from(this.shape.nodes(lines.length === 0 ? [{ runs: [], attributes: {} }] : lines)));
+    const tr = view.state.tr.replaceWith(fromPos, toPos, this.shape.nodes(lines.length === 0 ? [{ runs: [], attributes: {} }] : lines));
     this.restoreSelection(tr);
     view.dispatch(tr.setMeta(syncKey, "text").setMeta("addToHistory", false));
   }
@@ -498,7 +510,14 @@ export function textSync<S extends SchemaShape>(
   return new Plugin<SyncState>({
     key: syncKey,
     state: {
-      init: (_config, state) => ({ binding: bindingFor(state.schema), fromText: false }),
+      init: (_config, state) => {
+        // Nodes and selections are checked by class: the editor must load the same ProseMirror as this package.
+        if (!(state.doc instanceof Node) || !(state.selection instanceof Selection)) {
+          throw new TypeError("The editor loads another copy of prosemirror-model or prosemirror-state than articollab/prosemirror: " +
+            "install one version of each, such as the one your editor depends on");
+        }
+        return { binding: bindingFor(state.schema), fromText: false };
+      },
       apply: (tr, value) => {
         const fromText = tr.getMeta(syncKey) === "text";
         return value.fromText === fromText ? value : { binding: value.binding, fromText };
