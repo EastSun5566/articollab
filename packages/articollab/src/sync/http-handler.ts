@@ -9,9 +9,10 @@ import {
 } from "../index.ts";
 import { isJsonObject, jsonEquals, validateJsonValue } from "../json.ts";
 import { integerOption } from "../options.ts";
-import { hasOpenClient, onClientClosed } from "../runtime.ts";
+import { hasOpenClient, onClientClosed, readServerSequence } from "../runtime.ts";
 import { checkPayload, type PayloadSchema } from "../payload.ts";
 import type { JsonValue } from "../schema.ts";
+import { WATERMARK_AHEAD, WATERMARK_AHEAD_MESSAGE } from "./errors.ts";
 import {
   acceptSocket,
   failure,
@@ -183,6 +184,11 @@ export function createSyncHandler<S extends SchemaShape>(
       return false;
     }
   }
+  // The HTTP and WebSocket parsers have already validated the number.
+  function checkWatermark(watermark: number): Reply | undefined {
+    if (watermark <= readServerSequence(server)) return undefined;
+    return { status: 409, body: { error: WATERMARK_AHEAD_MESSAGE, code: WATERMARK_AHEAD } };
+  }
   /** Sends `subscriber` the saved commits it has not received; runs inside the queue. */
   function deliver(subscriber: Subscriber): void {
     const commits = server.commitsSince(subscriber.sent);
@@ -276,8 +282,7 @@ export function createSyncHandler<S extends SchemaShape>(
       return serialize(() => {
         if (failed) return failure(503, STORAGE_FAILED);
         // Read inside the queue: a write that is still saving cannot have its commit served.
-        try { return { status: 200, body: server.commitsSince(watermark) }; }
-        catch { return failure(400, "Invalid catch-up watermark"); }
+        return checkWatermark(watermark) ?? { status: 200, body: server.commitsSince(watermark) };
       });
     },
     async publish(clientId, state, allowed, owner) {
@@ -300,7 +305,8 @@ export function createSyncHandler<S extends SchemaShape>(
         if (failed) return failure(503, STORAGE_FAILED);
         // Admission and creation share this queue, so concurrent subscribes cannot exceed the limit.
         if (subscribers.size >= maxEventStreams) return failure(503, "Too many event streams");
-        try { server.commitsSince(watermark); } catch { return failure(400, "Invalid catch-up watermark"); }
+        const refused = checkWatermark(watermark);
+        if (refused !== undefined) return refused;
         const subscriber = create();
         if (subscriber.closed) return undefined;
         subscribers.add(subscriber);

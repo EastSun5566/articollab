@@ -666,7 +666,7 @@ Import from `"articollab/sync"`. It depends only on the core entrypoint and on `
 | `createSyncHandler(schema, server, { authorize?, saveCheckpoint?, persist?, allowRejections?, maxBodySize?, heartbeatInterval?, maxEventStreams?, presence? })` | A `SyncHandler`: a Fetch API handler for `clients`, `batches`, `commits`, `events` and, when enabled, `rejections` and `presence`. |
 | `handler.accept(socket, request)` | Serves one WebSocket with the same server, queue and presence as the routes; returns a `SyncConnection`. |
 | `handler.notify()` | Pushes commits applied without the handler to open event streams and subscribed sockets. |
-| `SyncRequestError` | A sync request answered with an unexpected status, with `status` and `retryable`. The sync client retries HTTP 408, 429 and 5xx, as well as network failures during a pass. |
+| `SyncRequestError` | A sync request answered with an unexpected status, with `status` and `retryable`. Its `code` is `"watermark_ahead"` when the server reports that the requested watermark is newer than its current sequence, and `undefined` otherwise. The sync client retries HTTP 408, 429 and 5xx, as well as network failures during a pass. |
 | `openServer(schema, store, options?)`, `persistServer(server, store, options?)` | Restore a server from a `ServerStore` and keep the store up to date, or keep it up to date for a server you created; see [Server persistence](#server-persistence). |
 | `openFileServerStore(directory, { locks? })`, `openPostgresServerStore({ client, document, table? })` | Open a `ServerStore` in a directory, or in Postgres, after taking its lock; a lock held elsewhere throws `CheckpointLockedError`. |
 
@@ -794,6 +794,7 @@ A `ServerStore` holds one server's latest checkpoint and the log entries after i
 - It opens sessions, receives batches and, with `allowRejections`, rejects them, one at a time. When the server changed, it calls `saveCheckpoint` before answering.
 - A failed save makes it answer 503 to every later request; recreate the server from its last saved checkpoint.
 - Catch-up and event streams read commits only between queued writes and their saves, so no commit is served or pushed before it is saved.
+- Catch-up and subscription requests with malformed watermarks return 400. A valid watermark ahead of the server returns 409 with `{ error, code: "watermark_ahead" }` over HTTP and WebSocket. The client enters `"failed"` and keeps pending work. See [how to diagnose this](sync.md#status-and-failures).
 - `authorize` receives the request and `{ action, clientId? }`; `false` answers 403.
 - `notify()` pushes commits made outside the handler; call it after saving them.
 - Responses use `Cache-Control: no-store`, and error messages are fixed.

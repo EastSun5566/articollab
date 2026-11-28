@@ -63,6 +63,8 @@ The component re-renders only when that collection changes, whether the change i
 
 Components that read the same collection share one subscription and one snapshot. A snapshot keeps its identity until the collection changes, so you can pass it to `memo` components or use it as an effect dependency.
 
+An acknowledgement decoded from the wire can replace a local object with a new reference, even if its fields match. A component reading the whole collection can render again. If the component only needs a derived result, select it with `useDocument`, for example the number of items.
+
 ## Derive a value
 
 `useDocument(doc, selector)` runs `selector` on the document's state after each change. The component re-renders only when the result changes:

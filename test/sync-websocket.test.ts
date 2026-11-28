@@ -180,6 +180,23 @@ describe("WebSocket transport", () => {
     await until(() => a.push === "open" && b.push === "open", "both subscriptions to reopen");
   });
 
+  it("reports an ahead watermark over WebSocket catch-up and subscribe", async (t) => {
+    const h = await host(t);
+    const transport = createWebSocketTransport({ url: h.url });
+    t.after(() => transport.close?.());
+    const ahead = { name: "SyncRequestError", status: 409, code: "watermark_ahead", retryable: false };
+    await assert.rejects(transport.commitsSince(-1), { name: "SyncRequestError", status: 400, code: undefined });
+    await assert.rejects(transport.commitsSince(1), ahead);
+    await assert.rejects(new Promise<void>((_resolve, reject) => {
+      t.after(transport.subscribe!(1, {
+        onOpen() { reject(new Error("An ahead subscription must not open")); },
+        onGap() { reject(new Error("An ahead watermark is not a history gap")); },
+        onCommits() {}, onActivity() {}, onEnd: reject,
+      }));
+    }), ahead);
+    assert.deepEqual(await transport.commitsSince(0), []);
+  });
+
   it("reads a function URL before each connection and closes the socket with the client", async (t) => {
     const h = await host(t);
     let reads = 0;

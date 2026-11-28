@@ -1,6 +1,6 @@
 import type { ClientBatch, JsonValue } from "../index.ts";
 import type { SyncSubscription, SyncTransport } from "./client.ts";
-import { SyncRequestError, SyncResponseError } from "./errors.ts";
+import { syncRequestError, SyncResponseError } from "./errors.ts";
 import { readRegistration } from "./http-client.ts";
 import { isJsonObject } from "../json.ts";
 
@@ -28,7 +28,7 @@ class SyncConnectionError extends Error {}
 interface Answer { readonly status: number; readonly body?: unknown }
 
 function expect(answer: Answer, status: number): Answer {
-  if (answer.status !== status) throw new SyncRequestError(answer.status);
+  if (answer.status !== status) throw syncRequestError(answer.status, answer.body);
   return answer;
 }
 
@@ -164,7 +164,7 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): Sy
       send({ type: "subscribe", since: watermark }, {
         resolve(answer) {
           if (!mine.active) return;
-          if (answer.status !== 200) { end(new SyncRequestError(answer.status)); return; }
+          if (answer.status !== 200) { end(syncRequestError(answer.status, answer.body)); return; }
           mine.opened = true;
           handlers.onOpen();
         },
