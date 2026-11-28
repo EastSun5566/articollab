@@ -64,7 +64,7 @@ export async function mountRichEditors(root, url) {
   /** Shares the pane's main selection as cursors. @param {(typeof panes)[number]} pane */
   function publish(pane) {
     if (destroyed || failed || pane.editor.isComposing()) return;
-    try { pane.sync.presence.set({ selection: pane.editor.selectionCursors() }); }
+    try { pane.sync.presence.set({ selection: pane.editor.selectionCursors() ?? null }); }
     catch (error) { stop(error); }
   }
   /** Draws the other writers' selections, but not under an input-method composition.
@@ -195,14 +195,21 @@ export async function mountRichEditors(root, url) {
       }
       editor = await createRichEditor(parent, sync.doc, {
         label: "Writer " + label + " text",
+        // The confirmed text of a composition is its own undo step.
+        history,
         canEdit: () => !destroyed && !failed && sync.status !== "failed" && sync.status !== "gap",
         onError: stop,
-        onLocalEdit() { details.hidden = true; refresh(); },
-        onSelection() { const pane = panes[index]; if (pane !== undefined) publish(pane); },
-        onRemote() { const pane = panes[index]; if (pane !== undefined) queueMicrotask(() => { showPeers(pane, presenceStatus, others); }); },
+        onChange(change) {
+          const pane = panes[index];
+          if (pane === undefined) return;
+          publish(pane);
+          if (!change.doc) return;
+          details.hidden = true;
+          refresh();
+          // Other writers' carets may now be in text this writer has.
+          queueMicrotask(() => { showPeers(pane, presenceStatus, others); });
+        },
         onCommand: command,
-        // The confirmed text is its own undo step.
-        onCompositionBoundary: () => { history.stopCapturing(); },
         onUnsentComposition(text) {
           unsent.hidden = false;
           unsent.textContent = "The composition could not be saved (" + sync.status + "). Copy the unsent text here:\n" + text;

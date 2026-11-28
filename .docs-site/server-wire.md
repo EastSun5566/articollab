@@ -1,0 +1,166 @@
+# Server policy and wire data
+
+Submit batches to decide their authoritative effect, decode untrusted messages at the transport boundary, and deliver commits in global order. Policy, validation and delivery solve different problems.
+
+## Submit a batch
+
+Use the `server`, buffered `batch`, `doc` and `peer` from the [Quick start](quick-start.md). Replace its submission step with:
+
+```ts
+const receipt = server.receive(batch);
+console.log(receipt.replayed); // false for this new batch
+for (const client of [doc, peer]) client.receive(receipt.commit);
+console.log(doc.checkpoint().pendingBatches.length); // 0
+```
+
+The receipt contains the commit and local routing metadata. Send the **commit**, not the receipt, to clients. The source must receive it too: server acceptance alone does not remove pending work.
+
+Fresh writers need an ID from `server.openClient()`. Persist that session before handing out the ID if you need crash recovery. Opening a session is not authentication.
+
+## Accept, transform or reject
+
+Import `createServer` from `"articollab"` and use the `Score` schema from the quick start. Create this server instead of the accept-only server:
+
+```ts
+const server = createServer(Score, {
+  resolve({ batch, snapshot }) {
+    if (snapshot.data.points >= 10) return [];
+    return batch.operations.map((operation) => ({
+      ...operation, value: Math.min(operation.value, 10),
+    }));
+  },
+});
+```
+
+A pending `set(12)` displays 12 locally, then becomes 10 after receiving its transformed commit. Once the authoritative score is 10, this policy rejects later batches.
+
+The `transform` event requires [Articollab 0.9 or later](reference.md#compatibility). Listen on the writer's client to learn which operations the server dropped or added when it acknowledged the batch:
+
+```ts
+const stop = doc.on("transform", ({ commit, added }) => {
+  if (commit.operations.length === 0) console.warn("Not saved: the server rejected this change.");
+  for (const operation of added) console.warn(`Saved as ${operation.value} instead.`);
+});
+```
+
+To follow one change rather than every batch, make it with `doc.track()`, which requires [Articollab 0.10 or later](reference.md#compatibility). It works like `transact()` and also returns the batch and a promise of what the server did with it:
+
+```ts
+const { settled } = doc.track(() => { doc.state.points.value = 12; });
+const outcome = await settled;
+console.log(outcome?.status, outcome?.added); // transformed [ { type: 'value/set', path: 'points', value: 10 } ]
+```
+
+The promise resolves once the acknowledgement is received, with `status` `"accepted"`, `"transformed"` or `"rejected"`, and never rejects. `doc.settled(batch)` returns the same promise for any pending batch, such as one restored from a checkpoint. See the [exact contract](reference.md#mutations-transactions-and-events).
+
+For the `set(12)` above it logs `Saved as 10 instead.` Identical acknowledgements, including decoded copies, are silent. See the [reference](reference.md#mutations-transactions-and-events) for exact matching and ordering.
+
+The resolver receives the pre-batch snapshot and returns operations synchronously. With [payload schemas](collections.md#validate-payloads), it only ever sees valid payloads, and its own output is validated too. Return `batch.operations` to accept unchanged, a valid operation set to transform, or `[]` to acknowledge without an authoritative effect. It need not return one operation per input.
+
+For explicit cancellation, trusted application code can call `server.reject(originalBatch)`. It skips the resolver and incoming operation application. A previously accepted batch cannot become rejected: an identical latest retry returns its original result through either entrypoint.
+
+Resolver throws or invalid output leave server state and sequences unchanged. Side effects cannot be rolled back; keep decisions pure. If a Text transform reuses incoming IDs, preserve the code-point length. Different-length insertions need globally unique application-supplied ID ranges.
+
+## Check formatting
+
+A [Text mark](collections.md#format-text) is an operation like any other, so a resolver can check it. For the `Note` schema from that page, this resolver keeps only links to `https:` addresses:
+
+```ts
+const server = createServer(Note, {
+  resolve: ({ batch }) => batch.operations.filter((operation) =>
+    operation.type !== "text/mark" || operation.key !== "link" || operation.value === null ||
+    (typeof operation.value === "string" && operation.value.startsWith("https://"))),
+});
+```
+
+The writer sees the dropped link disappear when its batch is acknowledged, and its `transform` event lists the mark under `dropped`. A mark names its range by two [cursors](collections.md#stable-positions-with-cursors), `start` and `end`; to change the range, keep the anchors and change only the `value`, or drop the mark.
+
+## Decode at the transport boundary
+
+Import `decodeClientBatch` and `decodeServerCommit` from `"articollab"`. With the `Score` server and client and a JSON message containing its original batch:
+
+```ts
+const batch = decodeClientBatch(Score, JSON.parse(batchMessage));
+const { commit } = server.receive(batch);
+const commitMessage = JSON.stringify(commit);
+doc.receive(decodeServerCommit(Score, JSON.parse(commitMessage)));
+```
+
+The source receives the authoritative result through the same decoding boundary as peers. In a networked application, deliver earlier missing commits before this one.
+
+`JSON.parse()` is your application's job. A decoder accepts parsed `unknown`, checks fields, schema paths, collection kinds, JSON payloads, sequences and IDs, then deeply copies/freezes the result. `WireDecodeError.path` identifies an invalid field with a JSON Pointer, such as `/operations/0/id/counter`.
+
+Decoding does not validate the business shape of TypeScript `T`. An unknown anchor can be structurally valid and decode successfully, then fail authoritative application atomically. See the [wire/error contract](reference.md#wire-validation-and-error-boundaries).
+
+## Incoming insertion namespaces
+
+New `server.receive()` batches must use the canonical writer/collection insertion namespace before policy runs. This prevents allocation under another writer's namespace, not impersonation of their session.
+
+For a Board schema from [Collections](collections.md), verify the authenticated writer binding before submission:
+
+```ts
+import { assertClientBatchNamespace, decodeClientBatch } from "articollab";
+
+// These values come from your transport and verified session binding.
+const batch = decodeClientBatch(Board, JSON.parse(batchMessage));
+assertClientBatchNamespace(batch, authenticatedWriterId);
+const receipt = server.receive(batch);
+```
+
+Never derive `authenticatedWriterId` from the request body. Verify binding on retries too. A writer may still anchor insertions after another writer's elements or delete them; deletion authorization belongs to your application.
+
+If you intentionally use custom incoming IDs, provide your own namespace policy and opt out:
+
+```ts
+const server = createServer(Board, { allowCustomClientNamespaces: true });
+```
+
+This option defaults to `false`, does not disable other validation, and must be supplied again on restore. Resolver-generated authoritative IDs are outside the incoming check.
+
+To cancel a namespace-invalid original, verify its writer binding, then call `server.reject(batch)` without the standalone namespace helper. Rejection skips the server namespace check. Both entrypoints return the last identical result before checking new submissions, including a saved rejection or custom-ID acceptance.
+
+A guard failure or runtime throw is not an acknowledgement. See the [exact namespace contract](reference.md#incoming-insertion-namespaces).
+
+## Close idle writer sessions
+
+Each `server.openClient()` holds a session, and a writer that disappears without being closed keeps holding it, which can exhaust `maxClients`. `server.listClients()` shows which sessions have written recently, measured in server sequence:
+
+```ts
+import { createServer, defineDocument, value } from "articollab";
+
+const Score = defineDocument({ points: value(0) });
+const server = createServer(Score, { maxClients: 100 });
+const active = server.openClient();
+const idle = server.openClient();
+for (let seq = 1; seq <= 3; seq++) {
+  server.receive({ clientId: active, seq, operations: [{ type: "value/set", path: "points", value: seq }] });
+}
+
+const current = server.snapshot().serverSeq;
+for (const { clientId, lastServerSeq } of server.listClients()) {
+  // Never wrote, or nothing in the last 1000 commits. Pick a policy that fits your app.
+  if (lastServerSeq === null || current - lastServerSeq > 1000) server.closeClient(clientId);
+}
+console.log(server.listClients().map((session) => session.clientId)); // [ 'client-1' ]
+console.log(idle); // client-2, now closed
+```
+
+A session that has not written is not necessarily abandoned: a writer may still be offline with pending work. For time-based policies, record when your transport last heard from each client and combine it with this list. Close a session only after its writer has closed, as described in the [session rules](reference.md#server-policy-rejection-and-retries).
+
+## Deliver in order
+
+Every client needs every authoritative commit, exactly once and in global sequence order. If its watermark is 10 and its own commit is 12, first deliver commit 11. Do not skip it because POST succeeded or because commit 12 belongs to that client.
+
+For each new result:
+
+1. Persist the server checkpoint if your application promises recovery.
+2. Deliver the commit to every relevant client, including the source.
+3. Finish that delivery before processing a listener's new submission.
+
+Use an application-owned queue when listeners can submit during delivery. The quick start has no such listeners; it is not a production broadcast loop.
+
+For a retained retry, do not broadcast again to peers. [Catch up the source](recovery.md#catch-up-before-resubmitting) from its watermark; skip results it has already consumed. `receipt.replayed` does not create a new commit or catch up other clients.
+
+The core supplies neither a registry nor transport. See the [server contract](reference.md#server-policy-rejection-and-retries) for sequence and retry rules.
+
+[Previous: Transactions](transactions.md) · [Next: Recovery](recovery.md)

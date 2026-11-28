@@ -117,4 +117,4 @@ The undo manager merges changes made less than `captureTimeout` apart (500 ms by
 
 The [React todo list example](https://github.com/EastSun5566/articollab/blob/main/examples/README.md#react-todo-list) uses every hook. See the [reference](reference.md#react) for the exact rules.
 
-[Previous: Sync adapter](sync.md) · [Next: Core reference](reference.md)
+[Previous: Sync adapter](sync.md) · [Next: ProseMirror](prosemirror.md)

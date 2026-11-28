@@ -3,14 +3,20 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, it, type TestContext } from "node:test";
 import { promisify } from "node:util";
+import { Window } from "happy-dom";
 import { toggleMark } from "prosemirror-commands";
 import { wrapInList } from "prosemirror-schema-list";
 import { TextSelection } from "prosemirror-state";
+import { createUndoManager } from "articollab";
 import { connectSync, createWebSocketTransport } from "articollab/sync";
 import { selectionSchema } from "../../shared/presence.js";
-import { createRichTextBinding } from "../binding.js";
+import { createRichEditor } from "../editor.js";
 import { editorSchema, Note } from "../schema.js";
 import { startRichEditorServer } from "../server.ts";
+
+// A DOM for the editors; prosemirror-view reads it when editor.js first loads it.
+const window = new Window();
+Object.assign(globalThis, { window, document: window.document });
 
 /** Waits for `condition` with real timers: writers synchronize on their own. */
 async function until(condition: () => boolean, what: string, timeout = 5000): Promise<void> {
@@ -28,9 +34,16 @@ async function host(t: TestContext) {
   async function writer() {
     const sync = await connectSync(Note, { pollInterval: 0, presence: { schema: selectionSchema },
       transport: createWebSocketTransport({ url: started.url.replace("http:", "ws:") + "/sync/socket" }) });
-    const binding = createRichTextBinding(sync.doc, { update() {}, canEdit: () => true, onError(error) { throw error; } });
-    cleanups.push(() => { binding.destroy(); sync.close(); });
-    return { sync, binding };
+    const history = createUndoManager(sync.doc);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- happy-dom implements the DOM's HTMLElement.
+    const editor = await createRichEditor(window.document.createElement("div") as unknown as HTMLElement, sync.doc, {
+      label: "Writer text", history, canEdit: () => true, onError(error) { throw error; },
+      onChange() {}, onCommand() {}, onUnsentComposition() {},
+    });
+    editor.setReadOnly(false);
+    cleanups.push(() => { editor.destroy(); history.destroy(); sync.close(); });
+    const view = editor.view;
+    return { sync, view, run: (command: import("prosemirror-state").Command) => command(view.state, (tr) => { view.dispatch(tr); }) };
   }
   return { url: started.url, writer };
 }
@@ -44,14 +57,15 @@ describe("Rich text example host", () => {
     assert.ok(match);
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This example's fixed import map; every target is fetched below.
     const map = JSON.parse(match[1]!) as { imports: Record<string, string> };
-    for (const route of [...Object.values(map.imports), "/dist/sync/index.js", "/rich-editor/page.js", "/rich-editor/editor.js",
-      "/rich-editor/binding.js", "/rich-editor/flat.js", "/rich-editor/schema.js", "/shared/sync-ui.js", "/shared/presence.js"]) {
+    for (const route of [...Object.values(map.imports), "/dist/sync/index.js", "/dist/prosemirror/sync.js", "/rich-editor/page.js",
+      "/rich-editor/editor.js", "/rich-editor/schema.js", "/shared/sync-ui.js", "/shared/presence.js"]) {
       const asset = await fetch(url + route);
       assert.equal(asset.status, 200, route);
       assert.equal(asset.headers.get("Content-Type"), "text/javascript; charset=utf-8");
       assert.ok((await asset.text()).length > 0);
     }
-    for (const route of ["/server.ts", "/package.json", "/rich-editor/server.ts", "/node_modules/prosemirror-model/dist/index.js"]) {
+    for (const route of ["/server.ts", "/package.json", "/rich-editor/server.ts", "/rich-editor/binding.js",
+      "/node_modules/prosemirror-model/dist/index.js"]) {
       const asset = await fetch(url + route); assert.equal(asset.status, 404, route); await asset.text();
     }
   });
@@ -59,21 +73,21 @@ describe("Rich text example host", () => {
   it("keeps two writers' editors identical over WebSockets, and drops unsafe links", async (t) => {
     const { writer } = await host(t);
     const a = await writer(), b = await writer();
-    a.binding.dispatch(a.binding.state.tr.insertText("Shopping"));
-    wrapInList(editorSchema.nodes.bullet_list!)(a.binding.state, (tr) => { a.binding.dispatch(tr); });
-    await until(() => b.binding.state.doc.firstChild?.type.name === "bullet_list" &&
+    a.view.dispatch(a.view.state.tr.insertText("Shopping"));
+    a.run(wrapInList(editorSchema.nodes.bullet_list!));
+    await until(() => b.view.state.doc.firstChild?.type.name === "bullet_list" &&
       b.sync.doc.state.body.toString() === "Shopping", "B to see A's list");
-    b.binding.dispatch(b.binding.state.tr.setSelection(TextSelection.create(b.binding.state.doc, 3, 11)));
-    toggleMark(editorSchema.marks.link!, { href: "javascript:alert(1)" })(b.binding.state, (tr) => { b.binding.dispatch(tr); });
-    toggleMark(editorSchema.marks.strong!)(b.binding.state, (tr) => { b.binding.dispatch(tr); });
-    await until(() => JSON.stringify(a.binding.state.doc.toJSON()) === JSON.stringify(b.binding.state.doc.toJSON()) &&
-      a.binding.state.doc.rangeHasMark(3, 11, editorSchema.marks.strong!), "both to converge");
-    assert.equal(b.binding.state.doc.rangeHasMark(3, 11, editorSchema.marks.link!), false);
+    b.view.dispatch(b.view.state.tr.setSelection(TextSelection.create(b.view.state.doc, 3, 11)));
+    b.run(toggleMark(editorSchema.marks.link!, { href: "javascript:alert(1)" }));
+    b.run(toggleMark(editorSchema.marks.strong!));
+    await until(() => JSON.stringify(a.view.state.doc.toJSON()) === JSON.stringify(b.view.state.doc.toJSON()) &&
+      a.view.state.doc.rangeHasMark(3, 11, editorSchema.marks.strong!), "both to converge");
+    assert.equal(b.view.state.doc.rangeHasMark(3, 11, editorSchema.marks.link!), false);
     assert.deepEqual(a.sync.doc.state.body.blocks().map(({ attributes }) => attributes), [{ list: "bullet" }]);
   });
 
   it("imports without DOM, fetch or listening side effects", async () => {
-    const modules = ["server.ts", "page.js", "editor.js", "binding.js", "flat.js", "schema.js"];
+    const modules = ["server.ts", "page.js", "editor.js", "schema.js"];
     const script = `
       const { Server } = await import("node:http");
       Server.prototype.listen = () => { throw new Error("Unexpected listen"); };

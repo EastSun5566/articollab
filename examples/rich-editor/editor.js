@@ -2,13 +2,12 @@
 import { baseKeymap, lift, setBlockType, toggleMark, wrapIn } from "prosemirror-commands";
 import { keymap } from "prosemirror-keymap";
 import { liftListItem, sinkListItem, splitListItem, wrapInList } from "prosemirror-schema-list";
-import { Plugin, PluginKey } from "prosemirror-state";
-import { createRichTextBinding } from "./binding.js";
+import { EditorState, Plugin } from "prosemirror-state";
 import { editorSchema } from "./schema.js";
 
 /** @typedef {"bold" | "italic" | "code" | "link" | "heading1" | "heading2" | "heading3" | "bullets" | "numbers" | "quote" | "codeBlock" | "undo" | "redo"} Command */
-/** @typedef {{ readonly label: string, readonly selection: import("./binding.js").CursorSelection }} RemoteSelection */
-/** Whether a remote selection resolved here. @typedef {{ readonly label: string, readonly resolved: boolean }} RemoteStatus */
+/** @typedef {import("articollab/prosemirror").RemoteSelection} RemoteSelection */
+/** @typedef {import("articollab/prosemirror").RemoteSelectionStatus} RemoteStatus */
 
 const { nodes, marks } = editorSchema;
 /** @param {string} name */
@@ -16,7 +15,7 @@ const nodeType = (name) => { const type = nodes[name]; if (type === undefined) t
 /** @param {string} name */
 const markType = (name) => { const type = marks[name]; if (type === undefined) throw new Error("Missing mark " + name); return type; };
 
-/** Whether the selection is inside a node of `type`. @param {import("prosemirror-state").EditorState} state @param {import("prosemirror-model").NodeType} type */
+/** Whether the selection is inside a node of `type`. @param {EditorState} state @param {import("prosemirror-model").NodeType} type */
 function inside(state, type) {
   const { $from } = state.selection;
   for (let depth = $from.depth; depth > 0; depth--) if ($from.node(depth).type === type) return true;
@@ -57,40 +56,39 @@ const commands = {
   codeBlock: toggleBlock(nodeType("code_block")),
 };
 
+/** Another writer's caret, labeled. @param {string} label */
+function caret(label) {
+  const element = document.createElement("span");
+  element.className = "remote-caret";
+  element.dataset.label = label;
+  element.setAttribute("aria-hidden", "true");
+  return element;
+}
+
 /**
- * A ProseMirror editor bound to a Text. Undo, redo and links go to `onCommand`, which owns the undo
- * manager and asks for the address. An input method composition is written once it is confirmed, and
- * not at all when Escape cancels it.
+ * A ProseMirror editor on the Text at `body`, kept in step by `textSync`. Undo, redo and links go to
+ * `onCommand`, which owns the undo manager and asks for the address.
  * @param {HTMLElement} parent
- * @param {Parameters<typeof createRichTextBinding>[0]} doc
- * @param {{ label: string, canEdit: () => boolean, onError: (error: unknown) => void, onLocalEdit: () => void,
- *   onSelection: () => void, onRemote: () => void, onCommand: (command: "link" | "undo" | "redo") => void,
- *   onCompositionBoundary: () => void, onUnsentComposition: (text: string) => void }} options
+ * @param {import("articollab").ClientDocument<typeof import("./schema.js").Note.definition>} doc
+ * @param {{ label: string, history: import("articollab").UndoManager, canEdit: () => boolean, onError: (error: unknown) => void,
+ *   onChange: (change: { doc: boolean }) => void, onCommand: (command: "link" | "undo" | "redo") => void,
+ *   onUnsentComposition: (text: string) => void }} options
  */
 export async function createRichEditor(parent, doc, options) {
   // Loaded here: prosemirror-view looks for the DOM as soon as it is imported.
-  const { Decoration, DecorationSet, EditorView } = await import("prosemirror-view");
-  /** @type {PluginKey<import("prosemirror-view").DecorationSet>} */
-  const remoteKey = new PluginKey("remote-selections");
-  /** @type {readonly RemoteSelection[]} */
-  let remote = [];
-  /** @type {Plugin<import("prosemirror-view").DecorationSet>} */
-  const remoteSelections = new Plugin({
-    key: remoteKey,
-    state: {
-      init: () => DecorationSet.empty,
-      apply(tr, set) {
-        const next = /** @type {unknown} */ (tr.getMeta(remoteKey));
-        return next instanceof DecorationSet ? next : set.map(tr.mapping, tr.doc);
-      },
-    },
-    props: { decorations: (state) => remoteKey.getState(state) },
-  });
+  const { EditorView } = await import("prosemirror-view");
+  const { basicMapping, isComposing, remoteSelections, selectionCursors, setRemoteSelections, textSync, textToDoc } =
+    await import("articollab/prosemirror");
+  // The Text takes headings 1 to 3 and indents up to 8: deeper ones come back within them.
+  /** @type {import("articollab/prosemirror").TextMapping} */
+  const mapping = { ...basicMapping, heading: { node: "heading", levels: [1, 2, 3] },
+    ...(basicMapping.lists === undefined ? {} : { lists: { ...basicMapping.lists, maxIndent: 8 } }) };
   /** @param {"link" | "undo" | "redo"} command */
   const delegate = (command) => () => { options.onCommand(command); return true; };
   /** Keys do nothing while a composition is open: the input method owns them. @param {import("prosemirror-state").Command} command
    * @returns {import("prosemirror-state").Command} */
-  const unlessComposing = (command) => (state, dispatch, editorView) => !isComposing() && command(state, dispatch, editorView);
+  const unlessComposing = (command) => (state, dispatch, editorView) =>
+    (editorView === undefined || !isComposing(editorView)) && command(state, dispatch, editorView);
   /** @param {Record<string, import("prosemirror-state").Command>} bindings */
   const guarded = (bindings) => keymap(Object.fromEntries(Object.entries(bindings).map(([key, command]) => [key, unlessComposing(command)])));
   const keys = guarded({
@@ -100,130 +98,74 @@ export async function createRichEditor(parent, doc, options) {
     "Mod-Shift-8": commands.bullets, "Mod-Shift-7": commands.numbers,
     Enter: splitListItem(nodeType("list_item")), Tab: sinkListItem(nodeType("list_item")), "Shift-Tab": liftListItem(nodeType("list_item")),
   });
-  let editable = false, destroyed = false, cancelled = false;
+  let editable = false, destroyed = false, wasComposing = false;
   /** A read-only change that waits for the composition to end. @type {boolean | undefined} */
   let pendingReadOnly;
-  /** @type {ReturnType<typeof setTimeout> | undefined} */
-  let ending;
-  /** @type {import("prosemirror-view").EditorView | undefined} */
-  let view;
-  const isComposing = () => binding.composing || view?.composing === true;
-  /** Ends the composition once ProseMirror has read its final text. */
-  const compositionWatch = new Plugin({
-    view: () => ({ update(current) { if (binding.composing && !current.composing) scheduleFinish(); } }),
+  /** Reports changes, and applies a read-only change that waited for a composition. */
+  const watch = new Plugin({
+    view: () => ({
+      update(current, previous) {
+        if (pendingReadOnly !== undefined && !isComposing(current)) {
+          const value = pendingReadOnly;
+          pendingReadOnly = undefined;
+          queueMicrotask(() => { setReadOnly(value); });
+        }
+        const changed = previous.doc !== current.state.doc, composing = isComposing(current);
+        // A composition that ended moves the caret to its text, even when the editor already shows it.
+        const ended = wasComposing && !composing;
+        wasComposing = composing;
+        if (changed || ended || !previous.selection.eq(current.state.selection)) options.onChange({ doc: changed || ended });
+      },
+    }),
   });
-  const binding = createRichTextBinding(doc, {
-    plugins: [keys, guarded(baseKeymap), remoteSelections, compositionWatch],
-    update: (state) => { view?.updateState(state); },
-    canEdit: options.canEdit, onError: options.onError, onLocalEdit: options.onLocalEdit, onSelection: options.onSelection,
-    onRemote() { options.onRemote(); },
-    onCompositionBoundary: options.onCompositionBoundary, onUnsentComposition: options.onUnsentComposition,
-  });
-
-  function finish() {
-    clearTimeout(ending);
-    ending = undefined;
-    if (destroyed || !binding.composing) return;
-    try { binding.finishComposition(cancelled); }
-    catch { /* The binding has already reported the error. */ }
-    if (pendingReadOnly !== undefined) {
-      const value = pendingReadOnly;
-      pendingReadOnly = undefined;
-      setReadOnly(value);
-    }
-    // Other writers' selections waited too.
-    options.onRemote();
-  }
-  // ProseMirror reads the final text in a microtask after compositionend.
-  function scheduleFinish() {
-    ending ??= setTimeout(() => { ending = undefined; if (!view?.composing) finish(); }, 0);
-  }
-  const mounted = new EditorView(parent, {
-    state: binding.state,
-    dispatchTransaction(tr) {
-      // A composition that started before its compositionstart event reached this editor.
-      if (!binding.composing && view?.composing === true && tr.getMeta("composition") !== undefined) binding.startComposition();
-      binding.dispatch(tr);
-    },
+  const view = new EditorView(parent, {
+    state: EditorState.create({
+      doc: textToDoc(doc.state.body, editorSchema, mapping),
+      plugins: [
+        textSync(doc, "body", { mapping, history: options.history, canEdit: options.canEdit, onError: options.onError,
+          onUnsentComposition: options.onUnsentComposition }),
+        remoteSelections({ selectionClass: "remote-selection", caret }),
+        keys, guarded(baseKeymap), watch,
+      ],
+    }),
     editable: () => editable,
     attributes: { "aria-label": options.label, class: "rich-text" },
-    handleDOMEvents: {
-      compositionstart() {
-        if (ending !== undefined) finish();
-        if (!binding.composing) { cancelled = false; binding.startComposition(); }
-        return false;
-      },
-      compositionend() { scheduleFinish(); return false; },
-      keydown(current, event) {
-        // A key after the composition, which ProseMirror may end without compositionend: write it first.
-        if (binding.composing && !current.composing) finish();
-        // macOS Zhuyin can end an Escape cancellation with the phonetic text still in the editor.
-        else if (binding.composing && event.key === "Escape") cancelled = true;
-        else if (binding.composing && event.isComposing) cancelled = false;
-        return false;
-      },
-    },
   });
-  view = mounted;
   /** @param {boolean} value */
   function setReadOnly(value) {
     if (destroyed) return;
-    if (binding.composing) { pendingReadOnly = value; return; }
+    if (isComposing(view)) { pendingReadOnly = value; return; }
     editable = !value;
-    mounted.setProps({ editable: () => editable });
-  }
-
-  /** Draws the other writers' selections where they are now. @returns {RemoteStatus[]} */
-  function drawRemote() {
-    /** @type {import("prosemirror-view").Decoration[]} */
-    const decorations = [];
-    const statuses = remote.map(({ label, selection }) => {
-      const range = binding.resolve(selection);
-      if (range === undefined) return { label, resolved: false };
-      if (range.from < range.to) decorations.push(Decoration.inline(range.from, range.to, { class: "remote-selection", title: label }));
-      decorations.push(Decoration.widget(range.to, () => {
-        const caret = document.createElement("span");
-        caret.className = "remote-caret";
-        caret.dataset.label = label;
-        caret.setAttribute("aria-hidden", "true");
-        return caret;
-      }, { key: label + ":" + String(range.to), side: range.from < range.to ? 1 : -1 }));
-      return { label, resolved: true };
-    });
-    mounted.dispatch(mounted.state.tr.setMeta(remoteKey, DecorationSet.create(mounted.state.doc, decorations)));
-    return statuses;
+    view.setProps({ editable: () => editable });
   }
 
   return {
-    get view() { return mounted; },
+    get view() { return view; },
     /** @param {Exclude<Command, "link" | "undo" | "redo">} command */
     run(command) {
-      if (isComposing()) return false;
-      const ran = commands[command](mounted.state, mounted.dispatch.bind(mounted));
-      mounted.focus();
+      if (isComposing(view)) return false;
+      const ran = commands[command](view.state, view.dispatch.bind(view));
+      view.focus();
       return ran;
     },
     /** Adds a link to the selection, or removes the one it has. @param {string} href */
     link(href) {
-      const type = markType("link"), { from, to, empty } = mounted.state.selection;
-      if (empty || isComposing()) return false;
-      const tr = mounted.state.doc.rangeHasMark(from, to, type)
-        ? mounted.state.tr.removeMark(from, to, type) : mounted.state.tr.addMark(from, to, type.create({ href }));
-      mounted.dispatch(tr);
+      const type = markType("link"), { from, to, empty } = view.state.selection;
+      if (empty || isComposing(view)) return false;
+      const tr = view.state.doc.rangeHasMark(from, to, type)
+        ? view.state.tr.removeMark(from, to, type) : view.state.tr.addMark(from, to, type.create({ href }));
+      view.dispatch(tr);
       return true;
     },
-    selectionCursors: () => binding.selectionCursors(),
+    selectionCursors: () => selectionCursors(view.state),
     /** Replaces the other writers' selections. @param {readonly RemoteSelection[]} selections */
-    setRemote(selections) { remote = selections; return drawRemote(); },
-    redrawRemote: () => drawRemote(),
-    isComposing,
+    setRemote: (selections) => setRemoteSelections(view, selections),
+    isComposing: () => isComposing(view),
     setReadOnly,
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      clearTimeout(ending);
-      binding.destroy();
-      mounted.destroy();
+      view.destroy();
     },
   };
 }

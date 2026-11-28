@@ -7,6 +7,7 @@
 - [Recovery](recovery.md)
 - [Sync adapter](sync.md)
 - [React](react.md)
+- [ProseMirror](prosemirror.md)
 - [Core reference](reference.md)
 - [Upgrading](upgrading.md)
 - [FAQ](faq.md)

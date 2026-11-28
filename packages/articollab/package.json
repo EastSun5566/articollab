@@ -53,6 +53,10 @@
     "./react": {
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js"
+    },
+    "./prosemirror": {
+      "types": "./dist/prosemirror/index.d.ts",
+      "import": "./dist/prosemirror/index.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -65,9 +69,21 @@
     "articulated": "^1.4.0"
   },
   "peerDependencies": {
+    "prosemirror-model": "^1.25.0",
+    "prosemirror-state": "^1.4.0",
+    "prosemirror-view": "^1.38.0",
     "react": ">=18"
   },
   "peerDependenciesMeta": {
+    "prosemirror-model": {
+      "optional": true
+    },
+    "prosemirror-state": {
+      "optional": true
+    },
+    "prosemirror-view": {
+      "optional": true
+    },
     "react": {
       "optional": true
     }
@@ -78,6 +94,9 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/react": "^19.3.3",
+    "prosemirror-model": "^1.25.13",
+    "prosemirror-state": "^1.4.4",
+    "prosemirror-view": "^1.44.0",
     "react": "^19.3.1",
     "typescript": "^7.0.2"
   }

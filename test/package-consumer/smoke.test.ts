@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { basename, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -60,6 +60,9 @@ import { openPostgresServerStore, CheckpointLockedError as PostgresLockedError }
 import { useCollection, useDocument } from "articollab/react";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
+import { basicMapping, selectionCursors, textSync, textToDoc } from "articollab/prosemirror";
+import { Schema } from "prosemirror-model";
+import { EditorState } from "prosemirror-state";
 
 const Board = defineDocument({ count: value(0), items: list(), body: text() });
 const roundTrip = (input) => JSON.parse(JSON.stringify(input));
@@ -368,6 +371,16 @@ function Items() {
   return createElement("p", null, items.join(","), " ", String(count));
 }
 assert.equal(renderToString(createElement(Items)), "<p>rendered<!-- --> <!-- -->0</p>", "hooks render on the server too");
+const editorSchema = new Schema({
+  nodes: { doc: { content: "block+" }, paragraph: { content: "text*", group: "block" }, text: {} }, marks: {},
+});
+const plainMapping = { paragraph: "paragraph", marks: {} };
+reactDoc.state.body.insert(0, "one\\ntwo");
+const editorDoc = textToDoc(reactDoc.state.body, editorSchema, plainMapping);
+assert.deepEqual(editorDoc.toJSON().content.map((node) => node.content[0].text), ["one", "two"]);
+const editorState = EditorState.create({ schema: editorSchema, doc: editorDoc, plugins: [textSync(reactDoc, "body", { mapping: plainMapping })] });
+assert.equal(reactDoc.state.body.cursorIndex(selectionCursors(editorState).from), 0, "the plugin runs without a DOM until it has a view");
+assert.equal(basicMapping.paragraph, "paragraph");
 await assert.rejects(openPostgresServerStore({ client: {}, document: "d" }), TypeError);
 const serverStore = await openFileServerStore("server");
 await assert.rejects(openFileServerStore("server"), CheckpointLockedError);
@@ -494,6 +507,7 @@ import { openFileStore, openFileServerStore, type FileStoreOptions, type ServerS
 import { openPostgresServerStore, type PostgresClient } from "articollab/sync/postgres";
 import { openServer, persistServer, type PersistedServer, type ServerPersistence } from "articollab/sync";
 import { useCollection, useTextDelta, useUndoState, type UndoState } from "articollab/react";
+import { textSync, type CursorSelection, type TextMapping, type TextPath as EditorTextPath } from "articollab/prosemirror";
 type CollectionItems = Expect<Equal<ReturnType<typeof useCollection<Shape, "items">>, readonly string[]>>;
 type CollectionCount = Expect<Equal<ReturnType<typeof useCollection<Shape, "count">>, number>>;
 type Undo = Expect<Equal<ReturnType<typeof useUndoState>, UndoState>>;
@@ -816,6 +830,12 @@ const wrongListSnapshot: DocumentSnapshot<Shape> = { ...snapshot, data: { ...sna
 const wrongTextSnapshot: DocumentSnapshot<Shape> = { ...snapshot, data: { ...snapshot.data, body: { idList: [], value: 1 } } };
 // @ts-expect-error Value paths have no List/Text allocation counter.
 checkpoint.lastBunchSeqs.count;
+type BoardTextPaths = Expect<Equal<EditorTextPath<Shape>, "body">>;
+type Selection = Expect<Equal<CursorSelection["from"], Cursor>>;
+const ownMapping: TextMapping = { paragraph: "p", marks: { bold: { mark: "strong" } } };
+void textSync(createClient(Board, { clientId: "p", onBatch() {} }), "body", { mapping: ownMapping });
+// @ts-expect-error Only a Text can back an editor.
+void textSync(createClient(Board, { clientId: "p", onBatch() {} }), "items");
 `;
 
 describe("installed package consumer", { timeout: 180_000 }, () => {
@@ -842,6 +862,13 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     const react = await json(require.resolve("react/package.json"));
     const reactDom = await json(require.resolve("react-dom/package.json"));
     const reactTypes = await json(require.resolve("@types/react/package.json"));
+    // The ProseMirror packages do not export package.json: read it next to their dist folder.
+    const prosemirror: Record<string, string> = {};
+    for (const name of ["prosemirror-model", "prosemirror-state", "prosemirror-view"]) {
+      const { version } = await json(join(dirname(require.resolve(name)), "../package.json"));
+      assert.ok(typeof version === "string");
+      prosemirror[name] = version;
+    }
     const { packageManager } = await json(join(root, "package.json"));
     assert.ok(typeof typescript.version === "string" && typeof nodeTypes.version === "string");
     assert.ok(typeof packageManager === "string");
@@ -850,7 +877,7 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
       dependencies: { articollab: `file:./${basename(packed.filename)}` },
       devDependencies: {
         typescript: typescript.version, "@types/node": nodeTypes.version,
-        react: react.version, "react-dom": reactDom.version, "@types/react": reactTypes.version,
+        react: react.version, "react-dom": reactDom.version, "@types/react": reactTypes.version, ...prosemirror,
       },
     }));
     await pnpm(["install", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile"], consumer, 90_000);

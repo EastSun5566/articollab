@@ -92,6 +92,7 @@ The benchmark builds the package and runs each workload in its own worker proces
 | Command | Measures |
 | --- | --- |
 | `pnpm bench` | Local edits, sync, receive, snapshots and heap for List and Text at 1,000 to 50,000 elements |
+| `pnpm bench --prosemirror` | A keystroke in a ProseMirror editor at 5,000 and 50,000 characters, written locally and received by another writer |
 | `pnpm bench --list-move` | Moving an element locally and receiving the move, with and without an observer |
 | `pnpm bench --extended` | Fragmented Text up to 100,000 code points, and server submission with large history |
 | `pnpm bench --checkpoint-storage` | Server checkpoint size and save/restore time as JSON, gzip and Brotli |
