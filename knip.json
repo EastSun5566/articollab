@@ -19,7 +19,8 @@
         "src/sync/index.ts",
         "src/sync/node.ts",
         "src/sync/postgres.ts",
-        "src/prosemirror/index.ts"
+        "src/prosemirror/index.ts",
+        "src/tiptap/index.ts"
       ],
       "project": [
         "src/**/*.ts"

@@ -21,6 +21,9 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.6.0",
+    "@tiptap/core": "^3.35.1",
+    "@tiptap/pm": "^3.35.1",
+    "@tiptap/starter-kit": "^3.35.1",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.23.1",
     "@types/react": "^19.3.3",
