@@ -61,6 +61,9 @@ import { useCollection, useDocument } from "articollab/react";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import { basicMapping, selectionCursors, textSync, textToDoc } from "articollab/prosemirror";
+import { ArticollabText, starterKitMapping } from "articollab/tiptap";
+import { getSchema } from "@tiptap/core";
+import { StarterKit } from "@tiptap/starter-kit";
 import { Schema } from "prosemirror-model";
 import { EditorState } from "prosemirror-state";
 
@@ -381,6 +384,14 @@ assert.deepEqual(editorDoc.toJSON().content.map((node) => node.content[0].text),
 const editorState = EditorState.create({ schema: editorSchema, doc: editorDoc, plugins: [textSync(reactDoc, "body", { mapping: plainMapping })] });
 assert.equal(reactDoc.state.body.cursorIndex(selectionCursors(editorState).from), 0, "the plugin runs without a DOM until it has a view");
 assert.equal(basicMapping.paragraph, "paragraph");
+// Tiptap's schema comes from @tiptap/pm: the plugin accepts it only when both load one ProseMirror.
+const tiptapSchema = getSchema([StarterKit.configure({ undoRedo: false, trailingNode: false })]);
+const tiptapDoc = textToDoc(reactDoc.state.body, tiptapSchema, starterKitMapping);
+assert.equal(tiptapDoc.childCount, 2);
+const TiptapNote = defineDocument({ body: text({ marks: { bold: { expand: "after" } }, blocks: { code: {} } }) });
+const tiptapWriter = createClient(TiptapNote, { clientId: "tiptap", onBatch() {} });
+EditorState.create({ schema: tiptapSchema, plugins: [textSync(tiptapWriter, "body", { mapping: starterKitMapping })] });
+assert.equal(ArticollabText.configure({ document: tiptapWriter, path: "body" }).name, "articollabText");
 await assert.rejects(openPostgresServerStore({ client: {}, document: "d" }), TypeError);
 const serverStore = await openFileServerStore("server");
 await assert.rejects(openFileServerStore("server"), CheckpointLockedError);
@@ -508,6 +519,8 @@ import { openPostgresServerStore, type PostgresClient } from "articollab/sync/po
 import { openServer, persistServer, type PersistedServer, type ServerPersistence } from "articollab/sync";
 import { useCollection, useTextDelta, useUndoState, type UndoState } from "articollab/react";
 import { textSync, type CursorSelection, type TextMapping, type TextPath as EditorTextPath } from "articollab/prosemirror";
+import { ArticollabText, starterKitMapping, type ArticollabTextOptions } from "articollab/tiptap";
+import type { Editor } from "@tiptap/core";
 type CollectionItems = Expect<Equal<ReturnType<typeof useCollection<Shape, "items">>, readonly string[]>>;
 type CollectionCount = Expect<Equal<ReturnType<typeof useCollection<Shape, "count">>, number>>;
 type Undo = Expect<Equal<ReturnType<typeof useUndoState>, UndoState>>;
@@ -836,6 +849,12 @@ const ownMapping: TextMapping = { paragraph: "p", marks: { bold: { mark: "strong
 void textSync(createClient(Board, { clientId: "p", onBatch() {} }), "body", { mapping: ownMapping });
 // @ts-expect-error Only a Text can back an editor.
 void textSync(createClient(Board, { clientId: "p", onBatch() {} }), "items");
+void ArticollabText.configure({ document: createClient(Board, { clientId: "t", onBatch() {} }), path: "body", mapping: starterKitMapping });
+type TiptapHistory = Expect<Equal<ArticollabTextOptions["history"], UndoManager | undefined>>;
+declare const tiptap: Editor;
+const undone: boolean = tiptap.commands.undo();
+// @ts-expect-error Options are checked.
+void ArticollabText.configure({ document: createClient(Board, { clientId: "t", onBatch() {} }), path: 1 });
 `;
 
 describe("installed package consumer", { timeout: 180_000 }, () => {
@@ -862,12 +881,14 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
     const react = await json(require.resolve("react/package.json"));
     const reactDom = await json(require.resolve("react-dom/package.json"));
     const reactTypes = await json(require.resolve("@types/react/package.json"));
-    // The ProseMirror packages do not export package.json: read it next to their dist folder.
-    const prosemirror: Record<string, string> = {};
-    for (const name of ["prosemirror-model", "prosemirror-state", "prosemirror-view"]) {
-      const { version } = await json(join(dirname(require.resolve(name)), "../package.json"));
-      assert.ok(typeof version === "string");
-      prosemirror[name] = version;
+    // The ProseMirror and Tiptap packages do not export package.json: read it next to their dist folder.
+    const editorPackages: Record<string, string> = {};
+    // Each package's entry is in dist/, or dist/state/ for @tiptap/pm, which has only subpaths.
+    for (const [name, entry] of [["prosemirror-model", ".."], ["prosemirror-state", ".."], ["prosemirror-view", ".."],
+      ["@tiptap/core", ".."], ["@tiptap/starter-kit", ".."], ["@tiptap/pm/state", "../.."]] as const) {
+      const { version, name: own } = await json(join(dirname(require.resolve(name)), entry, "package.json"));
+      assert.ok(typeof version === "string" && typeof own === "string");
+      editorPackages[own] = version;
     }
     const { packageManager } = await json(join(root, "package.json"));
     assert.ok(typeof typescript.version === "string" && typeof nodeTypes.version === "string");
@@ -877,7 +898,7 @@ describe("installed package consumer", { timeout: 180_000 }, () => {
       dependencies: { articollab: `file:./${basename(packed.filename)}` },
       devDependencies: {
         typescript: typescript.version, "@types/node": nodeTypes.version,
-        react: react.version, "react-dom": reactDom.version, "@types/react": reactTypes.version, ...prosemirror,
+        react: react.version, "react-dom": reactDom.version, "@types/react": reactTypes.version, ...editorPackages,
       },
     }));
     await pnpm(["install", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile"], consumer, 90_000);
