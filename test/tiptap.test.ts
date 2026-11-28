@@ -3,7 +3,6 @@ import { after, describe, it } from "node:test";
 import { Window } from "happy-dom";
 
 import { createClient, createServer, createUndoManager, type ClientBatch, type DocumentOperation, type UndoManager } from "../packages/articollab/src/index.ts";
-import { Note } from "./prosemirror-helpers.ts";
 
 // A DOM for Tiptap's editor view, which reads it when it is first imported.
 const window = new Window();
@@ -171,7 +170,8 @@ describe("Tiptap", () => {
       /Turn off the trailingNode extension/);
     assert.throws(() => new Editor({ extensions: [kit, ArticollabText] }), /needs a document/);
     assert.throws(() => new Editor({ extensions: [kit, ArticollabText.configure({ document: doc, path: "title" })] }), /Unknown collection path: title/);
-    const note = createClient(Note, { clientId: "n", onBatch() {} });
+    const Plain = defineDocument({ body: text({ marks: { bold: { expand: "after" } } }) });
+    const note = createClient(Plain, { clientId: "n", onBatch() {} });
     // A Text without strike or underline: their writes fail and stop the extension.
     const errors: unknown[] = [];
     const editor = new Editor({ extensions: [kit, ArticollabText.configure({ document: note, path: "body", onError(error) { errors.push(error); } })] });
