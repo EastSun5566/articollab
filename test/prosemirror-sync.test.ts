@@ -7,7 +7,7 @@ import { EditorState } from "prosemirror-state";
 
 import { createClient, createUndoManager } from "../packages/articollab/src/index.ts";
 import {
-  isComposing, redo, resolveSelection, selectionCursors, setRemoteSelections, textSync, textToDoc, undo,
+  basicMapping, isComposing, redo, resolveSelection, selectionCursors, setRemoteSelections, textSync, textToDoc, undo,
 } from "../packages/articollab/src/prosemirror/index.ts";
 import { editorSchema, end, json, network, Note } from "./prosemirror-helpers.ts";
 
@@ -183,6 +183,22 @@ describe("ProseMirror sync", () => {
     // Detached: changes to the Text no longer reach the editor.
     doc.state.body.insert(0, ">");
     assert.equal(view.state.doc.textContent, "from the Text!");
+  });
+
+  it("leaves paragraph attributes the mapping does not use as they are", () => {
+    const doc = createClient(Note, { clientId: "a", onBatch() {} });
+    doc.state.body.insert(0, "one\ntwo");
+    doc.state.body.formatBlocks(0, 0, "indent", 2); // Not a list item, so the editor has no place for it.
+    const { lists: _lists, ...shape } = basicMapping;
+    const { EditorView } = open();
+    const view = new EditorView(document.createElement("div"), {
+      state: EditorState.create({ schema: editorSchema, plugins: [textSync(doc, "body", { mapping: shape })] }),
+    });
+    view.dispatch(view.state.tr.insertText("!", 4));
+    view.dispatch(view.state.tr.setBlockType(1, 1, editorSchema.nodes.heading!, { level: 1 }));
+    assert.equal(doc.state.body.toString(), "one!\ntwo");
+    assert.deepEqual(doc.state.body.blocks().map(({ attributes }) => attributes), [{ heading: 1, indent: 2 }, {}]);
+    view.destroy();
   });
 
   it("refuses a path that is not a Text", () => {

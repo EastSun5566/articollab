@@ -234,11 +234,13 @@ export class TextBinding {
     if (change.insert.length > 0) this.text.insert(offset + change.index, change.insert.join(""));
     const now = textLines(this.text, offset, textLength(after));
     this.formatRuns(pointMarks(after), pointMarks(now), offset);
-    // Paragraph attributes: each line against the Text's line at the same place.
+    // Paragraph attributes: each line against the Text's line at the same place. Keys the mapping
+    // does not use stay as they are.
     let start = offset;
+    const keys = this.shape.keys().blocks;
     for (const [index, line] of after.entries()) {
       const have = now[index]?.attributes ?? {};
-      for (const key of new Set([...Object.keys(line.attributes), ...Object.keys(have)])) {
+      for (const key of keys) {
         const value = line.attributes[key];
         if (!sameJson(value ?? null, have[key] ?? null)) this.text.formatBlocks(start, 0, key, value ?? null);
       }
