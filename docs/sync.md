@@ -247,6 +247,8 @@ If you choose to discard blocked work, call `rejectPending()`. It cancels batche
 
 After a history gap, preserve the checkpoint if pending work remains. With an empty pending queue, call `restartFromSnapshot()` and use the returned client. Close the old session on the server if your application manages sessions.
 
+If `sync.error` is a `SyncRequestError` with `code: "watermark_ahead"`, the client has already seen a sequence newer than the server's. For example, the client may be at sequence 12 after the server was restored to sequence 8. Preserve the client checkpoint and check the server's document identity and saved history. If the server was rolled back, restore the authoritative checkpoint and log before reconnecting. To start over with a different document, use a fresh checkpoint key and writer session.
+
 See the [reference](reference.md#sync-adapter) for exact retry, persistence and shutdown behavior.
 
 [Previous: Recovery](recovery.md) · [Next: React](react.md)

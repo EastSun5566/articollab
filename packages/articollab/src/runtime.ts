@@ -1326,6 +1326,9 @@ function checkOperationPayloads(definition: Readonly<SchemaShape>, operations: r
   }
 }
 
+/** Internal: the current watermark without materializing a snapshot. Initialized by ServerDocument. */
+export let readServerSequence: <S extends SchemaShape>(server: ServerDocument<S>) => number;
+
 /** Internal: whether a writer session is open, without listing sessions. Initialized by ServerDocument. */
 export let hasOpenClient: <S extends SchemaShape>(server: ServerDocument<S>, clientId: string) => boolean;
 
@@ -1353,6 +1356,7 @@ export class ServerDocument<S extends SchemaShape> {
   private receiving = false;
 
   static {
+    readServerSequence = (server) => server.nextServerSeq - 1;
     hasOpenClient = <Shape extends SchemaShape>(server: ServerDocument<Shape>, clientId: string): boolean =>
       server.clients.has(clientId);
     onClientClosed = <Shape extends SchemaShape>(server: ServerDocument<Shape>, listener: (clientId: string) => void) => {

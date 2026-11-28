@@ -1,7 +1,7 @@
 import type { ClientBatch, JsonValue } from "../index.ts";
 import { isJsonObject } from "../json.ts";
 import type { SyncSubscription, SyncTransport } from "./client.ts";
-import { SyncRequestError, SyncResponseError } from "./errors.ts";
+import { syncRequestError, SyncResponseError } from "./errors.ts";
 import { readServerSentEvents } from "./sse.ts";
 
 export interface HttpTransportOptions {
@@ -25,6 +25,15 @@ function parse(message: string, what: string): unknown {
   catch (cause) { throw new SyncResponseError(`Invalid ${what} JSON`, { cause }); }
 }
 
+/** A proxy can return an empty or non-JSON error body. Keep its status in either case. */
+function readRequestError(status: number, message: string) {
+  let body: unknown;
+  if (status === 409) {
+    try { body = JSON.parse(message); } catch { /* No structured diagnostic. */ }
+  }
+  return syncRequestError(status, body);
+}
+
 /** HTTP transport for `connectSync`, matching the routes of `createSyncHandler`. */
 export function createHttpTransport(options: HttpTransportOptions): SyncTransport {
   const base = new URL(options.url);
@@ -37,7 +46,7 @@ export function createHttpTransport(options: HttpTransportOptions): SyncTranspor
     new Headers(init.headers).forEach((value, name) => { headers.set(name, value); });
     const response = await fetch(new URL(path, base), { ...init, headers });
     const message = await response.text(); // Consume every body, including errors.
-    if (response.status !== status) throw new SyncRequestError(response.status);
+    if (response.status !== status) throw readRequestError(response.status, message);
     return message;
   }
   const post = (path: string, status: number, body: unknown) =>
@@ -58,8 +67,7 @@ export function createHttpTransport(options: HttpTransportOptions): SyncTranspor
         headers.set("Accept", "text/event-stream");
         const response = await fetch(new URL(`events?since=${watermark}`, base), { headers, signal: abort.signal });
         if (response.status !== 200 || response.body === null) {
-          await response.text();
-          throw new SyncRequestError(response.status);
+          throw readRequestError(response.status, await response.text());
         }
         handlers.onOpen();
         await readServerSentEvents(response.body, (event) => {

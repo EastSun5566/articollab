@@ -3,7 +3,7 @@ import { createServer as createHttpServer, type ServerResponse } from "node:http
 import { describe, it, type TestContext } from "node:test";
 
 import {
-  createServer, decodeServerCommit, decodeSnapshot, defineDocument, list, value, type ServerCheckpoint,
+  createClient, createServer, decodeServerCommit, decodeSnapshot, defineDocument, list, value, type ServerCheckpoint,
 } from "../packages/articollab/src/index.ts";
 import {
   connectSync, createHttpTransport, createSyncHandler, SyncRequestError,
@@ -89,7 +89,7 @@ describe("createSyncHandler", () => {
       [h.get("commits?since=-1"), 400],
       [h.get("commits?since=01"), 400],
       [h.get("commits?since=1&since=2"), 400],
-      [h.get("commits?since=5"), 400],
+      [h.get("commits?since=9007199254740992"), 400],
       [h.post("batches", batch(clientId, 1), { "Content-Type": "text/plain" }), 415],
       [h.post("batches", "{<script>"), 400],
       [h.post("batches", { clientId, seq: 1, operations: [{ type: "evil", path: "<script>" }] }), 400],
@@ -107,6 +107,68 @@ describe("createSyncHandler", () => {
     const wrongMethod = await h.handle(new Request(base + "batches", { method: "PUT" }));
     assert.equal(wrongMethod.headers.get("Allow"), "POST");
     assert.equal(h.server.snapshot().serverSeq, 0);
+  });
+
+  it("reports an ahead watermark separately on catch-up and SSE, including Last-Event-ID", async (t) => {
+    const h = setup({ maxEventStreams: 1 });
+    for (const request of [
+      new Request(base + "commits?since=1"),
+      new Request(base + "events?since=1"),
+      new Request(base + "events?since=0", { headers: { "Last-Event-ID": "1" } }),
+    ]) {
+      const response = await h.handle(request);
+      assert.equal(response.status, 409);
+      const body: unknown = await response.json();
+      assert.deepEqual(body, { error: "Catch-up watermark is ahead of the server", code: "watermark_ahead" });
+    }
+
+    const transport = createHttpTransport({ url: base, fetch: (input, init) => h.handle(new Request(input, init)) });
+    await assert.rejects(new Promise<void>((_resolve, reject) => {
+      t.after(transport.subscribe!(1, {
+        onOpen() { reject(new Error("An ahead stream must not open")); },
+        onGap() { reject(new Error("An ahead watermark is not a history gap")); },
+        onCommits() {}, onActivity() {}, onEnd: reject,
+      }));
+    }), { name: "SyncRequestError", status: 409, code: "watermark_ahead", retryable: false });
+    const current = await h.get("events?since=0");
+    assert.equal(current.status, 200, "a refused stream consumes no slot");
+    await current.body?.cancel();
+  });
+
+  it("keeps a restored draft when the server rolls back behind its saved watermark", async (t) => {
+    const original = createServer(Board);
+    const clientId = original.openClient();
+    const draftId = original.openClient();
+    const earlier = original.checkpoint();
+    original.receive(batch(clientId, 1));
+    const draft = createClient(Board, { clientId: draftId, snapshot: original.snapshot(), onBatch() {} });
+    draft.state.items.push("unsent");
+    const checkpoint = draft.checkpoint();
+    assert.equal(checkpoint.snapshot.serverSeq, 1);
+
+    const rolledBack = createServer(Board, { checkpoint: earlier });
+    const handle = createSyncHandler(Board, rolledBack, { allowRejections: true });
+    const requests: string[] = [];
+    const saves: typeof checkpoint[] = [];
+    const sync = await connectSync(Board, {
+      checkpoint, save: (saved) => { saves.push(saved); }, pollInterval: 0, push: false,
+      transport: createHttpTransport({ url: base, fetch(input, init) {
+        const request = new Request(input, init);
+        const { pathname, search } = new URL(request.url);
+        requests.push(`${request.method} ${pathname}${search}`);
+        return handle(request);
+      } }),
+    });
+    t.after(() => sync.close());
+    await assert.rejects(sync.sync(), { name: "SyncRequestError", status: 409, code: "watermark_ahead", retryable: false });
+    assert.equal(sync.status, "failed");
+    await assert.rejects(sync.rejectPending(), (error) => error === sync.error);
+    await assert.rejects(sync.restartFromSnapshot(), /requires a history gap/);
+    assert.deepEqual(requests, ["GET /api/commits?since=1"]);
+    assert.deepEqual(saves, [checkpoint]);
+    assert.deepEqual(sync.doc.checkpoint(), checkpoint);
+    assert.deepEqual(sync.doc.state.items.toArray(), ["unsent"]);
+    assert.deepEqual(rolledBack.checkpoint(), earlier);
   });
 
   it("enables rejections only on request and asks authorize with the batch's writer", async () => {
@@ -393,7 +455,7 @@ describe("createSyncHandler event streams", () => {
       h.handle(new Request(base + "events?since=0", { headers: { "x-deny": "1" } })),
       h.handle(new Request(base + "events?since=0", { method: "POST" })),
     ]);
-    assert.deepEqual(statuses.map((response) => response.status), [400, 400, 400, 403, 405]);
+    assert.deepEqual(statuses.map((response) => response.status), [400, 400, 409, 403, 405]);
 
     const other = server.openClient();
     for (const seq of [1, 2]) server.receive(batch(other, seq));

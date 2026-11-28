@@ -53,7 +53,7 @@ console.log(outcome?.status, outcome?.added); // transformed [ { type: 'value/se
 
 The promise resolves once the acknowledgement is received, with `status` `"accepted"`, `"transformed"` or `"rejected"`, and never rejects. `doc.settled(batch)` returns the same promise for any pending batch, such as one restored from a checkpoint. See the [exact contract](reference.md#mutations-transactions-and-events).
 
-For the `set(12)` above it logs `Saved as 10 instead.` Identical acknowledgements, including decoded copies, are silent. See the [reference](reference.md#mutations-transactions-and-events) for exact matching and ordering.
+For the `set(12)` above it logs `Saved as 10 instead.` A JSON-equal acknowledgement does not emit a `transform` event. A decoded object can still change reference and cause a server `change` event. See the [reference](reference.md#mutations-transactions-and-events) for exact matching and ordering.
 
 The resolver receives the pre-batch snapshot and returns operations synchronously. With [payload schemas](collections.md#validate-payloads), it only ever sees valid payloads, and its own output is validated too. Return `batch.operations` to accept unchanged, a valid operation set to transform, or `[]` to acknowledge without an authoritative effect. It need not return one operation per input.
 
